@@ -1,0 +1,66 @@
+{
+  "artifact_path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/funding_models/contrarian_comparison.json",
+  "artifact_paths": {
+    "contrarian_comparison": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/funding_models/contrarian_comparison.json",
+    "regime_comparison": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/funding_models/regime/regime_comparison.json"
+  },
+  "curated_datasets": {
+    "cascade_training_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/cascade_training_dataset",
+      "rows": 8760
+    },
+    "funding_contrarian_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/funding_contrarian_dataset",
+      "rows": 20520
+    },
+    "funding_regime_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/funding_regime_dataset",
+      "rows": 1096
+    },
+    "polymarket_training_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/polymarket_training_dataset",
+      "rows": 12731
+    },
+    "prediction_training_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/prediction_training_dataset",
+      "rows": 2421
+    }
+  },
+  "family_id": "binance_funding_contrarian",
+  "generated_at": "2026-03-11T14:16:13.074053+00:00",
+  "job_kind": "funding_model_refresh",
+  "metrics": {
+    "contrarian_selected": "xgboost",
+    "contrarian_tft_auc": 0.0,
+    "contrarian_xgboost_auc": 0.5504688918019562,
+    "regime_accuracy": 0.0,
+    "regime_selected": "hmm"
+  },
+  "n_trials": 3,
+  "reload_portfolios": [
+    "contrarian_legacy",
+    "hedge_validation",
+    "hedge_research"
+  ],
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260311T141556435634Z/execution_refresh_request.json",
+  "selected_model": "xgboost",
+  "selected_regime_model": "hmm",
+  "status": "success",
+  "symbols": [
+    "BCHUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT",
+    "ZECUSDT"
+  ],
+  "tft_epochs": 5,
+  "duration_ms": 16708,
+  "output_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260311T141556435634Z/execution_refresh_raw.json",
+  "script_path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/scripts/factory_refresh_models.py",
+  "returncode": 0,
+  "stdout": "",
+  "stderr": "2026-03-11 17:15:56  INFO      train_contrarian_models \u2014 Discovered top-8 symbols by row count: BCHUSDT(6768), BTCUSDT(6768), ETHUSDT(6768), XRPUSDT(6752), LTCUSDT(6739), LINKUSDT(6715), ADAUSDT(6708), ZECUSDT(6661)\n2026-03-11 17:15:56  INFO      funding.ml.contrarian_features \u2014 Loaded pooled contrarian features from curated research store: 20520 rows, 35 columns\n2026-03-11 17:15:57  INFO      funding.ml.regime_features \u2014 Building regime features: primary=BCHUSDT, all=['BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT', 'ZECUSDT']\n2026-03-11 17:15:57  INFO      funding.ml.regime_features \u2014 Regime features built: symbol=BCHUSDT, rows=1096, columns=14\n2026-03-11 17:15:57  INFO      funding.ml.cascade_features \u2014 build_cascade_features: hourly_index from 2025-03-04T10:00:00+00:00 to 2026-03-04T09:00:00+00:00 (8760 hours, 8 symbols)\n2026-03-11 17:15:59  INFO      funding.ml.cascade_features \u2014 build_cascade_features: built 8760 rows x 11 columns.\n2026-03-11 17:15:59  INFO      funding.ml.cascade_features \u2014 label_cascade_events: 10 cascade hours out of 8760 total (0.11%)\n2026-03-11 17:16:00  INFO      train_contrarian_models \u2014 Building contrarian features for symbols: ['BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT', 'ZECUSDT']\n2026-03-11 17:16:00  INFO      funding.ml.contrarian_features \u2014 Loaded pooled contrarian features from curated research store: 20520 rows, 35 columns\n2026-03-11 17:16:00  INFO      train_contrarian_models \u2014 ModelSelector.compare() \u2014 20520 rows, n_trials=3, tft_epochs=5\n2026-03-11 17:16:00  INFO      funding.ml.model_selector \u2014 ModelSelector.compare \u2014 rows: 20520, columns: 35, n_trials: 3, tft_epochs: 5\n2026-03-11 17:16:00  INFO      funding.ml.model_selector \u2014 Training ContrarianXGBoost (n_trials=3)...\n2026-03-11 17:16:00  INFO      funding.ml.contrarian_xgb \u2014 Walk-forward split \u2014 train: 19112 rows, test: 1408 rows, features: 29\n2026-03-11 17:16:00  INFO      funding.ml.contrarian_xgb \u2014 Class balance \u2014 neg: 9344, pos: 9768, scale_pos_weight: 0.957\n2026-03-11 17:16:09  INFO      funding.ml.contrarian_xgb \u2014 Classifier Optuna best AUC = 0.5266\n2026-03-11 17:16:10  INFO      funding.ml.contrarian_xgb \u2014 Regressor Optuna best MAE = 0.030654\n2026-03-11 17:16:12  INFO      funding.ml.contrarian_xgb \u2014 Threshold calibration: chosen=0.628 (in-range=True, fallback=0.628)\n2026-03-11 17:16:12  INFO      funding.ml.contrarian_xgb \u2014 Metrics \u2014 acc: 0.602, auc: 0.550, precision: 0.507, recall: 0.183, f1: 0.269, sharpe: 5.826, threshold: 0.628, trades/wk: 3.0\n2026-03-11 17:16:12  INFO      funding.ml.model_selector \u2014 ContrarianXGBoost trained \u2014 auc: 0.550, sharpe: 5.826, profit_factor: 1.663\n2026-03-11 17:16:12  INFO      funding.ml.model_selector \u2014 TFT unavailable \u2014 selecting 'xgboost' by default.\n2026-03-11 17:16:12  INFO      funding.ml.model_selector \u2014 Saved model comparison to /Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/funding_models/contrarian_comparison.json\n2026-03-11 17:16:12  INFO      funding.ml.model_selector \u2014 Model comparison complete \u2014 xgb_sharpe: 5.826, tft_sharpe: -999.000, xgb_auc: 0.550, tft_auc: 0.000, selected: xgboost\n2026-03-11 17:16:12  INFO      train_contrarian_models \u2014 Building regime features for symbols: ['BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT', 'ZECUSDT']\n2026-03-11 17:16:12  INFO      funding.ml.regime_features \u2014 Building regime features: primary=BCHUSDT, all=['BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT', 'ZECUSDT']\n2026-03-11 17:16:13  INFO      funding.ml.regime_features \u2014 Regime features built: symbol=BCHUSDT, rows=1096, columns=14\n2026-03-11 17:16:13  INFO      train_contrarian_models \u2014 RegimeSelector.compare() \u2014 1096 rows\n2026-03-11 17:16:13  INFO      funding.ml.regime_selector \u2014 RegimeSelector.compare(): train=-1, val=1 rows, features=13\n2026-03-11 17:16:13  WARNING   funding.ml.regime_selector \u2014 HMM evaluation failed: DataFrame is empty after dropping NaN rows. Ensure sufficient history is provided (rolling windows need warm-up).\nTraceback (most recent call last):\n  File \"/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/funding/ml/regime_selector.py\", line 162, in _evaluate_hmm\n    fit_metrics = self._hmm.fit(train_df, feature_columns=feature_columns)\n  File \"/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/funding/ml/regime_hmm.py\", line 288, in fit\n    raise ValueError(\nValueError: DataFrame is empty after dropping NaN rows. Ensure sufficient history is provided (rolling windows need warm-up).\n2026-03-11 17:16:13  WARNING   funding.ml.regime_selector \u2014 Transformer evaluation failed: PyTorch is not installed. Install it with: pip install torch\nTraceback (most recent call last):\n  File \"/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/funding/ml/regime_selector.py\", line 216, in _evaluate_transformer\n    fit_metrics = self._transformer.fit(\n  File \"/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/funding/ml/regime_transformer.py\", line 273, in fit\n    raise RuntimeError(\nRuntimeError: PyTorch is not installed. Install it with: pip install torch\n2026-03-11 17:16:13  INFO      funding.ml.regime_selector \u2014 Comparison: HMM accuracy=0.0000 stability=0.00 | Transformer accuracy=0.0000 stability=0.00\n2026-03-11 17:16:13  INFO      funding.ml.regime_selector \u2014 RegimeSelector: selected 'hmm' (HMM acc=0.0000 stab=0.00 | Transformer acc=0.0000 stab=0.00)\n2026-03-11 17:16:13  INFO      funding.ml.regime_selector \u2014 RegimeSelector comparison saved to /Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/funding_models/regime/regime_comparison.json\n2026-03-11 17:16:13  INFO      train_contrarian_models \u2014 RegimeSelector selected: hmm"
+}

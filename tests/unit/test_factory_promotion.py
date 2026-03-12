@@ -76,8 +76,10 @@ def test_decide_requires_human_signoff_before_live():
         data_ready=True,
         workspace_ready=True,
         walkforward_bundle=_bundle("walkforward"),
+        incumbent_walkforward_bundle=None,
         stress_bundle=_bundle("stress"),
         paper_bundle=_bundle("paper"),
+        incumbent_paper_bundle=None,
         manifest_status="pending_approval",
         approved_by=None,
     )
@@ -96,8 +98,10 @@ def test_decide_marks_lineage_approved_when_manifest_is_approved():
         data_ready=True,
         workspace_ready=True,
         walkforward_bundle=_bundle("walkforward"),
+        incumbent_walkforward_bundle=None,
         stress_bundle=_bundle("stress"),
         paper_bundle=_bundle("paper"),
+        incumbent_paper_bundle=None,
         manifest_status="approved_live",
         approved_by="operator",
     )
@@ -105,3 +109,44 @@ def test_decide_marks_lineage_approved_when_manifest_is_approved():
     assert decision.next_stage == PromotionStage.APPROVED_LIVE.value
     assert decision.requires_human_signoff is False
     assert decision.blockers == []
+
+
+def test_decide_blocks_challenger_that_does_not_beat_incumbent_scorecard():
+    controller = PromotionController()
+    lineage = _lineage()
+    lineage.lineage_id = "lineage-b"
+    lineage.role = "paper_challenger"
+
+    incumbent = _bundle("paper")
+    incumbent.lineage_id = "lineage-a"
+    challenger = _bundle("paper")
+    challenger.lineage_id = "lineage-b"
+    challenger.monthly_roi_pct = incumbent.monthly_roi_pct + 0.05
+    challenger.calibration_lift_abs = incumbent.calibration_lift_abs
+    challenger.regime_robustness = incumbent.regime_robustness
+
+    incumbent_walkforward = _bundle("walkforward")
+    incumbent_walkforward.lineage_id = "lineage-a"
+    challenger_walkforward = _bundle("walkforward")
+    challenger_walkforward.lineage_id = "lineage-b"
+    challenger_walkforward.monthly_roi_pct = incumbent_walkforward.monthly_roi_pct + 0.05
+    challenger_walkforward.calibration_lift_abs = incumbent_walkforward.calibration_lift_abs
+    challenger_walkforward.regime_robustness = incumbent_walkforward.regime_robustness
+
+    decision = controller.decide(
+        lineage,
+        data_ready=True,
+        workspace_ready=True,
+        walkforward_bundle=challenger_walkforward,
+        incumbent_walkforward_bundle=incumbent_walkforward,
+        stress_bundle=_bundle("stress"),
+        paper_bundle=challenger,
+        incumbent_paper_bundle=incumbent,
+        manifest_status="pending_approval",
+        approved_by=None,
+    )
+
+    assert decision.next_stage == PromotionStage.STRESS.value
+    assert "challenger_roi_delta_below_scorecard" in decision.blockers
+    assert decision.scorecard["backtest"]["comparison_required"] is True
+    assert decision.scorecard["backtest"]["comparison_passed"] is False

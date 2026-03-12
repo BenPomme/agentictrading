@@ -200,6 +200,7 @@ class PromotionDecision(JsonMixin):
     requires_human_signoff: bool
     blockers: List[str]
     reasons: List[str]
+    scorecard: Dict[str, Any] = field(default_factory=dict)
     evidence_ids: List[str] = field(default_factory=list)
     decided_at: str = field(default_factory=utc_now_iso)
 
@@ -217,8 +218,10 @@ class LearningMemoryEntry(JsonMixin):
     tweak_count: int
     decision_stage: str
     metrics: Dict[str, Any] = field(default_factory=dict)
+    execution_evidence: Dict[str, Any] = field(default_factory=dict)
     blockers: List[str] = field(default_factory=list)
     recommendations: List[str] = field(default_factory=list)
+    evidence_sources: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
 
 
@@ -272,9 +275,28 @@ class LineageRecord(JsonMixin):
     last_manifest_id: Optional[str] = None
     blockers: List[str] = field(default_factory=list)
     active: bool = True
+    creation_kind: str = "mutation"
     loss_streak: int = 0
     tweak_count: int = 0
     max_tweaks: int = 2
+    last_agent_review_at: Optional[str] = None
+    next_agent_review_at: Optional[str] = None
+    last_agent_review_reason: Optional[str] = None
+    last_agent_review_status: Optional[str] = None
+    last_agent_review_trade_count: int = 0
+    last_agent_review_artifact_path: Optional[str] = None
+    last_agent_review_action: Optional[str] = None
+    last_agent_review_summary: Optional[str] = None
+    last_debug_review_at: Optional[str] = None
+    next_debug_review_at: Optional[str] = None
+    last_debug_review_reason: Optional[str] = None
+    last_debug_review_status: Optional[str] = None
+    last_debug_issue_signature: Optional[str] = None
+    last_debug_review_artifact_path: Optional[str] = None
+    last_debug_requires_human: bool = False
+    last_debug_human_action: Optional[str] = None
+    last_debug_bug_category: Optional[str] = None
+    last_debug_summary: Optional[str] = None
     iteration_status: str = "new_candidate"
     parent_lineage_id: Optional[str] = None
     retired_at: Optional[str] = None

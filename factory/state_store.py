@@ -16,6 +16,10 @@ class AccountSnapshot:
     realized_pnl: float
     roi_pct: float
     drawdown_pct: float
+    wins: int = 0
+    losses: int = 0
+    trade_count: int = 0
+    last_updated: str = ""
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any] | None) -> "AccountSnapshot | None":
@@ -28,6 +32,10 @@ class AccountSnapshot:
             realized_pnl=float(payload.get("realized_pnl", 0.0) or 0.0),
             roi_pct=float(payload.get("roi_pct", 0.0) or 0.0),
             drawdown_pct=float(payload.get("drawdown_pct", 0.0) or 0.0),
+            wins=int(payload.get("wins", 0) or 0),
+            losses=int(payload.get("losses", 0) or 0),
+            trade_count=int(payload.get("trade_count", 0) or 0),
+            last_updated=str(payload.get("last_updated") or ""),
         )
 
 
@@ -65,7 +73,25 @@ class PortfolioStateStore:
         if not path.exists():
             return []
         rows: List[Dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        if limit is not None and limit > 0:
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(0, 2)
+                    end = handle.tell()
+                    block = 4096
+                    buffer = b""
+                    pos = end
+                    while pos > 0 and buffer.count(b"\n") <= limit * 2:
+                        read_size = min(block, pos)
+                        pos -= read_size
+                        handle.seek(pos)
+                        buffer = handle.read(read_size) + buffer
+                lines = buffer.decode("utf-8", errors="ignore").splitlines()[-limit * 2 :]
+            except Exception:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        else:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        for line in lines:
             if not line.strip():
                 continue
             try:

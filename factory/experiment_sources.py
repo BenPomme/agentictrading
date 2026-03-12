@@ -184,6 +184,18 @@ def pooled_examples(prediction_root: str | Path) -> List[PredictionExample]:
 
 
 def build_contrarian_features_all(symbols: List[str], data_dir: str | Path) -> pd.DataFrame:
+    store_module = _external_module("data.research_store")
+    if store_module is not None and hasattr(store_module, "maybe_query_curated_funding_contrarian"):
+        try:
+            curated = getattr(store_module, "maybe_query_curated_funding_contrarian")(symbols)
+            if isinstance(curated, pd.DataFrame) and not curated.empty:
+                curated = curated.copy()
+                if "funding_time_dt" in curated.columns:
+                    curated["funding_time_dt"] = pd.to_datetime(curated["funding_time_dt"], utc=True, errors="coerce")
+                    curated = curated.set_index("funding_time_dt").sort_index()
+                return curated
+        except Exception:
+            pass
     module = _external_module("funding.ml.contrarian_features")
     if module is not None and hasattr(module, "build_contrarian_features_all"):
         try:
@@ -222,6 +234,18 @@ def get_contrarian_feature_columns(df: pd.DataFrame) -> List[str]:
 
 
 def build_cascade_features(symbols: List[str], data_dir: str | Path) -> pd.DataFrame:
+    store_module = _external_module("data.research_store")
+    if store_module is not None and hasattr(store_module, "maybe_query_curated_cascade"):
+        try:
+            curated = getattr(store_module, "maybe_query_curated_cascade")(symbols)
+            if isinstance(curated, pd.DataFrame) and not curated.empty:
+                curated = curated.copy()
+                if "timestamp_dt" in curated.columns:
+                    curated["timestamp_dt"] = pd.to_datetime(curated["timestamp_dt"], utc=True, errors="coerce")
+                    curated = curated.set_index("timestamp_dt").sort_index()
+                return curated
+        except Exception:
+            pass
     module = _external_module("funding.ml.cascade_features")
     if module is not None and hasattr(module, "build_cascade_features"):
         try:
@@ -343,3 +367,27 @@ class ContrarianBacktester:
             "total_pnl": total_pnl,
             "win_rate": wins / max(1, total_trades),
         }
+
+
+def family_model_rankings(family_id: str) -> pd.DataFrame:
+    store_module = _external_module("data.research_store")
+    if store_module is not None and hasattr(store_module, "maybe_query_family_model_rankings"):
+        try:
+            rankings = getattr(store_module, "maybe_query_family_model_rankings")(family_id)
+            if isinstance(rankings, pd.DataFrame):
+                return rankings
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+
+def portfolio_scorecards(portfolio_ids: Iterable[str]) -> pd.DataFrame:
+    store_module = _external_module("data.research_store")
+    if store_module is not None and hasattr(store_module, "maybe_query_portfolio_scorecards"):
+        try:
+            scorecards = getattr(store_module, "maybe_query_portfolio_scorecards")(list(portfolio_ids))
+            if isinstance(scorecards, pd.DataFrame):
+                return scorecards
+        except Exception:
+            pass
+    return pd.DataFrame()

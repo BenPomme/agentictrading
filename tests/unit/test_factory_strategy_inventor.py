@@ -84,3 +84,62 @@ def test_scientific_strategy_inventor_generates_cross_domain_bounded_proposal():
     assert proposal.parameter_overrides["selected_model_class"] == "gbdt"
     assert proposal.parameter_overrides["selected_min_edge"] >= 0.05
     assert proposal.parameter_overrides["selected_stake_fraction"] <= 0.02
+
+
+def test_scientific_strategy_inventor_new_models_get_distinct_name_and_alpha_thesis():
+    inventor = ScientificStrategyInventor()
+    family = FactoryFamily(
+        family_id="binance_funding_contrarian",
+        label="Binance Funding Contrarian",
+        thesis="Exploit dislocations between funding pressure and short-term mean reversion.",
+        target_portfolios=["contrarian_legacy"],
+        target_venues=["binance"],
+        primary_connector_ids=["binance_futures"],
+        champion_lineage_id="binance_funding_contrarian:champion",
+        shadow_challenger_ids=[],
+        paper_challenger_ids=[],
+        budget_split={"incumbent": 70.0, "adjacent": 20.0, "moonshot": 10.0},
+        queue_stage="paper",
+        explainer="Funding family",
+    )
+    genome = StrategyGenome(
+        genome_id="binance_funding_contrarian:genome",
+        lineage_id=family.champion_lineage_id,
+        family_id=family.family_id,
+        parent_genome_id=None,
+        role="champion",
+        parameters={"selected_model_class": "logit"},
+        mutation_bounds=MutationBounds(
+            horizons_seconds=[120, 600, 1800],
+            feature_subsets=["baseline", "microstructure", "cross_science", "regime"],
+            model_classes=["logit", "gbdt", "tft", "transformer", "rules"],
+            execution_thresholds={"min_edge": [0.01, 0.1], "stake_fraction": [0.01, 0.1]},
+            hyperparameter_ranges={"learning_rate": [0.001, 0.1], "lookback_hours": [6.0, 168.0]},
+        ),
+        scientific_domains=["econometrics", "microstructure", "information_theory"],
+        budget_bucket="incumbent",
+        resource_profile="local-first-hybrid",
+        budget_weight_pct=16.0,
+    )
+
+    proposal = inventor.generate_proposal(
+        family=family,
+        champion_hypothesis=None,
+        champion_genome=genome,
+        learning_memory=[],
+        cycle_count=1,
+        proposal_index=5,
+        desired_creation_kind="new_model",
+        idea_candidates=[
+            {
+                "idea_id": "idea-1",
+                "title": "Funding Reflex Ladder",
+            }
+        ],
+    )
+
+    assert proposal.proposal_kind == "new_model"
+    assert proposal.source_idea_id == "idea-1"
+    assert proposal.title == "Binance Funding Contrarian FundingReflex Gbdt Model 5"
+    assert proposal.thesis.startswith("We believe we can create alpha by ")
+    assert "new model" in proposal.thesis.lower()

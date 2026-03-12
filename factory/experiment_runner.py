@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+import config
 from factory.contracts import (
     EvaluationBundle,
     EvaluationStage,
@@ -17,6 +18,7 @@ from factory.contracts import (
     StrategyGenome,
     utc_now_iso,
 )
+from factory.execution_refresh import ExecutionRefreshRunner
 from factory.experiment_sources import (
     ContrarianBacktester,
     HybridLogitModel,
@@ -49,6 +51,7 @@ def _clip_probability(value: float) -> float:
 class FactoryExperimentRunner:
     def __init__(self, project_root: str | Path):
         self.project_root = Path(project_root)
+        self.execution_refresh = ExecutionRefreshRunner(self.project_root)
         self._jsonl_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._jsonl_tail_cache: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
         self._json_object_cache: Dict[str, Dict[str, Any]] = {}
@@ -96,6 +99,77 @@ class FactoryExperimentRunner:
                 family_mode="cross_venue",
             )
         return {"mode": "unsupported", "bundles": [], "artifact_summary": None}
+
+    def _execution_refresh_request(
+        self,
+        *,
+        lineage: LineageRecord,
+        genome: StrategyGenome,
+        experiment: ExperimentSpec,
+        family_mode: str,
+        retrain_payload: Dict[str, Any],
+        resolved_model_engine: str,
+        run_root: Path,
+    ) -> Dict[str, Any]:
+        return {
+            "generated_at": utc_now_iso(),
+            "project_root": str(self.project_root),
+            "factory_run_root": str(run_root),
+            "family_id": lineage.family_id,
+            "lineage_id": lineage.lineage_id,
+            "role": lineage.role,
+            "family_mode": family_mode,
+            "goldfish_workspace": experiment.goldfish_workspace,
+            "resolved_model_engine": resolved_model_engine,
+            "retrain": dict(retrain_payload),
+            "current_parameters": {
+                key: genome.parameters.get(key)
+                for key in [
+                    "selected_model_class",
+                    "selected_feature_subset",
+                    "selected_horizon_seconds",
+                    "selected_min_edge",
+                    "selected_stake_fraction",
+                    "selected_learning_rate",
+                    "selected_lookback_hours",
+                ]
+                if key in genome.parameters
+            },
+            "target_portfolios": list(lineage.target_portfolios),
+            "execution_repo_root": str(getattr(config, "EXECUTION_REPO_ROOT", "") or ""),
+        }
+
+    def _run_execution_refresh(
+        self,
+        *,
+        lineage: LineageRecord,
+        genome: StrategyGenome,
+        experiment: ExperimentSpec,
+        family_mode: str,
+        retrain_payload: Dict[str, Any],
+        resolved_model_engine: str,
+        run_root: Path,
+    ) -> Dict[str, Any]:
+        if not self.execution_refresh.should_run(family_id=lineage.family_id, role=lineage.role):
+            return {
+                "status": "skipped",
+                "reason": "not_enabled_for_lineage",
+                "family_id": lineage.family_id,
+                "lineage_id": lineage.lineage_id,
+            }
+        request_path = run_root / "execution_refresh_request.json"
+        output_path = run_root / "execution_refresh_raw.json"
+        request_payload = self._execution_refresh_request(
+            lineage=lineage,
+            genome=genome,
+            experiment=experiment,
+            family_mode=family_mode,
+            retrain_payload=retrain_payload,
+            resolved_model_engine=resolved_model_engine,
+            run_root=run_root,
+        )
+        self._write_json(request_path, request_payload)
+        return self.execution_refresh.run(request_path=request_path, output_path=output_path)
 
     def _run_prediction_walkforward(
         self,
@@ -308,6 +382,28 @@ class FactoryExperimentRunner:
                 "min_edge": min_edge,
             },
         )
+        retrain_payload = self._build_retrain_payload(
+            lineage=lineage,
+            genome=genome,
+            experiment=experiment,
+            family_mode="funding_contrarian",
+            requested_model_class=requested_model_class,
+            resolved_model_engine=funding_summary["resolved_model_engine"],
+            source_mode=funding_summary["source_mode"],
+            source_paths=list(funding_summary["source_paths"]),
+            dataset_rows=int(funding_summary["dataset_rows"]),
+        )
+        self._write_json(run_root / "retrain.json", retrain_payload)
+        refresh_payload = self._run_execution_refresh(
+            lineage=lineage,
+            genome=genome,
+            experiment=experiment,
+            family_mode="funding_contrarian",
+            retrain_payload=retrain_payload,
+            resolved_model_engine=funding_summary["resolved_model_engine"],
+            run_root=run_root,
+        )
+        self._write_json(run_root / "execution_refresh.json", refresh_payload)
         self._write_json(run_root / "walkforward.json", funding_summary["walkforward_artifact"])
         self._write_json(run_root / "stress.json", funding_summary["stress_artifact"])
 
@@ -322,6 +418,17 @@ class FactoryExperimentRunner:
             "source_mode": funding_summary["source_mode"],
             "dataset_rows": funding_summary["dataset_rows"],
             "symbol_count": funding_summary["symbol_count"],
+            "retrain_triggered": bool(retrain_payload["retrain_triggered"]),
+            "retrain_action": retrain_payload["retrain_action"],
+            "execution_refresh_status": str(refresh_payload.get("status") or ""),
+            "execution_refresh_reason": str(refresh_payload.get("reason") or ""),
+            "execution_refresh_selected": str(
+                refresh_payload.get("selected_model")
+                or refresh_payload.get("selected_policy")
+                or refresh_payload.get("selected_model_id")
+                or ""
+            ),
+            "execution_refresh_artifact": str(refresh_payload.get("artifact_path") or ""),
         }
         self._write_json(
             package_path,
@@ -333,6 +440,8 @@ class FactoryExperimentRunner:
                 "files": {
                     "dataset": str(run_root / "dataset.json"),
                     "features": str(run_root / "features.json"),
+                    "retrain": str(run_root / "retrain.json"),
+                    "execution_refresh": str(run_root / "execution_refresh.json"),
                     "train": str(run_root / "train.json"),
                     "walkforward": str(run_root / "walkforward.json"),
                     "stress": str(run_root / "stress.json"),
@@ -416,6 +525,28 @@ class FactoryExperimentRunner:
                 "min_edge": min_edge,
             },
         )
+        retrain_payload = self._build_retrain_payload(
+            lineage=lineage,
+            genome=genome,
+            experiment=experiment,
+            family_mode="cascade_regime",
+            requested_model_class=requested_model_class,
+            resolved_model_engine=summary["resolved_model_engine"],
+            source_mode=summary["source_mode"],
+            source_paths=list(summary["source_paths"]),
+            dataset_rows=int(summary["dataset_rows"]),
+        )
+        self._write_json(run_root / "retrain.json", retrain_payload)
+        refresh_payload = self._run_execution_refresh(
+            lineage=lineage,
+            genome=genome,
+            experiment=experiment,
+            family_mode="cascade_regime",
+            retrain_payload=retrain_payload,
+            resolved_model_engine=summary["resolved_model_engine"],
+            run_root=run_root,
+        )
+        self._write_json(run_root / "execution_refresh.json", refresh_payload)
         self._write_json(run_root / "walkforward.json", summary["walkforward_artifact"])
         self._write_json(run_root / "stress.json", summary["stress_artifact"])
 
@@ -430,6 +561,17 @@ class FactoryExperimentRunner:
             "source_mode": summary["source_mode"],
             "dataset_rows": summary["dataset_rows"],
             "symbol_count": summary["market_count"],
+            "retrain_triggered": bool(retrain_payload["retrain_triggered"]),
+            "retrain_action": retrain_payload["retrain_action"],
+            "execution_refresh_status": str(refresh_payload.get("status") or ""),
+            "execution_refresh_reason": str(refresh_payload.get("reason") or ""),
+            "execution_refresh_selected": str(
+                refresh_payload.get("selected_model")
+                or refresh_payload.get("selected_policy")
+                or refresh_payload.get("selected_model_id")
+                or ""
+            ),
+            "execution_refresh_artifact": str(refresh_payload.get("artifact_path") or ""),
         }
         self._write_json(
             package_path,
@@ -441,6 +583,8 @@ class FactoryExperimentRunner:
                 "files": {
                     "dataset": str(run_root / "dataset.json"),
                     "features": str(run_root / "features.json"),
+                    "retrain": str(run_root / "retrain.json"),
+                    "execution_refresh": str(run_root / "execution_refresh.json"),
                     "train": str(run_root / "train.json"),
                     "walkforward": str(run_root / "walkforward.json"),
                     "stress": str(run_root / "stress.json"),
@@ -516,6 +660,28 @@ class FactoryExperimentRunner:
                 "min_edge": min_edge,
             },
         )
+        retrain_payload = self._build_retrain_payload(
+            lineage=lineage,
+            genome=genome,
+            experiment=experiment,
+            family_mode=family_mode,
+            requested_model_class=requested_model_class,
+            resolved_model_engine=summary["resolved_model_engine"],
+            source_mode=summary["source_mode"],
+            source_paths=list(summary["source_paths"]),
+            dataset_rows=int(summary["dataset_rows"]),
+        )
+        self._write_json(run_root / "retrain.json", retrain_payload)
+        refresh_payload = self._run_execution_refresh(
+            lineage=lineage,
+            genome=genome,
+            experiment=experiment,
+            family_mode=family_mode,
+            retrain_payload=retrain_payload,
+            resolved_model_engine=summary["resolved_model_engine"],
+            run_root=run_root,
+        )
+        self._write_json(run_root / "execution_refresh.json", refresh_payload)
         self._write_json(run_root / "walkforward.json", summary["walkforward_artifact"])
         self._write_json(run_root / "stress.json", summary["stress_artifact"])
 
@@ -530,6 +696,17 @@ class FactoryExperimentRunner:
             "source_mode": summary["source_mode"],
             "dataset_rows": summary["dataset_rows"],
             "market_count": summary["market_count"],
+            "retrain_triggered": bool(retrain_payload["retrain_triggered"]),
+            "retrain_action": retrain_payload["retrain_action"],
+            "execution_refresh_status": str(refresh_payload.get("status") or ""),
+            "execution_refresh_reason": str(refresh_payload.get("reason") or ""),
+            "execution_refresh_selected": str(
+                refresh_payload.get("selected_model")
+                or refresh_payload.get("selected_policy")
+                or refresh_payload.get("selected_model_id")
+                or ""
+            ),
+            "execution_refresh_artifact": str(refresh_payload.get("artifact_path") or ""),
         }
         self._write_json(
             package_path,
@@ -541,6 +718,8 @@ class FactoryExperimentRunner:
                 "files": {
                     "dataset": str(run_root / "dataset.json"),
                     "features": str(run_root / "features.json"),
+                    "retrain": str(run_root / "retrain.json"),
+                    "execution_refresh": str(run_root / "execution_refresh.json"),
                     "train": str(run_root / "train.json"),
                     "walkforward": str(run_root / "walkforward.json"),
                     "stress": str(run_root / "stress.json"),
@@ -614,6 +793,70 @@ class FactoryExperimentRunner:
         while train_window + test_window > example_count and test_window > 12:
             test_window -= 4
         return max(80, train_window), max(12, test_window)
+
+    def _build_retrain_payload(
+        self,
+        *,
+        lineage: LineageRecord,
+        genome: StrategyGenome,
+        experiment: ExperimentSpec,
+        family_mode: str,
+        requested_model_class: str,
+        resolved_model_engine: str,
+        source_mode: str,
+        source_paths: List[str],
+        dataset_rows: int,
+    ) -> Dict[str, Any]:
+        execution_context = dict((experiment.inputs or {}).get("execution_retrain_context") or {})
+        issue_codes = [str(item) for item in (execution_context.get("issue_codes") or []) if str(item).strip()]
+        recommendation_context = [
+            str(item) for item in (execution_context.get("recommendation_context") or []) if str(item).strip()
+        ]
+        if any(code in issue_codes for code in ["runtime_error", "heartbeat_stale"]):
+            action = "stability_retrain"
+        elif any(code in issue_codes for code in ["no_trade_syndrome", "excessive_rejections", "zero_simulated_fills"]):
+            action = "execution_filter_retrain"
+        elif any(code in issue_codes for code in ["slippage_pressure", "severe_slippage"]):
+            action = "cost_aware_retrain"
+        elif any(code in issue_codes for code in ["negative_paper_roi", "poor_win_rate", "leader_not_strict_pass"]):
+            action = "model_selection_retrain"
+        else:
+            action = "scheduled_refresh"
+        objectives = {
+            "binance_funding_contrarian": "reduce missed settlement windows while improving strict-gate pass rate on funding dislocations",
+            "binance_cascade_regime": "improve cascade hit quality and reduce false-positive continuation trades",
+            "polymarket_cross_venue": "convert labeled market microstructure into executable paper trades with positive shadow economics",
+        }
+        return {
+            "generated_at": utc_now_iso(),
+            "family_id": lineage.family_id,
+            "lineage_id": lineage.lineage_id,
+            "family_mode": family_mode,
+            "trigger_health_status": execution_context.get("health_status"),
+            "trigger_issue_codes": issue_codes,
+            "recommendation_context": recommendation_context,
+            "retrain_triggered": bool(issue_codes),
+            "retrain_action": action,
+            "target_objective": objectives.get(lineage.family_id, "improve paper-model quality against current execution evidence"),
+            "requested_model_class": requested_model_class,
+            "resolved_model_engine": resolved_model_engine,
+            "source_mode": source_mode,
+            "source_paths": list(source_paths),
+            "dataset_rows": int(dataset_rows or 0),
+            "current_parameters": {
+                key: genome.parameters.get(key)
+                for key in [
+                    "selected_model_class",
+                    "selected_feature_subset",
+                    "selected_horizon_seconds",
+                    "selected_min_edge",
+                    "selected_stake_fraction",
+                    "selected_learning_rate",
+                    "selected_lookback_hours",
+                ]
+                if key in genome.parameters
+            },
+        }
 
     def _build_run_root(
         self,

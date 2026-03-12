@@ -6,6 +6,10 @@ from pathlib import Path
 import pytest
 
 import config
+from factory.agent_runtime import AgentRunResult
+from factory.contracts import EvaluationBundle
+from factory.experiment_runner import FactoryExperimentRunner
+from factory.manifests import candidate_context_refs_for_portfolio, live_manifest_refs_for_portfolio
 from factory.orchestrator import FactoryOrchestrator
 
 from tests.unit.conftest import execution_repo_root
@@ -140,6 +144,75 @@ def _prepare_factory_inputs(project_root: Path) -> None:
     _seed_portfolio(PortfolioStateStore("polymarket_quantum_fold"), currency="USD", starting_balance=1000.0, realized_pnl=58.0, trade_count=60)
 
 
+def _strong_experiment_run_factory(factory_root: Path):
+    def _run(self, *, lineage, genome, experiment):
+        package_dir = factory_root / "packages" / lineage.lineage_id
+        package_dir.mkdir(parents=True, exist_ok=True)
+        package_path = package_dir / "package.json"
+        package_payload = {
+            "artifact_summary": {
+                "run_id": f"{lineage.lineage_id}-run",
+                "package_path": str(package_path),
+                "strict_gate_pass": True,
+            },
+            "files": {},
+        }
+        package_path.write_text(json.dumps(package_payload), encoding="utf-8")
+        bundles = [
+            EvaluationBundle(
+                evaluation_id=f"{lineage.lineage_id}:walkforward",
+                lineage_id=lineage.lineage_id,
+                family_id=lineage.family_id,
+                stage="walkforward",
+                source="test_strong_artifact",
+                monthly_roi_pct=7.8,
+                max_drawdown_pct=2.4,
+                slippage_headroom_pct=1.2,
+                calibration_lift_abs=0.03,
+                turnover=0.55,
+                capacity_score=0.72,
+                failure_rate=0.02,
+                regime_robustness=0.76,
+                baseline_beaten_windows=4,
+                stress_positive=True,
+                trade_count=80,
+                settled_count=80,
+                paper_days=30,
+                net_pnl=78.0,
+                notes=[f"package_path={package_path}"],
+            ),
+            EvaluationBundle(
+                evaluation_id=f"{lineage.lineage_id}:stress",
+                lineage_id=lineage.lineage_id,
+                family_id=lineage.family_id,
+                stage="stress",
+                source="test_strong_artifact",
+                monthly_roi_pct=7.1,
+                max_drawdown_pct=2.8,
+                slippage_headroom_pct=0.9,
+                calibration_lift_abs=0.028,
+                turnover=0.52,
+                capacity_score=0.7,
+                failure_rate=0.02,
+                regime_robustness=0.74,
+                baseline_beaten_windows=4,
+                stress_positive=True,
+                trade_count=80,
+                settled_count=80,
+                paper_days=30,
+                net_pnl=71.0,
+                notes=[f"package_path={package_path}"],
+            ),
+        ]
+        return {
+            "mode": "test",
+            "bundles": bundles,
+            "artifact_summary": dict(package_payload["artifact_summary"]),
+        }
+
+    return _run
+
+
 def test_factory_orchestrator_publishes_pending_manifests_and_promotes_after_approval(tmp_path, monkeypatch):
     if execution_root is None:
         pytest.skip("Requires EXECUTION_REPO_ROOT to validate extracted repo against execution runners.")
@@ -152,6 +225,7 @@ def test_factory_orchestrator_publishes_pending_manifests_and_promotes_after_app
     monkeypatch.setattr(config, "PORTFOLIO_STATE_ROOT", str(portfolio_root))
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(FactoryExperimentRunner, "run", _strong_experiment_run_factory(factory_root))
     _prepare_factory_inputs(project_root)
 
     orchestrator = FactoryOrchestrator(project_root)
@@ -161,6 +235,8 @@ def test_factory_orchestrator_publishes_pending_manifests_and_promotes_after_app
     assert first_state["research_summary"]["family_count"] == 5
     assert first_state["manifests"]["pending"]
     assert first_state["manifests"]["live_loadable"] == []
+    assert "escalation_candidates" in first_state["operator_signals"]
+    assert "positive_models" in first_state["operator_signals"]
     assert any(lineage["current_stage"] == "live_ready" for lineage in first_state["lineages"])
     assert any("budget_weight_pct" in lineage for lineage in first_state["lineages"])
     assert any(manifest["artifact_refs"].get("package") for manifest in first_state["manifests"]["pending"])
@@ -181,25 +257,12 @@ def test_factory_orchestrator_publishes_pending_manifests_and_promotes_after_app
     assert second_state["manifests"]["live_loadable"]
     assert any(lineage["current_stage"] == "approved_live" for lineage in second_state["lineages"])
 
-    runner = _DummyRunner(
-        PortfolioRunnerSpec(
-            portfolio_id=selected_manifest["portfolio_targets"][0],
-            label="Approved Manifest Portfolio",
-            category="research_validation",
-            control_mode="local_managed",
-            currency="USD",
-            initial_balance=1000.0,
-        )
-    )
-    snapshot = runner.build_config_snapshot()
+    refs = live_manifest_refs_for_portfolio(selected_manifest["portfolio_targets"][0])
 
-    assert snapshot["factory_live_manifest_count"] >= 1
-    assert any(item["manifest_id"] == pending_manifest_id for item in snapshot["factory_live_manifests"])
-    assert snapshot["factory_live_manifests"][0]["package"]["package_found"] is True
-    assert snapshot["factory_live_artifact_packages"]
-    assert snapshot["factory_live_contexts"]
-    assert snapshot["factory_live_artifact_payloads"]
-    assert snapshot["factory_live_strategy_families"]
+    assert refs
+    assert any(item["manifest_id"] == pending_manifest_id for item in refs)
+    assert refs[0]["package"]["package_found"] is True
+    assert refs[0]["package_payload"]
 
 
 def test_factory_orchestrator_creates_bounded_challengers_and_queue_entries(tmp_path, monkeypatch):
@@ -234,6 +297,7 @@ def test_factory_orchestrator_creates_bounded_challengers_and_queue_entries(tmp_
     assert state["research_summary"]["challenge_count"] >= 4
     assert state["research_summary"]["artifact_backed_lineage_count"] >= 2
     assert state["research_summary"]["agent_generated_lineage_count"] >= 1
+    assert "positive_models" in state["operator_signals"]
     assert challengers
     assert state["queue"]
     assert all(item["family_id"] for item in state["queue"])
@@ -241,6 +305,8 @@ def test_factory_orchestrator_creates_bounded_challengers_and_queue_entries(tmp_
     assert funding_lineages
     assert any(lineage["latest_artifact_package"] for lineage in prediction_lineages)
     assert any(lineage["latest_artifact_package"] for lineage in funding_lineages)
+    assert all("curated_family_rank" in row for row in state["lineages"])
+    assert all("curated_rankings" in row for row in state["families"])
 
     challenger = challengers[0]
     genome = orchestrator.registry.load_genome(challenger["lineage_id"])
@@ -252,6 +318,7 @@ def test_factory_orchestrator_creates_bounded_challengers_and_queue_entries(tmp_
     assert challenger["max_tweaks"] == 2
     assert challenger["lead_agent_role"]
     assert challenger["hypothesis_origin"] == "scientific_agent_collective"
+    assert challenger["creation_kind"] in {"mutation", "new_model"}
     assert hypothesis.origin == "scientific_agent_collective"
     assert hypothesis.collaborating_agent_roles
     assert genome.parameters["selected_horizon_seconds"] in genome.mutation_bounds.horizons_seconds
@@ -269,6 +336,363 @@ def test_factory_orchestrator_creates_bounded_challengers_and_queue_entries(tmp_
     funding_run = dict((funding_experiment.expected_outputs or {}).get("latest_run") or {})
     assert funding_run["mode"] == "funding_contrarian"
     assert Path(funding_run["package_path"]).exists()
+    assert funding_run["retrain_action"]
+    package_payload = json.loads(Path(funding_run["package_path"]).read_text(encoding="utf-8"))
+    assert package_payload["files"]["retrain"]
+    assert Path(package_payload["files"]["retrain"]).exists()
+    assert all("promotion_scorecard" in row for row in state["lineages"])
+
+
+def test_challenger_mix_policy_defaults_to_four_mutations_then_one_new_model(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_CHALLENGER_MUTATION_PCT", 80)
+    monkeypatch.setattr(config, "FACTORY_CHALLENGER_NEW_MODEL_PCT", 20)
+
+    orchestrator = FactoryOrchestrator(project_root)
+    sequence = [orchestrator._proposal_creation_kind([object()] * count) for count in range(5)]
+
+    assert sequence == ["mutation", "mutation", "mutation", "mutation", "new_model"]
+
+
+def test_scheduled_review_reason_requires_mature_paper_evidence(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_AGENT_REVIEW_ENABLED", True)
+
+    orchestrator = FactoryOrchestrator(project_root)
+    family = orchestrator.registry.load_family("binance_funding_contrarian")
+    lineage = orchestrator.registry.load_lineage("binance_funding_contrarian:champion")
+    assert family is not None
+    assert lineage is not None
+    lineage.current_stage = "paper"
+
+    immature = EvaluationBundle(
+        evaluation_id="immature",
+        lineage_id=lineage.lineage_id,
+        family_id=lineage.family_id,
+        stage="paper",
+        source="test",
+        trade_count=20,
+        settled_count=20,
+        paper_days=5,
+    )
+    mature = EvaluationBundle(
+        evaluation_id="mature",
+        lineage_id=lineage.lineage_id,
+        family_id=lineage.family_id,
+        stage="paper",
+        source="test",
+        trade_count=60,
+        settled_count=60,
+        paper_days=20,
+    )
+
+    assert orchestrator._scheduled_review_reason(family, lineage, immature, {"issue_codes": []}) is None
+    assert orchestrator._scheduled_review_reason(family, lineage, mature, {"issue_codes": []}) == "initial_maturity_review"
+
+
+def test_debug_agent_surfaces_human_resolution_requirements(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)
+    monkeypatch.setattr(config, "FACTORY_AGENT_ENABLED_FAMILIES", "binance_funding_contrarian")
+    monkeypatch.setattr(config, "FACTORY_DEBUG_AGENT_ENABLED", True)
+
+    orchestrator = FactoryOrchestrator(project_root)
+    family = orchestrator.registry.load_family("binance_funding_contrarian")
+    lineage = orchestrator.registry.load_lineage("binance_funding_contrarian:champion")
+    assert family is not None
+    assert lineage is not None
+    lineage.current_stage = "paper"
+    orchestrator.registry.save_lineage(lineage)
+
+    evidence = {
+        "health_status": "critical",
+        "issue_codes": ["runtime_error", "readiness_blocked"],
+        "error": "Invalid API-key, IP, or permissions for action",
+        "blockers": ["missing_credentials"],
+        "issues": [{"detail": "Invalid API-key, IP, or permissions for action"}],
+    }
+    monkeypatch.setattr(orchestrator, "_execution_validation_snapshot", lambda _lineage: evidence)
+
+    def _fake_debug(**_kwargs):
+        return AgentRunResult(
+            run_id="runtime_debug_review_123",
+            task_type="runtime_debug_review",
+            model_class="hard_research",
+            provider="codex",
+            model="gpt-5.2-codex",
+            reasoning_effort="high",
+            success=True,
+            fallback_used=False,
+            family_id="binance_funding_contrarian",
+            lineage_id=lineage.lineage_id,
+            duration_ms=90,
+            result_payload={
+                "summary": "Binance credentials are invalid for the paper runner.",
+                "suspected_root_cause": "Credential or permission problem.",
+                "bug_category": "credentials_or_permissions",
+                "severity": "critical",
+                "recommended_actions": ["Repair the API credentials and rerun the portfolio."],
+                "safe_auto_actions": ["Keep the model in paper/debug mode until credentials are fixed."],
+                "requires_human": True,
+                "human_action": "Repair Binance API credentials or permissions for the affected account.",
+                "human_owner": "operator",
+                "should_pause_lineage": True,
+            },
+            artifact_path=str(factory_root / "agent_runs" / "runtime_debug_review_123.json"),
+        )
+
+    monkeypatch.setattr(orchestrator.agent_runtime, "diagnose_bug", _fake_debug)
+    recent_actions: list[str] = []
+    latest_bundle = EvaluationBundle(
+        evaluation_id="paper",
+        lineage_id=lineage.lineage_id,
+        family_id=lineage.family_id,
+        stage="paper",
+        source="test",
+        trade_count=60,
+        settled_count=60,
+        paper_days=20,
+    )
+
+    orchestrator._maybe_run_debug_agent(
+        family,
+        lineage,
+        {"paper": latest_bundle},
+        recent_actions=recent_actions,
+    )
+
+    refreshed = orchestrator.registry.load_lineage(lineage.lineage_id)
+    assert refreshed is not None
+    assert refreshed.last_debug_review_status == "completed"
+    assert refreshed.last_debug_requires_human is True
+    assert refreshed.last_debug_bug_category == "credentials_or_permissions"
+    assert "credentials" in str(refreshed.last_debug_human_action or "").lower()
+    signals = orchestrator._operator_signals(
+        [
+            {
+                "family_id": lineage.family_id,
+                "lineage_id": lineage.lineage_id,
+                "current_stage": refreshed.current_stage,
+                "execution_health_status": evidence["health_status"],
+                "execution_issue_codes": evidence["issue_codes"],
+                "last_debug_requires_human": refreshed.last_debug_requires_human,
+                "last_debug_bug_category": refreshed.last_debug_bug_category,
+                "last_debug_human_action": refreshed.last_debug_human_action,
+                "last_debug_summary": refreshed.last_debug_summary,
+                "last_debug_review_artifact_path": refreshed.last_debug_review_artifact_path,
+                "last_debug_review_at": refreshed.last_debug_review_at,
+                "curated_paper_closed_trade_count": 0,
+                "trade_count": 0,
+                "monthly_roi_pct": 0.0,
+                "paper_days": 20,
+                "strict_gate_pass": False,
+                "curated_family_rank": None,
+            }
+        ]
+    )
+    assert signals["human_action_required"]
+    assert "credentials" in signals["human_action_required"][0]["human_action"].lower()
+
+
+def test_scheduled_agent_review_drives_maintenance_actions(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)
+    monkeypatch.setattr(config, "FACTORY_AGENT_ENABLED_FAMILIES", "binance_funding_contrarian")
+    monkeypatch.setattr(config, "FACTORY_AGENT_POST_EVAL_CRITIQUE_ENABLED", True)
+
+    orchestrator = FactoryOrchestrator(project_root)
+    family = orchestrator.registry.load_family("binance_funding_contrarian")
+    lineage = orchestrator.registry.load_lineage("binance_funding_contrarian:champion")
+    assert family is not None
+    assert lineage is not None
+    lineage.current_stage = "paper"
+    orchestrator.registry.save_lineage(lineage)
+
+    def _fake_review(**_kwargs):
+        return AgentRunResult(
+            run_id="post_eval_critique_123",
+            task_type="post_eval_critique",
+            model_class="deep_review",
+            provider="codex",
+            model="gpt-5.4",
+            reasoning_effort="high",
+            success=True,
+            fallback_used=False,
+            family_id=lineage.family_id,
+            lineage_id=lineage.lineage_id,
+            duration_ms=90,
+            result_payload={
+                "summary": "The incumbent is stalled and should be replaced by fresher challengers.",
+                "risks": ["stale execution evidence"],
+                "next_tests": ["launch two new challengers against the same family"],
+                "maintenance_action": "replace",
+                "maintenance_reason": "Stalled evidence and weak ranking gap versus the family leader.",
+                "requires_retrain": False,
+                "requires_new_challenger": True,
+            },
+            artifact_path=str(factory_root / "agent_runs" / "post_eval_critique_123.json"),
+        )
+
+    monkeypatch.setattr(orchestrator.agent_runtime, "critique_post_evaluation", _fake_review)
+    bundle = EvaluationBundle(
+        evaluation_id="paper",
+        lineage_id=lineage.lineage_id,
+        family_id=lineage.family_id,
+        stage="paper",
+        source="test",
+        trade_count=60,
+        settled_count=60,
+        paper_days=20,
+    )
+    recent_actions: list[str] = []
+
+    orchestrator._maybe_run_scheduled_agent_review(
+        family,
+        lineage,
+        {"paper": bundle},
+        recent_actions=recent_actions,
+    )
+
+    refreshed = orchestrator.registry.load_lineage(lineage.lineage_id)
+    assert refreshed is not None
+    assert refreshed.last_agent_review_status == "completed"
+    assert refreshed.last_agent_review_action == "replace"
+    assert refreshed.iteration_status == "review_requested_replace"
+    assert "review_replace_requested" in refreshed.blockers
+    assert refreshed.loss_streak >= refreshed.max_tweaks
+    experiment = orchestrator.registry.load_experiment(lineage.lineage_id)
+    expected = dict((experiment.expected_outputs or {}).get("scheduled_agent_review") or {})
+    assert expected["maintenance_action"] == "replace"
+    assert expected["requires_new_challenger"] is True
+
+
+def test_operator_signals_require_mature_independent_evidence_for_winner_escalation(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    orchestrator = FactoryOrchestrator(project_root)
+
+    signals = orchestrator._operator_signals(
+        [
+            {
+                "family_id": "binance_funding_contrarian",
+                "lineage_id": "binance_funding_contrarian:challenger:1",
+                "current_stage": "live_ready",
+                "strict_gate_pass": True,
+                "execution_health_status": "warning",
+                "monthly_roi_pct": 23.0,
+                "trade_count": 12,
+                "paper_days": 12,
+                "curated_family_rank": 1,
+                "curated_target_portfolio_id": None,
+                "curated_paper_closed_trade_count": 0,
+            },
+            {
+                "family_id": "binance_funding_contrarian",
+                "lineage_id": "binance_funding_contrarian:challenger:2",
+                "current_stage": "live_ready",
+                "strict_gate_pass": True,
+                "execution_health_status": "warning",
+                "monthly_roi_pct": 18.0,
+                "trade_count": 60,
+                "paper_days": 30,
+                "curated_family_rank": 1,
+                "curated_paper_roi_pct": 18.0,
+                "curated_target_portfolio_id": "contrarian_legacy",
+                "curated_paper_closed_trade_count": 60,
+            },
+            {
+                "family_id": "binance_funding_contrarian",
+                "lineage_id": "binance_funding_contrarian:challenger:3",
+                "current_stage": "live_ready",
+                "strict_gate_pass": True,
+                "execution_health_status": "warning",
+                "monthly_roi_pct": 11.0,
+                "trade_count": 60,
+                "paper_days": 30,
+                "curated_family_rank": 1,
+                "curated_target_portfolio_id": None,
+                "curated_paper_closed_trade_count": 0,
+            },
+        ]
+    )
+
+    assert len(signals["positive_models"]) == 3
+    assert not any(item["lineage_id"].endswith(":1") for item in signals["potential_winners"])
+    assert not any(item["lineage_id"].endswith(":2") for item in signals["potential_winners"])
+    assert any(item["lineage_id"].endswith(":3") for item in signals["potential_winners"])
+    assert len(signals["escalation_candidates"]) == 1
+    assert signals["escalation_candidates"][0]["lineage_id"].endswith(":3")
+
+
+def test_factory_orchestrator_records_execution_refresh_results(tmp_path, monkeypatch):
+    if execution_root is None:
+        pytest.skip("Requires EXECUTION_REPO_ROOT to validate extracted repo against execution data providers.")
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    portfolio_root = tmp_path / "portfolio_state"
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "PORTFOLIO_STATE_ROOT", str(portfolio_root))
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_EXECUTION_REFRESH_ENABLED", True)
+    _prepare_factory_inputs(project_root)
+
+    def _fake_refresh(self, **_kwargs):
+        return {
+            "status": "success",
+            "selected_model": "xgboost",
+            "artifact_path": str(project_root / "data" / "funding_models" / "contrarian_comparison.json"),
+        }
+
+    monkeypatch.setattr(FactoryExperimentRunner, "_run_execution_refresh", _fake_refresh)
+    orchestrator = FactoryOrchestrator(project_root)
+
+    state = orchestrator.run_cycle()
+
+    funding_lineage = next(
+        row for row in state["lineages"] if row["lineage_id"] == "binance_funding_contrarian:champion"
+    )
+    assert funding_lineage["latest_execution_refresh_status"] == "success"
+    assert funding_lineage["latest_execution_refresh_selected"] == "xgboost"
+
+    funding_experiment = orchestrator.registry.load_experiment("binance_funding_contrarian:champion")
+    latest_run = dict((funding_experiment.expected_outputs or {}).get("latest_run") or {})
+    assert latest_run["execution_refresh_status"] == "success"
+    assert latest_run["execution_refresh_selected"] == "xgboost"
+    package_payload = json.loads(Path(latest_run["package_path"]).read_text(encoding="utf-8"))
+    assert package_payload["files"]["execution_refresh"]
+    assert Path(package_payload["files"]["execution_refresh"]).exists()
 
 
 def test_factory_orchestrator_retires_repeat_losers_after_three_cycles(tmp_path, monkeypatch):
@@ -299,6 +723,8 @@ def test_factory_orchestrator_retires_repeat_losers_after_three_cycles(tmp_path,
     assert state["research_summary"]["tweaked_lineage_count"] >= 1
     assert any(int(row.get("tweak_count", 0) or 0) >= 2 for row in retired)
     assert any(memory["outcome"] == "retired_underperformance" for memory in state["learning_memory"])
+    assert all("execution_health_status" in row for row in state["lineages"])
+    assert any("execution_evidence" in memory for memory in state["learning_memory"])
 
 
 def test_factory_orchestrator_cost_saver_preserves_learning_but_freezes_manifests_and_promotions(tmp_path, monkeypatch):
@@ -334,7 +760,7 @@ def test_factory_orchestrator_cost_saver_preserves_learning_but_freezes_manifest
     assert state["research_summary"]["agent_generated_lineage_count"] == 0
 
 
-def test_runner_snapshots_expose_candidate_contexts_and_restore_factory_overrides(tmp_path, monkeypatch):
+def test_factory_manifest_adapters_expose_candidate_contexts_by_portfolio(tmp_path, monkeypatch):
     if execution_root is None:
         pytest.skip("Requires EXECUTION_REPO_ROOT to validate extracted repo against execution runner implementations.")
     project_root = tmp_path / "repo"
@@ -351,104 +777,27 @@ def test_runner_snapshots_expose_candidate_contexts_and_restore_factory_override
     orchestrator = FactoryOrchestrator(project_root)
     orchestrator.run_cycle()
 
-    betfair_runner = BetfairPortfolioRunner(
-        PortfolioRunnerSpec(
-            portfolio_id="betfair_core",
-            label="Betfair Core",
-            category="betfair",
-            control_mode="local_managed",
-            currency="EUR",
-            initial_balance=1000.0,
-        )
-    )
-    contrarian_runner = ContrarianLegacyPortfolioRunner(
-        PortfolioRunnerSpec(
-            portfolio_id="contrarian_legacy",
-            label="Contrarian Legacy",
-            category="crypto_contrarian",
-            control_mode="local_managed",
-            currency="USD",
-            initial_balance=5000.0,
-        )
-    )
-    cascade_runner = CascadeAlphaPortfolioRunner(
-        PortfolioRunnerSpec(
-            portfolio_id="cascade_alpha",
-            label="Cascade Alpha",
-            category="crypto_alpha",
-            control_mode="local_managed",
-            currency="USD",
-            initial_balance=15000.0,
-        )
-    )
-    polymarket_runner = PolymarketQuantumFoldPortfolioRunner(
-        PortfolioRunnerSpec(
-            portfolio_id="polymarket_quantum_fold",
-            label="Polymarket Quantum-Fold",
-            category="polymarket_paper",
-            control_mode="local_managed",
-            currency="USD",
-            initial_balance=7500.0,
-        )
-    )
-    hedge_validation_runner = HedgeValidationPortfolioRunner(
-        PortfolioRunnerSpec(
-            portfolio_id="hedge_validation",
-            label="Hedge Validation",
-            category="crypto_hedge",
-            control_mode="local_managed",
-            currency="USD",
-            initial_balance=1000.0,
-        )
-    )
-    hedge_research_runner = HedgeResearchPortfolioRunner(
-        PortfolioRunnerSpec(
-            portfolio_id="hedge_research",
-            label="Hedge Research",
-            category="crypto_hedge",
-            control_mode="local_managed",
-            currency="USD",
-            initial_balance=25000.0,
-        )
-    )
+    betfair_contexts = candidate_context_refs_for_portfolio("betfair_core")
+    contrarian_contexts = candidate_context_refs_for_portfolio("contrarian_legacy")
+    cascade_contexts = candidate_context_refs_for_portfolio("cascade_alpha")
+    polymarket_contexts = candidate_context_refs_for_portfolio("polymarket_quantum_fold")
+    hedge_validation_contexts = candidate_context_refs_for_portfolio("hedge_validation")
+    hedge_research_contexts = candidate_context_refs_for_portfolio("hedge_research")
 
-    betfair_snapshot = betfair_runner.build_config_snapshot()
-    contrarian_snapshot = contrarian_runner.build_config_snapshot()
-    cascade_snapshot = cascade_runner.build_config_snapshot()
-    polymarket_snapshot = polymarket_runner.build_config_snapshot()
-    hedge_validation_snapshot = hedge_validation_runner.build_config_snapshot()
-    hedge_research_snapshot = hedge_research_runner.build_config_snapshot()
+    assert betfair_contexts
+    assert contrarian_contexts
+    assert cascade_contexts
+    assert polymarket_contexts
+    assert hedge_validation_contexts
+    assert hedge_research_contexts
 
-    assert betfair_snapshot["factory_candidate_context_count"] >= 1
-    assert betfair_snapshot["factory_betfair_candidate_contexts"]
-    assert contrarian_snapshot["factory_funding_candidate_contexts"]
-    assert cascade_snapshot["factory_cascade_candidate_contexts"]
-    assert polymarket_snapshot["factory_polymarket_candidate_contexts"]
-    assert hedge_validation_snapshot["factory_funding_candidate_contexts"]
-    assert hedge_research_snapshot["factory_funding_candidate_contexts"]
-
-    context = betfair_runner.preferred_factory_context(
-        family_ids={"betfair_prediction_value_league", "betfair_information_lag"},
-        include_live=False,
-        include_candidates=True,
-    )
-    before_edge = config.PREDICTION_MIN_EDGE
-    applied = betfair_runner.apply_factory_config_overrides(
-        betfair_runner._candidate_config_overrides(context),
-        source_context=context,
-    )
-
-    assert context is not None
-    assert context["context_source"] == "candidate_lineage"
-    assert context["strategy_profile"]["selected_min_edge"] is not None
-    assert applied
-    assert betfair_runner.factory_applied_runtime()["factory_applied_context"]["lineage_id"] == context["lineage_id"]
-    assert config.PREDICTION_MIN_EDGE != before_edge
-
-    betfair_runner.restore_factory_config_overrides()
-
-    assert config.PREDICTION_MIN_EDGE == before_edge
-    assert betfair_runner.factory_applied_runtime()["factory_applied_override_count"] == 0
+    assert any(item["family_id"] == "betfair_prediction_value_league" for item in betfair_contexts)
+    assert all(item["context_source"] == "candidate_lineage" for item in betfair_contexts)
+    assert all(item["package"]["package_found"] for item in contrarian_contexts)
+    assert any("cascade_alpha" in item["resolved_targets"] for item in cascade_contexts)
+    assert any("polymarket_quantum_fold" in item["resolved_targets"] for item in polymarket_contexts)
+    assert any("hedge_validation" in item["resolved_targets"] for item in hedge_validation_contexts)
+    assert any("hedge_research" in item["resolved_targets"] for item in hedge_research_contexts)
 
 
 def test_factory_orchestrator_hard_stop_returns_paused_state_without_new_activity(tmp_path, monkeypatch):

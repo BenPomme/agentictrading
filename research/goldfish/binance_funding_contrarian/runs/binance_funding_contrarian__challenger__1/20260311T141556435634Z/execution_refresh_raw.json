@@ -1,0 +1,60 @@
+{
+  "artifact_path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/funding_models/contrarian_comparison.json",
+  "artifact_paths": {
+    "contrarian_comparison": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/funding_models/contrarian_comparison.json",
+    "regime_comparison": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/funding_models/regime/regime_comparison.json"
+  },
+  "curated_datasets": {
+    "cascade_training_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/cascade_training_dataset",
+      "rows": 8760
+    },
+    "funding_contrarian_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/funding_contrarian_dataset",
+      "rows": 20520
+    },
+    "funding_regime_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/funding_regime_dataset",
+      "rows": 1096
+    },
+    "polymarket_training_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/polymarket_training_dataset",
+      "rows": 12731
+    },
+    "prediction_training_dataset": {
+      "path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/lake/derived/prediction_training_dataset",
+      "rows": 2421
+    }
+  },
+  "family_id": "binance_funding_contrarian",
+  "generated_at": "2026-03-11T14:16:13.074053+00:00",
+  "job_kind": "funding_model_refresh",
+  "metrics": {
+    "contrarian_selected": "xgboost",
+    "contrarian_tft_auc": 0.0,
+    "contrarian_xgboost_auc": 0.5504688918019562,
+    "regime_accuracy": 0.0,
+    "regime_selected": "hmm"
+  },
+  "n_trials": 3,
+  "reload_portfolios": [
+    "contrarian_legacy",
+    "hedge_validation",
+    "hedge_research"
+  ],
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260311T141556435634Z/execution_refresh_request.json",
+  "selected_model": "xgboost",
+  "selected_regime_model": "hmm",
+  "status": "success",
+  "symbols": [
+    "BCHUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT",
+    "ZECUSDT"
+  ],
+  "tft_epochs": 5
+}

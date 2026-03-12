@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AgenticTrading Control Room</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">AgenticTrading</p>
+          <h1>Control Room</h1>
+          <p class="subtitle">
+            Research factory, paper execution, portfolio telemetry, and agent activity in one local operator surface.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <div class="meta-card">
+            <span class="meta-label">Mode</span>
+            <strong id="factory-mode">Loading</strong>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Snapshot</span>
+            <strong id="snapshot-time">Loading</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Executive Summary</h2>
+            <span class="panel-tag" id="factory-status-tag">Syncing</span>
+          </div>
+          <div class="kpi-grid" id="kpi-grid"></div>
+        </section>
+
+        <section class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Critical Feed</h2>
+            <span class="panel-tag">Live</span>
+          </div>
+          <div class="alert-list" id="alert-list"></div>
+        </section>
+
+        <section class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Operator Escalations</h2>
+            <span class="panel-tag">Human Review</span>
+          </div>
+          <div class="alert-list" id="escalation-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Agent Desks</h2>
+            <span class="panel-tag">Company View</span>
+          </div>
+          <div id="desks"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Research Families</h2>
+            <span class="panel-tag">Factory</span>
+          </div>
+          <div class="family-grid" id="family-grid"></div>
+        </section>
+
+        <section class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Model League</h2>
+            <span class="panel-tag">Curated Evaluation</span>
+          </div>
+          <div class="family-grid" id="ranking-grid"></div>
+        </section>
+
+        <section class="panel panel-wide">
+          <div class="panel-header">
+            <h2>Execution Portfolio Monitor</h2>
+            <span class="panel-tag">Paper + Runtime</span>
+          </div>
+          <div class="portfolio-grid" id="portfolio-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Research Queue</h2>
+            <span class="panel-tag">Ops</span>
+          </div>
+          <div class="queue-list" id="queue-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Real Agent Runs</h2>
+            <span class="panel-tag">Codex Telemetry</span>
+          </div>
+          <div class="feed-list" id="agent-run-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Lineage Board</h2>
+            <span class="panel-tag">Ranking</span>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Lineage</th>
+                  <th>Stage</th>
+                  <th>Fitness</th>
+                  <th>ROI</th>
+                  <th>Trades</th>
+                  <th>Agent</th>
+                  <th>Execution</th>
+                </tr>
+              </thead>
+              <tbody id="lineage-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Recent Actions</h2>
+            <span class="panel-tag">Journal</span>
+          </div>
+          <div class="feed-list" id="journal-feed"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Ideas Intake</h2>
+            <span class="panel-tag" id="ideas-tag">Waiting</span>
+          </div>
+          <div class="ideas-shell" id="ideas-shell"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>

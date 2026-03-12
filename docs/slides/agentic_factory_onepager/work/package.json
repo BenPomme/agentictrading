@@ -1,0 +1,14 @@
+{
+  "name": "agentic-factory-onepager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "One-slide PowerPoint explaining the AgenticTrading factory",
+  "main": "build_agentic_factory_onepager.js",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "node build_agentic_factory_onepager.js"
+  },
+  "dependencies": {
+    "pptxgenjs": "^4.0.1"
+  }
+}

@@ -31,8 +31,11 @@ class ScientificAgentProposal:
     collaborating_agent_roles: List[str]
     parameter_overrides: Dict[str, Any]
     budget_bucket: str
+    proposal_kind: str = "mutation"
+    source_idea_id: str | None = None
     origin: str = "scientific_agent_collective"
     agent_notes: List[str] = field(default_factory=list)
+    agent_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 _DOMAIN_PROFILES: Dict[str, _DomainAgentProfile] = {
@@ -231,6 +234,8 @@ class ScientificStrategyInventor:
         learning_memory: Sequence[LearningMemoryEntry],
         cycle_count: int,
         proposal_index: int,
+        desired_creation_kind: str = "mutation",
+        idea_candidates: Sequence[Dict[str, Any]] | None = None,
     ) -> ScientificAgentProposal:
         swarms = list(_FAMILY_SWARMS.get(family.family_id) or [["econometrics", "microstructure", "information_theory"]])
         recent_signatures = {
@@ -240,6 +245,8 @@ class ScientificStrategyInventor:
         }
         selected_domains: List[str] = []
         start_index = (cycle_count + proposal_index - 1) % max(1, len(swarms))
+        if desired_creation_kind == "new_model" and len(swarms) > 1:
+            start_index = (start_index + max(1, len(swarms) // 2)) % len(swarms)
         for offset in range(len(swarms)):
             candidate = list(swarms[(start_index + offset) % len(swarms)])
             if tuple(sorted(candidate)) not in recent_signatures:
@@ -309,21 +316,55 @@ class ScientificStrategyInventor:
         )
         memory_hint = self._memory_hint(learning_memory)
         notes = [
+            f"proposal_kind={desired_creation_kind}",
             f"lead_agent={lead_profile.role}",
             f"collaborators={','.join(collaborator_roles) or 'none'}",
         ]
+        selected_idea = dict((list(idea_candidates or []) or [None])[0] or {})
+        if selected_idea.get("idea_id"):
+            notes.append(f"source_idea_id={selected_idea['idea_id']}")
         if memory_hint:
             notes.append(memory_hint)
+        title_suffix = "New Model" if desired_creation_kind == "new_model" else "Scientific Collaboration"
+        if desired_creation_kind == "new_model":
+            thesis = (
+                f"{family.thesis} This new model deliberately explores a less-local variant that fuses "
+                f"{lead_profile.role.lower()} guidance with "
+                f"{', '.join(role.lower() for role in collaborator_roles) or 'cross-disciplinary collaborators'} "
+                f"to test {'; '.join(thesis_parts)}."
+            )
+        if selected_idea.get("title"):
+            thesis = f"{thesis} Adapt the idea '{selected_idea['title']}' into a bounded {family.label.lower()} variant."
+        title = build_proposal_title(
+            family=family,
+            proposal_kind=desired_creation_kind,
+            proposal_index=proposal_index,
+            scientific_domains=selected_domains,
+            model_class=str(parameter_overrides.get("selected_model_class") or model_class),
+            raw_title=f"{family.label} {title_suffix} {proposal_index}",
+            source_idea_title=str(selected_idea.get("title") or "") or None,
+        )
+        thesis = normalize_alpha_thesis(
+            thesis,
+            family=family,
+            proposal_kind=desired_creation_kind,
+        )
         return ScientificAgentProposal(
             proposal_id=f"{family.family_id}:proposal:{proposal_index}",
             family_id=family.family_id,
-            title=f"{family.label} Scientific Collaboration {proposal_index}",
+            title=title,
             thesis=thesis,
             scientific_domains=selected_domains,
             lead_agent_role=lead_profile.role,
             collaborating_agent_roles=collaborator_roles,
             parameter_overrides=parameter_overrides,
-            budget_bucket=self._budget_bucket(selected_domains, family.budget_split),
+            budget_bucket=(
+                "adjacent"
+                if desired_creation_kind == "new_model" and self._budget_bucket(selected_domains, family.budget_split) == "incumbent"
+                else self._budget_bucket(selected_domains, family.budget_split)
+            ),
+            proposal_kind=desired_creation_kind,
+            source_idea_id=str(selected_idea.get("idea_id") or "") or None,
             agent_notes=notes,
         )
 
@@ -400,3 +441,70 @@ class ScientificStrategyInventor:
             "rules": 0.015,
         }.get(str(model_class or "logit").lower(), 0.02)
         return self._clip_range(bounds.hyperparameter_ranges.get("learning_rate"), preferred, fallback=0.02)
+
+
+def build_proposal_title(
+    *,
+    family: FactoryFamily,
+    proposal_kind: str,
+    proposal_index: int,
+    scientific_domains: Sequence[str],
+    model_class: str,
+    raw_title: str | None = None,
+    source_idea_title: str | None = None,
+) -> str:
+    if proposal_kind != "new_model":
+        return str(raw_title or f"{family.label} Challenger {proposal_index}").strip()
+    domain_token = _domain_title(scientific_domains[0] if scientific_domains else "adaptive")
+    model_token = str(model_class or "model").strip().replace("_", " ").title()
+    if source_idea_title:
+        stem = _compact_title_fragment(source_idea_title)
+    else:
+        stem = domain_token
+    return f"{family.label} {stem} {model_token} Model {proposal_index}"
+
+
+def normalize_alpha_thesis(
+    thesis: str,
+    *,
+    family: FactoryFamily,
+    proposal_kind: str,
+) -> str:
+    text = " ".join(str(thesis or "").strip().split())
+    if not text:
+        text = family.thesis
+    prefix = "we believe we can create alpha by "
+    lowered = text.lower()
+    if lowered.startswith(prefix):
+        body = text[len(prefix) :].strip()
+    else:
+        body = text
+        for lead in [
+            family.thesis,
+            "This new model deliberately explores",
+            "This variant fuses",
+            "This new model",
+            "This variant",
+        ]:
+            if body.startswith(lead):
+                body = body[len(lead) :].strip(" .,:;")
+                break
+    if proposal_kind == "new_model" and "new model" not in body.lower():
+        body = f"exploring a new model that {body}".strip()
+    body = body.rstrip(".")
+    if body:
+        body = body[0].lower() + body[1:]
+    return f"We believe we can create alpha by {body}."
+
+
+def _domain_title(value: str) -> str:
+    text = str(value or "adaptive").replace("_", " ").strip()
+    return "".join(part.capitalize() for part in text.split()) or "Adaptive"
+
+
+def _compact_title_fragment(value: str) -> str:
+    words = [word.strip(" ,.:;!?'\"") for word in str(value or "").split()]
+    words = [word for word in words if word]
+    if not words:
+        return "Adaptive"
+    return "".join(word.capitalize() for word in words[:2])

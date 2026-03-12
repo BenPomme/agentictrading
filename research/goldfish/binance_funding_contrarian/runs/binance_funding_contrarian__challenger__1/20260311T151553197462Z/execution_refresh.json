@@ -1,0 +1,24 @@
+{
+  "error": "IO Error: Could not set lock on file \"/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/research/research.duckdb\": Conflicting lock is held in /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python (PID 23874) by user benjaminpommeraud. See also https://duckdb.org/docs/stable/connect/concurrency",
+  "family_id": "binance_funding_contrarian",
+  "generated_at": "2026-03-11T15:15:54.234137+00:00",
+  "reason": "funding_refresh_exception",
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260311T151553197462Z/execution_refresh_request.json",
+  "status": "failed",
+  "symbols": [
+    "BCHUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT",
+    "ZECUSDT"
+  ],
+  "duration_ms": 1089,
+  "output_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260311T151553197462Z/execution_refresh_raw.json",
+  "script_path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/scripts/factory_refresh_models.py",
+  "returncode": 1,
+  "stdout": "",
+  "stderr": "2026-03-11 18:15:53  INFO      train_contrarian_models \u2014 Discovered top-8 symbols by row count: BCHUSDT(6768), BTCUSDT(6768), ETHUSDT(6768), XRPUSDT(6752), LTCUSDT(6739), LINKUSDT(6715), ADAUSDT(6708), ZECUSDT(6661)\n2026-03-11 18:15:54  INFO      train_contrarian_models \u2014 Building contrarian features for symbols: ['BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT', 'ZECUSDT']"
+}
