@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from hashlib import sha1
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Type, TypeVar
@@ -17,6 +18,7 @@ from factory.contracts import (
     LineageRecord,
     ManifestStatus,
     MutationBounds,
+    OperatorAction,
     PromotionStage,
     ResearchHypothesis,
     StrategyGenome,
@@ -48,6 +50,7 @@ class FactoryRegistry:
         self.lineages_dir = self.root / "lineages"
         self.evaluations_dir = self.root / "evaluations"
         self.manifests_dir = self.root / "manifests"
+        self.operator_actions_dir = self.root / "operator_actions"
         self.history_dir = self.root / "history"
         self.state_dir = self.root / "state"
         self.journal_path = self.state_dir / "STATE.md"
@@ -61,6 +64,7 @@ class FactoryRegistry:
             self.lineages_dir,
             self.evaluations_dir,
             self.manifests_dir,
+            self.operator_actions_dir,
             self.history_dir,
             self.state_dir,
         ]:
@@ -68,7 +72,7 @@ class FactoryRegistry:
         if not self.catalog_path.exists():
             self._atomic_write_json(
                 self.catalog_path,
-                {"created_at": utc_now_iso(), "families": [], "lineages": [], "manifests": []},
+                {"created_at": utc_now_iso(), "families": [], "lineages": [], "manifests": [], "operator_actions": []},
             )
 
     def _atomic_write_json(self, path: Path, payload: Any) -> None:
@@ -336,6 +340,136 @@ class FactoryRegistry:
                 lineage.last_manifest_id = manifest.manifest_id
                 lineage.updated_at = utc_now_iso()
                 self._atomic_write_json(self.lineages_dir / manifest.lineage_id / "lineage.json", lineage.to_dict())
+
+    def _action_id(self, action_key: str) -> str:
+        stamp = utc_now_iso().replace(":", "").replace("+", "_").replace(".", "_")
+        digest = sha1(action_key.encode("utf-8")).hexdigest()[:10]
+        return f"oa_{stamp}_{digest}"
+
+    def operator_actions(
+        self,
+        *,
+        status: Optional[str] = None,
+        lineage_id: Optional[str] = None,
+    ) -> List[OperatorAction]:
+        rows: List[OperatorAction] = []
+        for path in sorted(self.operator_actions_dir.glob("*.json")):
+            payload = self._read_json(path, default={})
+            if not payload:
+                continue
+            action = _coerce_payload(OperatorAction, payload)
+            if status is not None and action.status != status:
+                continue
+            if lineage_id is not None and action.lineage_id != lineage_id:
+                continue
+            rows.append(action)
+        return rows
+
+    def load_operator_action(self, action_id: str) -> Optional[OperatorAction]:
+        payload = self._read_json(self.operator_actions_dir / f"{action_id}.json", default={})
+        if not payload:
+            return None
+        return _coerce_payload(OperatorAction, payload)
+
+    def open_operator_action(
+        self,
+        *,
+        action_key: str,
+        family_id: str,
+        lineage_id: str,
+        signal_type: str,
+        requested_action: str,
+        summary: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> OperatorAction:
+        with self._lock:
+            for action in self.operator_actions(status="pending", lineage_id=lineage_id):
+                if action.action_key == action_key:
+                    action.family_id = family_id
+                    action.signal_type = signal_type
+                    action.requested_action = requested_action
+                    action.summary = summary
+                    action.context = dict(context or {})
+                    action.updated_at = utc_now_iso()
+                    self._atomic_write_json(self.operator_actions_dir / f"{action.action_id}.json", action.to_dict())
+                    self._append_jsonl(
+                        self.history_dir / "operator_actions.jsonl",
+                        {
+                            "ts": action.updated_at,
+                            "action_id": action.action_id,
+                            "action_key": action.action_key,
+                            "status": action.status,
+                            "requested_action": action.requested_action,
+                            "event": "refresh",
+                        },
+                    )
+                    return action
+            action = OperatorAction(
+                action_id=self._action_id(action_key),
+                action_key=action_key,
+                family_id=family_id,
+                lineage_id=lineage_id,
+                signal_type=signal_type,
+                requested_action=requested_action,
+                summary=summary,
+                context=dict(context or {}),
+            )
+            self._atomic_write_json(self.operator_actions_dir / f"{action.action_id}.json", action.to_dict())
+            catalog = self._catalog()
+            actions = set(catalog.get("operator_actions") or [])
+            actions.add(action.action_id)
+            catalog["operator_actions"] = sorted(actions)
+            self._write_catalog(catalog)
+            self._append_jsonl(
+                self.history_dir / "operator_actions.jsonl",
+                {
+                    "ts": action.created_at,
+                    "action_id": action.action_id,
+                    "action_key": action.action_key,
+                    "status": action.status,
+                    "requested_action": action.requested_action,
+                    "event": "open",
+                },
+            )
+            return action
+
+    def resolve_operator_action(
+        self,
+        action_id: str,
+        *,
+        decision: str,
+        resolved_by: str,
+        note: Optional[str] = None,
+        instruction: Optional[str] = None,
+    ) -> Optional[OperatorAction]:
+        with self._lock:
+            action = self.load_operator_action(action_id)
+            if action is None:
+                return None
+            now = utc_now_iso()
+            action.status = "resolved"
+            action.decision = decision
+            action.note = note
+            action.instruction = instruction
+            action.resolved_by = resolved_by
+            action.resolved_at = now
+            action.updated_at = now
+            self._atomic_write_json(self.operator_actions_dir / f"{action.action_id}.json", action.to_dict())
+            self._append_jsonl(
+                self.history_dir / "operator_actions.jsonl",
+                {
+                    "ts": now,
+                    "action_id": action.action_id,
+                    "action_key": action.action_key,
+                    "status": action.status,
+                    "decision": decision,
+                    "resolved_by": resolved_by,
+                    "note": note,
+                    "instruction": instruction,
+                    "event": "resolve",
+                },
+            )
+            return action
 
     def manifests(self) -> List[AcceptedStrategyManifest]:
         manifests: List[AcceptedStrategyManifest] = []

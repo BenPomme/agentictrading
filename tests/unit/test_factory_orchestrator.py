@@ -237,6 +237,7 @@ def test_factory_orchestrator_publishes_pending_manifests_and_promotes_after_app
     assert first_state["manifests"]["live_loadable"] == []
     assert "escalation_candidates" in first_state["operator_signals"]
     assert "positive_models" in first_state["operator_signals"]
+    assert "maintenance_queue" in first_state["operator_signals"]
     assert any(lineage["current_stage"] == "live_ready" for lineage in first_state["lineages"])
     assert any("budget_weight_pct" in lineage for lineage in first_state["lineages"])
     assert any(manifest["artifact_refs"].get("package") for manifest in first_state["manifests"]["pending"])
@@ -298,6 +299,8 @@ def test_factory_orchestrator_creates_bounded_challengers_and_queue_entries(tmp_
     assert state["research_summary"]["artifact_backed_lineage_count"] >= 2
     assert state["research_summary"]["agent_generated_lineage_count"] >= 1
     assert "positive_models" in state["operator_signals"]
+    assert "maintenance_queue" in state["operator_signals"]
+    assert "maintenance_queue_count" in state["research_summary"]
     assert challengers
     assert state["queue"]
     assert all(item["family_id"] for item in state["queue"])
@@ -590,6 +593,83 @@ def test_scheduled_agent_review_drives_maintenance_actions(tmp_path, monkeypatch
     assert expected["requires_new_challenger"] is True
 
 
+def test_run_experiment_injects_review_maintenance_request(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+
+    orchestrator = FactoryOrchestrator(project_root)
+    lineage = orchestrator.registry.load_lineage("binance_funding_contrarian:champion")
+    assert lineage is not None
+    lineage.last_agent_review_status = "completed"
+    lineage.last_agent_review_action = "retrain"
+    lineage.last_agent_review_summary = "Refresh incumbent artifacts before keeping this model live."
+    orchestrator.registry.save_lineage(lineage)
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(*, lineage, genome, experiment):
+        captured["inputs"] = dict(experiment.inputs or {})
+        return {"mode": "test", "bundles": [], "artifact_summary": None}
+
+    monkeypatch.setattr(orchestrator.experiment_runner, "run", _fake_run)
+
+    orchestrator._run_experiment(lineage)
+
+    inputs = dict(captured["inputs"] or {})
+    assert "execution_retrain_context" in inputs
+    assert inputs["maintenance_request"]["action"] == "retrain"
+    assert inputs["maintenance_request"]["source"] == "agent_review"
+
+
+def test_retrain_payload_honors_maintenance_request(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+
+    orchestrator = FactoryOrchestrator(project_root)
+    lineage = orchestrator.registry.load_lineage("binance_funding_contrarian:champion")
+    genome = orchestrator.registry.load_genome("binance_funding_contrarian:champion")
+    experiment = orchestrator.registry.load_experiment("binance_funding_contrarian:champion")
+    assert lineage is not None
+    assert genome is not None
+    assert experiment is not None
+
+    experiment.inputs = {
+        "execution_retrain_context": {"issue_codes": [], "recommendation_context": [], "health_status": "warning"},
+        "maintenance_request": {
+            "source": "agent_review",
+            "action": "replace",
+            "reason": "Review wants fresh challengers and an incumbent refresh.",
+            "requires_new_challenger": True,
+        },
+    }
+
+    payload = orchestrator.experiment_runner._build_retrain_payload(
+        lineage=lineage,
+        genome=genome,
+        experiment=experiment,
+        family_mode="funding",
+        requested_model_class="logit",
+        resolved_model_engine="logit",
+        source_mode="test",
+        source_paths=[],
+        dataset_rows=123,
+    )
+
+    assert payload["retrain_triggered"] is True
+    assert payload["retrain_action"] == "agent_requested_replace"
+    assert payload["maintenance_request"]["action"] == "replace"
+
+
 def test_operator_signals_require_mature_independent_evidence_for_winner_escalation(tmp_path, monkeypatch):
     project_root = tmp_path / "repo"
     project_root.mkdir(parents=True, exist_ok=True)
@@ -609,8 +689,13 @@ def test_operator_signals_require_mature_independent_evidence_for_winner_escalat
                 "strict_gate_pass": True,
                 "execution_health_status": "warning",
                 "monthly_roi_pct": 23.0,
+                "research_monthly_roi_pct": 23.0,
                 "trade_count": 12,
+                "research_trade_count": 12,
                 "paper_days": 12,
+                "live_paper_target_portfolio_id": "contrarian_legacy",
+                "live_paper_roi_pct": 23.0,
+                "live_paper_trade_count": 12,
                 "curated_family_rank": 1,
                 "curated_target_portfolio_id": None,
                 "curated_paper_closed_trade_count": 0,
@@ -622,8 +707,13 @@ def test_operator_signals_require_mature_independent_evidence_for_winner_escalat
                 "strict_gate_pass": True,
                 "execution_health_status": "warning",
                 "monthly_roi_pct": 18.0,
+                "research_monthly_roi_pct": 18.0,
                 "trade_count": 60,
+                "research_trade_count": 60,
                 "paper_days": 30,
+                "live_paper_target_portfolio_id": "",
+                "live_paper_roi_pct": 0.0,
+                "live_paper_trade_count": 0,
                 "curated_family_rank": 1,
                 "curated_paper_roi_pct": 18.0,
                 "curated_target_portfolio_id": "contrarian_legacy",
@@ -636,8 +726,13 @@ def test_operator_signals_require_mature_independent_evidence_for_winner_escalat
                 "strict_gate_pass": True,
                 "execution_health_status": "warning",
                 "monthly_roi_pct": 11.0,
+                "research_monthly_roi_pct": 11.0,
                 "trade_count": 60,
+                "research_trade_count": 60,
                 "paper_days": 30,
+                "live_paper_target_portfolio_id": "contrarian_legacy",
+                "live_paper_roi_pct": 11.0,
+                "live_paper_trade_count": 60,
                 "curated_family_rank": 1,
                 "curated_target_portfolio_id": None,
                 "curated_paper_closed_trade_count": 0,
@@ -645,12 +740,120 @@ def test_operator_signals_require_mature_independent_evidence_for_winner_escalat
         ]
     )
 
-    assert len(signals["positive_models"]) == 3
+    assert len(signals["positive_models"]) == 2
+    assert len(signals["research_positive_models"]) == 3
     assert not any(item["lineage_id"].endswith(":1") for item in signals["potential_winners"])
     assert not any(item["lineage_id"].endswith(":2") for item in signals["potential_winners"])
     assert any(item["lineage_id"].endswith(":3") for item in signals["potential_winners"])
     assert len(signals["escalation_candidates"]) == 1
     assert signals["escalation_candidates"][0]["lineage_id"].endswith(":3")
+
+
+def test_operator_signals_include_priority_sorted_maintenance_queue(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    orchestrator = FactoryOrchestrator(project_root)
+
+    signals = orchestrator._operator_signals(
+        [
+            {
+                "family_id": "binance_funding_contrarian",
+                "lineage_id": "binance_funding_contrarian:champion",
+                "current_stage": "paper",
+                "execution_health_status": "warning",
+                "paper_days": 20,
+                "trade_count": 40,
+                "monthly_roi_pct": 4.0,
+                "maintenance_request_action": "retrain",
+                "maintenance_request_reason": "Training stalled",
+                "maintenance_request_source": "execution_policy",
+                "iteration_status": "review_requested_retrain",
+            },
+            {
+                "family_id": "betfair_prediction_value_league",
+                "lineage_id": "betfair_prediction_value_league:champion",
+                "current_stage": "paper",
+                "execution_health_status": "critical",
+                "paper_days": 5,
+                "trade_count": 0,
+                "monthly_roi_pct": 0.0,
+                "maintenance_request_action": "human_action_required",
+                "maintenance_request_reason": "Fix venue restriction",
+                "maintenance_request_source": "debug_agent",
+                "last_debug_requires_human": True,
+                "last_debug_human_action": "Fix venue restriction",
+                "last_debug_bug_category": "venue_restriction",
+                "iteration_status": "awaiting_operator_fix",
+            },
+            {
+                "family_id": "binance_cascade_regime",
+                "lineage_id": "binance_cascade_regime:challenger:1",
+                "current_stage": "paper",
+                "execution_health_status": "warning",
+                "paper_days": 30,
+                "trade_count": 60,
+                "monthly_roi_pct": -2.0,
+                "agent_review_due": True,
+                "agent_review_due_reason": "scheduled_interval_review",
+                "iteration_status": "tweaked",
+            },
+        ]
+    )
+
+    queue = signals["maintenance_queue"]
+    assert len(queue) == 3
+    assert queue[0]["action"] == "human_action_required"
+    assert queue[1]["action"] == "retrain"
+    assert queue[2]["action"] == "review_due"
+    assert queue[0]["requires_human"] is True
+
+
+def test_sync_operator_actions_creates_inbox_items(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    orchestrator = FactoryOrchestrator(project_root)
+
+    signals = orchestrator._sync_operator_actions(
+        {
+            "positive_models": [],
+            "potential_winners": [],
+            "maintenance_queue": [],
+            "human_action_required": [
+                {
+                    "family_id": "betfair_prediction_value_league",
+                    "lineage_id": "betfair_prediction_value_league:champion",
+                    "summary": "Venue restriction needs operator confirmation.",
+                    "human_action": "Confirm venue is now available and rerun the book.",
+                    "execution_health_status": "critical",
+                }
+            ],
+            "escalation_candidates": [
+                {
+                    "family_id": "binance_funding_contrarian",
+                    "lineage_id": "binance_funding_contrarian:challenger:9",
+                    "reason": "Winner candidate ready for human review.",
+                    "current_stage": "live_ready",
+                }
+            ],
+        }
+    )
+
+    inbox = signals["action_inbox"]
+    assert len(inbox) == 2
+    assert inbox[0]["signal_type"] == "human_action_required"
+    assert inbox[0]["available_decisions"] == ["approve", "reject", "instruct"]
+    assert signals["human_action_required"][0]["operator_action_id"]
+    assert signals["escalation_candidates"][0]["operator_action_id"]
 
 
 def test_factory_orchestrator_records_execution_refresh_results(tmp_path, monkeypatch):

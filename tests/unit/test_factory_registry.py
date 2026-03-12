@@ -175,3 +175,47 @@ def test_registry_persists_learning_memory_entries(tmp_path):
     assert len(memories) == 1
     assert memories[0].memory_id == "memory-a"
     assert memories[0].recommendations == ["tighten thresholds"]
+
+
+def test_registry_opens_and_resolves_operator_actions(tmp_path):
+    registry = FactoryRegistry(tmp_path / "factory")
+
+    opened = registry.open_operator_action(
+        action_key="human_action_required:lineage-a:human_action_required",
+        family_id="family-a",
+        lineage_id="lineage-a",
+        signal_type="human_action_required",
+        requested_action="human_action_required",
+        summary="Fix venue credentials.",
+        context={"bug_category": "credentials"},
+    )
+
+    assert opened.status == "pending"
+    assert registry.operator_actions(status="pending")[0].action_id == opened.action_id
+
+    refreshed = registry.open_operator_action(
+        action_key="human_action_required:lineage-a:human_action_required",
+        family_id="family-a",
+        lineage_id="lineage-a",
+        signal_type="human_action_required",
+        requested_action="human_action_required",
+        summary="Fix venue credentials and retry.",
+        context={"bug_category": "credentials"},
+    )
+
+    assert refreshed.action_id == opened.action_id
+    assert refreshed.summary == "Fix venue credentials and retry."
+
+    resolved = registry.resolve_operator_action(
+        opened.action_id,
+        decision="instruct",
+        resolved_by="ben",
+        note="Retry after refresh",
+        instruction="Ask the debug agent to recheck Betfair auth and rerun the family.",
+    )
+
+    assert resolved is not None
+    assert resolved.status == "resolved"
+    assert resolved.decision == "instruct"
+    assert resolved.resolved_by == "ben"
+    assert resolved.instruction

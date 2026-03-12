@@ -757,7 +757,18 @@ class FactoryOrchestrator:
             return
         max_shadow = int(champion_genome.parameters.get("max_shadow_challengers", 5) or 5)
         execution_evidence = summarize_execution_targets(family.target_portfolios)
-        extra_shadow = self._challenger_pressure(execution_evidence)
+        maintenance_actions = {
+            str(lineage.iteration_status or "").strip()
+            for lineage in active
+            if str(lineage.iteration_status or "").strip()
+        }
+        maintenance_actions.update(
+            str(lineage.last_agent_review_action or "").strip().lower()
+            for lineage in active
+            if str(lineage.last_agent_review_status or "") == "completed"
+            and str(lineage.last_agent_review_action or "").strip()
+        )
+        extra_shadow = self._challenger_pressure(execution_evidence, maintenance_actions=maintenance_actions)
         desired_shadow = min(max_shadow, max(1, self._cycle_count) + extra_shadow)
         existing_shadow = [
             lineage
@@ -824,7 +835,12 @@ class FactoryOrchestrator:
                 f"[cycle {self._cycle_count}] Seeded {created.creation_kind} challenger {created.lineage_id} for {family.family_id} from {proposal.lead_agent_role} with collaborators {','.join(proposal.collaborating_agent_roles) or 'none'} via {agent_result.provider if agent_result is not None else 'deterministic'}.",
             )
 
-    def _challenger_pressure(self, execution_evidence: Dict[str, Any]) -> int:
+    def _challenger_pressure(
+        self,
+        execution_evidence: Dict[str, Any],
+        *,
+        maintenance_actions: Iterable[str] = (),
+    ) -> int:
         issue_codes = {str(item) for item in (execution_evidence.get("issue_codes") or [])}
         model_build_pressure = {
             "negative_paper_roi",
@@ -839,9 +855,13 @@ class FactoryOrchestrator:
             "training_stalled",
             "stalled_model",
         }
-        if not issue_codes.intersection(model_build_pressure):
-            return 0
-        return 1
+        pressure = 1 if issue_codes.intersection(model_build_pressure) else 0
+        maintenance_tokens = {str(item).strip().lower() for item in maintenance_actions if str(item).strip()}
+        if maintenance_tokens.intersection({"review_requested_replace", "replace", "review_requested_rework", "rework"}):
+            pressure = max(pressure, 2)
+        elif maintenance_tokens.intersection({"review_requested_retrain", "retrain"}):
+            pressure = max(pressure, 1)
+        return pressure
 
     def _review_uses_slow_thresholds(self, family: FactoryFamily, lineage: LineageRecord) -> bool:
         labels = {
@@ -1679,8 +1699,10 @@ class FactoryOrchestrator:
             curated_score = float(row.get("curated_ranking_score", 0.0) or 0.0)
             curated_paper_roi = float(row.get("curated_paper_roi_pct", 0.0) or 0.0)
             ranking_gap = (champion_curated_score - curated_score) if champion_curated_score and curated_score else 0.0
+            forced_maintenance = lineage.iteration_status in {"review_requested_rework", "review_requested_replace"}
             underperforming = (
-                bool(hard_vetoes)
+                forced_maintenance
+                or bool(hard_vetoes)
                 or (score < (champion_score - 0.25))
                 or monthly_roi < 0.0
                 or curated_paper_roi < -0.25
@@ -1819,62 +1841,104 @@ class FactoryOrchestrator:
             ]
         return snapshot
 
+    def _select_live_paper_target(
+        self,
+        *,
+        lineage: LineageRecord,
+        execution_validation: Dict[str, Any],
+        curated_target_portfolio_id: str | None,
+    ) -> Dict[str, Any]:
+        targets = [dict(item) for item in (execution_validation.get("targets") or []) if isinstance(item, dict)]
+        preferred_ids = [
+            str(curated_target_portfolio_id or "").strip(),
+            *[str(item or "").strip() for item in list(lineage.target_portfolios or [])],
+        ]
+        preferred_ids = [item for item in preferred_ids if item]
+        for preferred_id in preferred_ids:
+            for row in targets:
+                requested = str(row.get("requested_target") or "").strip()
+                resolved = str(row.get("resolved_target") or "").strip()
+                if preferred_id in {requested, resolved}:
+                    return row
+        if len(targets) == 1:
+            return targets[0]
+        for row in targets:
+            if bool(row.get("running")):
+                return row
+        return {}
+
     def _operator_signals(self, lineage_summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
         positive_models: List[Dict[str, Any]] = []
+        research_positive_models: List[Dict[str, Any]] = []
         potential_winners: List[Dict[str, Any]] = []
         escalation_candidates: List[Dict[str, Any]] = []
         human_action_required: List[Dict[str, Any]] = []
+        maintenance_queue: List[Dict[str, Any]] = []
         min_paper_days = int(getattr(config, "FACTORY_PAPER_GATE_MIN_DAYS", 30))
         min_fast_trades = int(getattr(config, "FACTORY_PAPER_GATE_MIN_FAST_TRADES", 50))
         min_slow_settled = int(getattr(config, "FACTORY_PAPER_GATE_MIN_SLOW_SETTLED", 10))
         for row in lineage_summaries:
             slow_strategy = "slow" in str(row.get("family_id") or "") or "polymarket" in str(row.get("family_id") or "")
-            roi_source = (
-                row.get("curated_paper_roi_pct")
-                if int(row.get("curated_paper_closed_trade_count", 0) or 0) > 0
-                else row.get("monthly_roi_pct", 0.0)
-            )
-            effective_roi = float(roi_source or 0.0)
-            effective_trade_count = int(
-                row.get("curated_paper_closed_trade_count")
-                if int(row.get("curated_paper_closed_trade_count", 0) or 0) > 0
-                else row.get("trade_count", 0)
-                or 0
-            )
+            live_roi = float(row.get("live_paper_roi_pct", 0.0) or 0.0)
+            live_trade_count = int(row.get("live_paper_trade_count", 0) or 0)
+            research_roi = float(row.get("research_monthly_roi_pct", row.get("monthly_roi_pct", 0.0)) or 0.0)
+            research_trade_count = int(row.get("research_trade_count", row.get("trade_count", 0)) or 0)
             health_status = str(row.get("execution_health_status") or "")
             required_trades = min_slow_settled if slow_strategy else min_fast_trades
-            assessment_complete = int(row.get("paper_days", 0) or 0) >= min_paper_days and effective_trade_count >= required_trades
+            assessment_complete = int(row.get("paper_days", 0) or 0) >= min_paper_days and live_trade_count >= required_trades
             curated_target_portfolio_id = str(row.get("curated_target_portfolio_id") or "")
-            evidence_source_type = (
-                "shared_portfolio_scorecard"
-                if curated_target_portfolio_id and int(row.get("curated_paper_closed_trade_count", 0) or 0) > 0
-                else "lineage_evaluation"
-            )
-            if effective_roi > 0.0:
+            live_target_portfolio_id = str(row.get("live_paper_target_portfolio_id") or "")
+            evidence_source_type = "current_live_paper" if live_target_portfolio_id else "no_live_paper_evidence"
+            if live_roi > 0.0:
                 positive_models.append(
                     {
                         "family_id": str(row.get("family_id") or ""),
                         "lineage_id": str(row.get("lineage_id") or ""),
                         "current_stage": str(row.get("current_stage") or ""),
-                        "roi_pct": round(effective_roi, 4),
-                        "trade_count": effective_trade_count,
+                        "roi_pct": round(live_roi, 4),
+                        "trade_count": live_trade_count,
+                        "paper_days": int(row.get("paper_days", 0) or 0),
+                        "execution_health_status": health_status,
+                        "curated_family_rank": row.get("curated_family_rank"),
+                        "curated_target_portfolio_id": live_target_portfolio_id or None,
+                        "evidence_source_type": evidence_source_type,
+                        "assessment_complete": assessment_complete,
+                        "manifest_id": row.get("manifest_id"),
+                        "research_roi_pct": round(research_roi, 4),
+                        "research_trade_count": research_trade_count,
+                    }
+                )
+            if research_roi > 0.0:
+                research_positive_models.append(
+                    {
+                        "family_id": str(row.get("family_id") or ""),
+                        "lineage_id": str(row.get("lineage_id") or ""),
+                        "current_stage": str(row.get("current_stage") or ""),
+                        "roi_pct": round(research_roi, 4),
+                        "trade_count": research_trade_count,
                         "paper_days": int(row.get("paper_days", 0) or 0),
                         "execution_health_status": health_status,
                         "curated_family_rank": row.get("curated_family_rank"),
                         "curated_target_portfolio_id": curated_target_portfolio_id or None,
-                        "evidence_source_type": evidence_source_type,
-                        "assessment_complete": assessment_complete,
+                        "evidence_source_type": (
+                            "shared_portfolio_scorecard"
+                            if curated_target_portfolio_id and int(row.get("curated_paper_closed_trade_count", 0) or 0) > 0
+                            else "lineage_evaluation"
+                        ),
+                        "assessment_complete": False,
                         "manifest_id": row.get("manifest_id"),
+                        "live_roi_pct": round(live_roi, 4),
+                        "live_trade_count": live_trade_count,
                     }
                 )
             is_potential_winner = (
                 str(row.get("current_stage") or "") in {PromotionStage.CANARY_READY.value, PromotionStage.LIVE_READY.value}
                 and bool(row.get("strict_gate_pass"))
                 and assessment_complete
-                and effective_roi > 0.0
+                and live_roi > 0.0
                 and health_status not in {"critical"}
                 and (row.get("curated_family_rank") in {1, None})
-                and evidence_source_type == "lineage_evaluation"
+                and evidence_source_type == "current_live_paper"
             )
             if is_potential_winner:
                 potential_winners.append(
@@ -1882,8 +1946,8 @@ class FactoryOrchestrator:
                         "family_id": str(row.get("family_id") or ""),
                         "lineage_id": str(row.get("lineage_id") or ""),
                         "current_stage": str(row.get("current_stage") or ""),
-                        "roi_pct": round(effective_roi, 4),
-                        "trade_count": effective_trade_count,
+                        "roi_pct": round(live_roi, 4),
+                        "trade_count": live_trade_count,
                         "paper_days": int(row.get("paper_days", 0) or 0),
                         "curated_family_rank": row.get("curated_family_rank"),
                         "manifest_id": row.get("manifest_id"),
@@ -1896,12 +1960,12 @@ class FactoryOrchestrator:
                         "lineage_id": str(row.get("lineage_id") or ""),
                         "current_stage": str(row.get("current_stage") or ""),
                         "target_action": "operator_review_for_real_trading",
-                        "reason": "live_ready leader with positive paper ROI and healthy execution",
-                        "roi_pct": round(effective_roi, 4),
-                        "trade_count": effective_trade_count,
+                        "reason": "live_ready leader with positive live paper ROI and healthy execution",
+                        "roi_pct": round(live_roi, 4),
+                        "trade_count": live_trade_count,
                         "paper_days": int(row.get("paper_days", 0) or 0),
                         "curated_family_rank": row.get("curated_family_rank"),
-                        "curated_target_portfolio_id": curated_target_portfolio_id or None,
+                        "curated_target_portfolio_id": live_target_portfolio_id or None,
                         "evidence_source_type": evidence_source_type,
                         "manifest_id": row.get("manifest_id"),
                     }
@@ -1921,7 +1985,53 @@ class FactoryOrchestrator:
                         "reviewed_at": row.get("last_debug_review_at"),
                     }
                 )
+            maintenance_action = str(row.get("maintenance_request_action") or "").strip().lower()
+            if maintenance_action:
+                maintenance_queue.append(
+                    {
+                        "family_id": str(row.get("family_id") or ""),
+                        "lineage_id": str(row.get("lineage_id") or ""),
+                        "current_stage": str(row.get("current_stage") or ""),
+                        "action": maintenance_action,
+                        "reason": str(row.get("maintenance_request_reason") or ""),
+                        "source": str(row.get("maintenance_request_source") or ""),
+                        "priority": {
+                            "human_action_required": 0,
+                            "retire": 1,
+                            "replace": 2,
+                            "rework": 3,
+                            "retrain": 4,
+                        }.get(maintenance_action, 5),
+                        "execution_health_status": health_status,
+                        "paper_days": int(row.get("paper_days", 0) or 0),
+                        "trade_count": live_trade_count,
+                        "roi_pct": round(live_roi, 4),
+                        "iteration_status": str(row.get("iteration_status") or ""),
+                        "requires_human": maintenance_action == "human_action_required",
+                    }
+                )
+            elif bool(row.get("agent_review_due")):
+                maintenance_queue.append(
+                    {
+                        "family_id": str(row.get("family_id") or ""),
+                        "lineage_id": str(row.get("lineage_id") or ""),
+                        "current_stage": str(row.get("current_stage") or ""),
+                        "action": "review_due",
+                        "reason": str(row.get("agent_review_due_reason") or "scheduled review due"),
+                        "source": "review_scheduler",
+                        "priority": 6,
+                        "execution_health_status": health_status,
+                        "paper_days": int(row.get("paper_days", 0) or 0),
+                        "trade_count": live_trade_count,
+                        "roi_pct": round(live_roi, 4),
+                        "iteration_status": str(row.get("iteration_status") or ""),
+                        "requires_human": False,
+                    }
+                )
         positive_models.sort(
+            key=lambda item: (-float(item.get("roi_pct", 0.0) or 0.0), -int(item.get("trade_count", 0) or 0))
+        )
+        research_positive_models.sort(
             key=lambda item: (-float(item.get("roi_pct", 0.0) or 0.0), -int(item.get("trade_count", 0) or 0))
         )
         potential_winners.sort(
@@ -1937,12 +2047,74 @@ class FactoryOrchestrator:
                 item.get("lineage_id") or "",
             )
         )
+        maintenance_queue.sort(
+            key=lambda item: (
+                int(item.get("priority", 9)) if item.get("priority") is not None else 9,
+                0 if item.get("execution_health_status") == "critical" else 1,
+                item.get("family_id") or "",
+                item.get("lineage_id") or "",
+            )
+        )
         return {
             "positive_models": positive_models[:12],
+            "research_positive_models": research_positive_models[:12],
             "potential_winners": potential_winners[:8],
             "escalation_candidates": escalation_candidates[:8],
             "human_action_required": human_action_required[:8],
+            "maintenance_queue": maintenance_queue[:16],
         }
+
+    def _operator_action_key(self, *, signal_type: str, lineage_id: str, requested_action: str) -> str:
+        digest = hashlib.sha1(f"{signal_type}|{lineage_id}|{requested_action}".encode("utf-8")).hexdigest()[:12]
+        return f"{signal_type}:{lineage_id}:{requested_action}:{digest}"
+
+    def _sync_operator_actions(self, operator_signals: Dict[str, Any]) -> Dict[str, Any]:
+        inbox: List[Dict[str, Any]] = []
+        for item in list(operator_signals.get("human_action_required") or []):
+            action = self.registry.open_operator_action(
+                action_key=self._operator_action_key(
+                    signal_type="human_action_required",
+                    lineage_id=str(item.get("lineage_id") or ""),
+                    requested_action="human_action_required",
+                ),
+                family_id=str(item.get("family_id") or ""),
+                lineage_id=str(item.get("lineage_id") or ""),
+                signal_type="human_action_required",
+                requested_action="human_action_required",
+                summary=str(item.get("human_action") or item.get("summary") or "Operator action required"),
+                context=dict(item),
+            )
+            row = action.to_dict()
+            row["available_decisions"] = ["approve", "reject", "instruct"]
+            inbox.append(row)
+            item["operator_action_id"] = action.action_id
+        for item in list(operator_signals.get("escalation_candidates") or []):
+            action = self.registry.open_operator_action(
+                action_key=self._operator_action_key(
+                    signal_type="winner_review",
+                    lineage_id=str(item.get("lineage_id") or ""),
+                    requested_action="approve_real_trading_review",
+                ),
+                family_id=str(item.get("family_id") or ""),
+                lineage_id=str(item.get("lineage_id") or ""),
+                signal_type="winner_review",
+                requested_action="approve_real_trading_review",
+                summary=str(item.get("reason") or "Review this model before any real-trading push."),
+                context=dict(item),
+            )
+            row = action.to_dict()
+            row["available_decisions"] = ["approve", "reject", "instruct"]
+            inbox.append(row)
+            item["operator_action_id"] = action.action_id
+        operator_signals["action_inbox"] = sorted(
+            inbox,
+            key=lambda item: (
+                0 if item.get("signal_type") == "human_action_required" else 1,
+                str(item.get("family_id") or ""),
+                str(item.get("lineage_id") or ""),
+            ),
+        )[:24]
+        return operator_signals
 
     def _run_experiment(self, lineage: LineageRecord) -> Dict[str, Any]:
         genome = self.registry.load_genome(lineage.lineage_id)
@@ -1950,7 +2122,13 @@ class FactoryOrchestrator:
         if genome is None or experiment is None:
             return {"mode": "missing_inputs", "bundles": [], "artifact_summary": None}
         experiment.inputs = dict(experiment.inputs or {})
-        experiment.inputs["execution_retrain_context"] = self._execution_validation_snapshot(lineage)
+        execution_validation = self._execution_validation_snapshot(lineage)
+        experiment.inputs["execution_retrain_context"] = execution_validation
+        maintenance_request = self._maintenance_request(lineage, execution_validation)
+        if maintenance_request:
+            experiment.inputs["maintenance_request"] = maintenance_request
+        else:
+            experiment.inputs.pop("maintenance_request", None)
         self.registry.save_experiment(lineage.lineage_id, experiment)
         result = self.experiment_runner.run(
             lineage=lineage,
@@ -1963,6 +2141,57 @@ class FactoryOrchestrator:
             experiment.expected_outputs["latest_run"] = artifact_summary
             self.registry.save_experiment(lineage.lineage_id, experiment)
         return result
+
+    def _maintenance_request(
+        self,
+        lineage: LineageRecord,
+        execution_validation: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if bool(lineage.last_debug_requires_human):
+            return {
+                "source": "debug_agent",
+                "action": "human_action_required",
+                "reason": str(
+                    lineage.last_debug_human_action
+                    or lineage.last_debug_summary
+                    or lineage.last_debug_bug_category
+                    or "operator intervention required"
+                ),
+                "requires_human": True,
+                "bug_category": lineage.last_debug_bug_category,
+            }
+        review_action = str(lineage.last_agent_review_action or "").strip().lower()
+        if str(lineage.last_agent_review_status or "") == "completed" and review_action in {
+            "retrain",
+            "rework",
+            "replace",
+            "retire",
+        }:
+            return {
+                "source": "agent_review",
+                "action": review_action,
+                "reason": str(lineage.last_agent_review_summary or lineage.last_agent_review_reason or "agent review"),
+                "requires_human": False,
+                "requires_new_challenger": review_action == "replace",
+            }
+        issue_codes = {str(item) for item in (execution_validation.get("issue_codes") or []) if str(item).strip()}
+        if issue_codes.intersection({"untrainable_model", "training_stalled"}):
+            return {
+                "source": "execution_policy",
+                "action": "retrain",
+                "reason": "Execution evidence says the required learner is untrainable or training has stalled.",
+                "requires_human": False,
+                "issue_codes": sorted(issue_codes.intersection({"untrainable_model", "training_stalled"})),
+            }
+        if issue_codes.intersection({"stalled_model", "trade_stalled"}):
+            return {
+                "source": "execution_policy",
+                "action": "rework",
+                "reason": "Execution evidence says the model has stalled and needs a maintenance rework cycle now.",
+                "requires_human": False,
+                "issue_codes": sorted(issue_codes.intersection({"stalled_model", "trade_stalled"})),
+            }
+        return None
 
     def _blend_runtime_and_offline_bundle(
         self,
@@ -2583,10 +2812,17 @@ class FactoryOrchestrator:
                 or latest_by_stage.get(EvaluationStage.WALKFORWARD.value)
             )
             execution_validation = self._execution_validation_snapshot(refreshed)
+            maintenance_request = self._maintenance_request(refreshed, execution_validation)
             curated_summary = dict(
                 (curated_family_rankings.get(refreshed.family_id, {}).get("by_lineage") or {}).get(refreshed.lineage_id)
                 or {}
             )
+            live_target = self._select_live_paper_target(
+                lineage=refreshed,
+                execution_validation=execution_validation,
+                curated_target_portfolio_id=str(curated_summary.get("target_portfolio_id") or ""),
+            )
+            live_account = dict(live_target.get("account") or {})
             if latest_bundle is not None and lineage.active:
                 total_paper_pnl += float(latest_bundle.net_pnl or 0.0)
             lineage_summary = {
@@ -2664,11 +2900,15 @@ class FactoryOrchestrator:
                 "fitness_score": float((latest_bundle.fitness_score if latest_bundle else 0.0) or 0.0),
                 "pareto_rank": latest_bundle.pareto_rank if latest_bundle else None,
                 "monthly_roi_pct": float((latest_bundle.monthly_roi_pct if latest_bundle else 0.0) or 0.0),
+                "research_monthly_roi_pct": float((latest_bundle.monthly_roi_pct if latest_bundle else 0.0) or 0.0),
                 "calibration_lift_abs": float((latest_bundle.calibration_lift_abs if latest_bundle else 0.0) or 0.0),
                 "net_pnl": float((latest_bundle.net_pnl if latest_bundle else 0.0) or 0.0),
+                "research_net_pnl": float((latest_bundle.net_pnl if latest_bundle else 0.0) or 0.0),
                 "trade_count": int((latest_bundle.trade_count if latest_bundle else 0) or 0),
+                "research_trade_count": int((latest_bundle.trade_count if latest_bundle else 0) or 0),
                 "settled_count": int((latest_bundle.settled_count if latest_bundle else 0) or 0),
                 "paper_days": int((latest_bundle.paper_days if latest_bundle else 0) or 0),
+                "research_paper_days": int((latest_bundle.paper_days if latest_bundle else 0) or 0),
                 "hard_vetoes": list((latest_bundle.hard_vetoes if latest_bundle else []) or []),
                 "latest_artifact_mode": latest_run.get("mode"),
                 "latest_artifact_package": latest_run.get("package_path"),
@@ -2693,6 +2933,21 @@ class FactoryOrchestrator:
                 "execution_health_status": execution_validation.get("health_status"),
                 "execution_issue_codes": list(execution_validation.get("issue_codes") or []),
                 "execution_recommendation_context": list(execution_validation.get("recommendation_context") or []),
+                "live_paper_target_portfolio_id": str(
+                    live_target.get("resolved_target")
+                    or live_target.get("requested_target")
+                    or ""
+                ),
+                "live_paper_running": bool(live_target.get("running")),
+                "live_paper_roi_pct": float(live_account.get("roi_pct", 0.0) or 0.0),
+                "live_paper_realized_pnl": float(live_account.get("realized_pnl", 0.0) or 0.0),
+                "live_paper_trade_count": int(live_account.get("trade_count", 0) or 0),
+                "live_paper_wins": int(live_account.get("wins", 0) or 0),
+                "live_paper_losses": int(live_account.get("losses", 0) or 0),
+                "live_paper_drawdown_pct": float(live_account.get("drawdown_pct", 0.0) or 0.0),
+                "maintenance_request_action": maintenance_request.get("action") if maintenance_request else None,
+                "maintenance_request_reason": maintenance_request.get("reason") if maintenance_request else None,
+                "maintenance_request_source": maintenance_request.get("source") if maintenance_request else None,
                 "curated_family_rank": curated_summary.get("family_rank"),
                 "curated_ranking_score": float(curated_summary.get("ranking_score", 0.0) or 0.0),
                 "curated_target_portfolio_id": curated_summary.get("target_portfolio_id"),
@@ -2878,7 +3133,7 @@ class FactoryOrchestrator:
         )
         self.registry.write_journal(journal)
         learning_memory = [memory.to_dict() for memory in self.registry.learning_memories(limit=20)]
-        operator_signals = self._operator_signals(lineage_summaries)
+        operator_signals = self._sync_operator_actions(self._operator_signals(lineage_summaries))
         state = {
             "portfolio_id": getattr(config, "RESEARCH_FACTORY_PORTFOLIO_ID", "research_factory"),
             "running": True,
@@ -2962,8 +3217,11 @@ class FactoryOrchestrator:
                 "learning_memory_count": len(learning_memory),
                 "paper_pnl": round(total_paper_pnl, 4),
                 "positive_model_count": len(operator_signals["positive_models"]),
+                "research_positive_model_count": len(operator_signals.get("research_positive_models") or []),
                 "operator_escalation_count": len(operator_signals["escalation_candidates"]),
                 "human_action_required_count": len(operator_signals.get("human_action_required") or []),
+                "maintenance_queue_count": len(operator_signals.get("maintenance_queue") or []),
+                "operator_action_inbox_count": len(operator_signals.get("action_inbox") or []),
                 "ready_for_canary": sum(1 for item in lineage_summaries if item.get("current_stage") == PromotionStage.CANARY_READY.value),
                 "live_loadable_manifest_count": len(live_loadable_manifests),
                 "manifest_publication_paused": runtime_mode.is_cost_saver,

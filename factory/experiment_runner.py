@@ -122,6 +122,7 @@ class FactoryExperimentRunner:
             "goldfish_workspace": experiment.goldfish_workspace,
             "resolved_model_engine": resolved_model_engine,
             "retrain": dict(retrain_payload),
+            "maintenance_request": dict((experiment.inputs or {}).get("maintenance_request") or {}),
             "current_parameters": {
                 key: genome.parameters.get(key)
                 for key in [
@@ -808,11 +809,19 @@ class FactoryExperimentRunner:
         dataset_rows: int,
     ) -> Dict[str, Any]:
         execution_context = dict((experiment.inputs or {}).get("execution_retrain_context") or {})
+        maintenance_request = dict((experiment.inputs or {}).get("maintenance_request") or {})
         issue_codes = [str(item) for item in (execution_context.get("issue_codes") or []) if str(item).strip()]
         recommendation_context = [
             str(item) for item in (execution_context.get("recommendation_context") or []) if str(item).strip()
         ]
-        if any(code in issue_codes for code in ["runtime_error", "heartbeat_stale"]):
+        maintenance_action = str(maintenance_request.get("action") or "").strip().lower()
+        if maintenance_action == "retrain":
+            action = "agent_requested_retrain"
+        elif maintenance_action == "rework":
+            action = "agent_requested_rework"
+        elif maintenance_action == "replace":
+            action = "agent_requested_replace"
+        elif any(code in issue_codes for code in ["runtime_error", "heartbeat_stale"]):
             action = "stability_retrain"
         elif any(code in issue_codes for code in ["no_trade_syndrome", "excessive_rejections", "zero_simulated_fills"]):
             action = "execution_filter_retrain"
@@ -835,7 +844,8 @@ class FactoryExperimentRunner:
             "trigger_health_status": execution_context.get("health_status"),
             "trigger_issue_codes": issue_codes,
             "recommendation_context": recommendation_context,
-            "retrain_triggered": bool(issue_codes),
+            "maintenance_request": maintenance_request,
+            "retrain_triggered": bool(issue_codes) or maintenance_action in {"retrain", "rework", "replace"},
             "retrain_action": action,
             "target_objective": objectives.get(lineage.family_id, "improve paper-model quality against current execution evidence"),
             "requested_model_class": requested_model_class,

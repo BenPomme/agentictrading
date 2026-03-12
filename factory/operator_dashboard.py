@@ -10,6 +10,7 @@ import config
 from factory.agent_runtime import recent_agent_runs
 from factory.contracts import PromotionStage, utc_now_iso
 from factory.idea_intake import all_ideas, annotate_idea_statuses, split_active_and_archived_ideas
+from factory.registry import FactoryRegistry
 
 
 def _project_root() -> Path:
@@ -187,18 +188,19 @@ def _execution_root() -> Path:
     return _project_root() / "data" / "portfolios"
 
 
-def _factory_state_path() -> Path:
+def _factory_root() -> Path:
     factory_root = Path(getattr(config, "FACTORY_ROOT", "data/factory"))
     if not factory_root.is_absolute():
         factory_root = _project_root() / factory_root
-    return factory_root / "state" / "summary.json"
+    return factory_root
+
+
+def _factory_state_path() -> Path:
+    return _factory_root() / "state" / "summary.json"
 
 
 def _factory_journal_path() -> Path:
-    factory_root = Path(getattr(config, "FACTORY_ROOT", "data/factory"))
-    if not factory_root.is_absolute():
-        factory_root = _project_root() / factory_root
-    return factory_root / "state" / "STATE.md"
+    return _factory_root() / "state" / "STATE.md"
 
 
 def _ideas_path() -> Path:
@@ -725,6 +727,239 @@ def _title_case_slug(value: str) -> str:
     return str(value or "").replace("_", " ").replace("-", " ").title()
 
 
+def _lineage_registry_context(factory_state: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    state_ids = {
+        str(row.get("lineage_id") or "").strip()
+        for row in list(factory_state.get("lineages") or [])
+        if str(row.get("lineage_id") or "").strip()
+    }
+    if not state_ids:
+        return {}, {}
+    registry = FactoryRegistry(_factory_root())
+    records_by_id = {
+        record.lineage_id: record
+        for record in registry.lineages()
+        if record.lineage_id in state_ids
+    }
+    genome_params_by_id: Dict[str, Dict[str, Any]] = {}
+    for lineage_id in state_ids:
+        genome = registry.load_genome(lineage_id)
+        genome_params_by_id[lineage_id] = dict(getattr(genome, "parameters", {}) or {})
+    return records_by_id, genome_params_by_id
+
+
+def _lineage_parameter_summary(parameters: Dict[str, Any]) -> Dict[str, Any]:
+    horizon = parameters.get("selected_horizon_seconds")
+    try:
+        horizon_value = int(horizon) if horizon is not None else None
+    except Exception:
+        horizon_value = None
+    min_edge = parameters.get("selected_min_edge")
+    stake_fraction = parameters.get("selected_stake_fraction")
+    return {
+        "model_class": str(parameters.get("selected_model_class") or "").strip() or None,
+        "horizon_seconds": horizon_value,
+        "feature_subset": str(parameters.get("selected_feature_subset") or "").strip() or None,
+        "min_edge": _compact_number(min_edge) if min_edge is not None else None,
+        "stake_fraction": _compact_number(stake_fraction) if stake_fraction is not None else None,
+    }
+
+
+def _lineage_short_name(lineage_id: str) -> str:
+    parts = str(lineage_id or "").split(":")
+    if len(parts) >= 3:
+        return f"{_title_case_slug(parts[-2])} {parts[-1]}"
+    if len(parts) >= 2:
+        return _title_case_slug(parts[-1])
+    return str(lineage_id or "")
+
+
+def _lineage_sort_key(node: Dict[str, Any]) -> tuple[int, float, str]:
+    created = _parse_ts(node.get("created_at"))
+    return (
+        int(node.get("depth") or 0),
+        created.timestamp() if created is not None else 0.0,
+        str(node.get("lineage_id") or ""),
+    )
+
+
+def _history_sort_key(node: Dict[str, Any]) -> tuple[float, str]:
+    created = _parse_ts(node.get("created_at"))
+    return (
+        created.timestamp() if created is not None else 0.0,
+        str(node.get("lineage_id") or ""),
+    )
+
+
+def _build_lineage_atlas(factory_state: Dict[str, Any]) -> Dict[str, Any]:
+    state_rows = [dict(item) for item in list(factory_state.get("lineages") or [])]
+    if not state_rows:
+        return {
+            "summary": {
+                "family_count": 0,
+                "node_count": 0,
+                "root_count": 0,
+                "max_depth": 0,
+                "mutation_count": 0,
+                "new_model_count": 0,
+                "positive_roi_count": 0,
+            },
+            "families": [],
+        }
+
+    records_by_id, genome_params_by_id = _lineage_registry_context(factory_state)
+    family_meta = {item["family_id"]: item for item in _build_family_view(factory_state)}
+    family_nodes: Dict[str, List[Dict[str, Any]]] = {}
+
+    for row in state_rows:
+        lineage_id = str(row.get("lineage_id") or "").strip()
+        family_id = str(row.get("family_id") or "").strip()
+        if not lineage_id or not family_id:
+            continue
+        record = records_by_id.get(lineage_id)
+        params = _lineage_parameter_summary(genome_params_by_id.get(lineage_id) or {})
+        latest_agent_decision = dict(row.get("latest_agent_decision") or {})
+        proposal_agent = dict(row.get("proposal_agent") or {})
+        node = {
+            "lineage_id": lineage_id,
+            "family_id": family_id,
+            "display_name": str(getattr(record, "label", "") or _lineage_short_name(lineage_id)),
+            "short_name": _lineage_short_name(lineage_id),
+            "parent_lineage_id": str(
+                getattr(record, "parent_lineage_id", None)
+                or row.get("parent_lineage_id")
+                or ""
+            ).strip() or None,
+            "role": str(row.get("role") or getattr(record, "role", "") or ""),
+            "current_stage": str(row.get("current_stage") or getattr(record, "current_stage", "") or ""),
+            "iteration_status": str(row.get("iteration_status") or getattr(record, "iteration_status", "") or ""),
+            "active": bool(row.get("active", getattr(record, "active", True))),
+            "created_at": str(getattr(record, "created_at", "") or row.get("created_at") or ""),
+            "updated_at": str(getattr(record, "updated_at", "") or row.get("updated_at") or ""),
+            "fitness_score": _compact_number(row.get("fitness_score")),
+            "monthly_roi_pct": _compact_number(row.get("monthly_roi_pct")),
+            "paper_days": int(row.get("paper_days", 0) or 0),
+            "trade_count": int(row.get("trade_count", 0) or 0),
+            "assessment": _assessment_progress(
+                paper_days=int(row.get("paper_days", 0) or 0),
+                trade_count=int(row.get("trade_count", 0) or 0),
+                labels=[family_id, row.get("current_stage"), row.get("curated_target_portfolio_id")],
+                realized_roi_pct=_compact_number(row.get("monthly_roi_pct")),
+                current_stage=str(row.get("current_stage") or ""),
+            ),
+            "creation_kind": str(getattr(record, "creation_kind", "") or row.get("creation_kind") or "").strip() or None,
+            "source_idea_id": str(getattr(record, "source_idea_id", "") or row.get("source_idea_id") or "").strip() or None,
+            "has_artifact_package": bool(row.get("latest_artifact_package")),
+            "latest_artifact_package": str(row.get("latest_artifact_package") or ""),
+            "hypothesis_origin": str(row.get("hypothesis_origin") or ""),
+            "lead_agent_role": str(row.get("lead_agent_role") or getattr(record, "lead_agent_role", "") or ""),
+            "collaborating_agent_roles": [str(item) for item in (row.get("collaborating_agent_roles") or getattr(record, "collaborating_agent_roles", []) or [])],
+            "scientific_domains": [str(item) for item in (row.get("scientific_domains") or getattr(record, "scientific_domains", []) or [])],
+            "target_portfolios": [str(item) for item in (row.get("target_portfolios") or getattr(record, "target_portfolios", []) or [])],
+            "execution_health_status": str(row.get("execution_health_status") or ""),
+            "execution_issue_codes": [str(item) for item in (row.get("execution_issue_codes") or [])],
+            "latest_agent_provider": str(latest_agent_decision.get("provider") or ""),
+            "latest_agent_model": str(latest_agent_decision.get("model") or ""),
+            "proposal_provider": str(proposal_agent.get("provider") or ""),
+            "proposal_model": str(proposal_agent.get("model") or ""),
+            "selected_model_class": params["model_class"],
+            "selected_horizon_seconds": params["horizon_seconds"],
+            "selected_feature_subset": params["feature_subset"],
+            "selected_min_edge": params["min_edge"],
+            "selected_stake_fraction": params["stake_fraction"],
+            "child_lineage_ids": [],
+            "depth": 0,
+        }
+        family_nodes.setdefault(family_id, []).append(node)
+
+    atlas_families: List[Dict[str, Any]] = []
+    for family_id, nodes in family_nodes.items():
+        nodes_by_id = {str(node["lineage_id"]): node for node in nodes}
+        for node in nodes:
+            parent_id = node.get("parent_lineage_id")
+            if parent_id and parent_id in nodes_by_id:
+                nodes_by_id[parent_id]["child_lineage_ids"].append(node["lineage_id"])
+
+        depth_cache: Dict[str, int] = {}
+
+        def _depth(lineage_id: str, trail: set[str] | None = None) -> int:
+            if lineage_id in depth_cache:
+                return depth_cache[lineage_id]
+            node = nodes_by_id.get(lineage_id)
+            if node is None:
+                return 0
+            parent_id = str(node.get("parent_lineage_id") or "").strip()
+            if not parent_id or parent_id not in nodes_by_id:
+                depth_cache[lineage_id] = 0
+                return 0
+            trail = set(trail or set())
+            if lineage_id in trail:
+                depth_cache[lineage_id] = 0
+                return 0
+            trail.add(lineage_id)
+            depth_cache[lineage_id] = _depth(parent_id, trail) + 1
+            return depth_cache[lineage_id]
+
+        for node in nodes:
+            node["child_lineage_ids"] = sorted(
+                list(dict.fromkeys(node.get("child_lineage_ids") or [])),
+                key=lambda item: _history_sort_key(nodes_by_id.get(item, {})),
+            )
+            node["depth"] = _depth(str(node["lineage_id"]))
+
+        roots = sorted(
+            [node["lineage_id"] for node in nodes if not node.get("parent_lineage_id") or node["parent_lineage_id"] not in nodes_by_id],
+            key=lambda item: _history_sort_key(nodes_by_id[item]),
+        )
+        champion = next((node for node in nodes if node.get("role") == "champion"), None)
+        summary = family_meta.get(family_id, {})
+        sorted_nodes = sorted(nodes, key=_lineage_sort_key)
+        history = sorted(nodes, key=_history_sort_key, reverse=True)
+        atlas_families.append(
+            {
+                "family_id": family_id,
+                "label": str(summary.get("label") or _title_case_slug(family_id)),
+                "champion_lineage_id": str(summary.get("champion_lineage_id") or (champion or {}).get("lineage_id") or ""),
+                "active_lineage_count": int(summary.get("active_lineage_count", 0) or sum(1 for node in nodes if node.get("active"))),
+                "retired_lineage_count": int(summary.get("retired_lineage_count", 0) or sum(1 for node in nodes if not node.get("active"))),
+                "target_portfolios": list(summary.get("target_portfolios") or []),
+                "root_lineage_ids": roots,
+                "max_depth": max((int(node.get("depth") or 0) for node in nodes), default=0),
+                "mutation_count": sum(1 for node in nodes if node.get("creation_kind") == "mutation"),
+                "new_model_count": sum(1 for node in nodes if node.get("creation_kind") == "new_model"),
+                "agent_backed_count": sum(
+                    1
+                    for node in nodes
+                    if node.get("latest_agent_provider") or node.get("proposal_provider") or node.get("hypothesis_origin", "").startswith("real_agent")
+                ),
+                "nodes": sorted_nodes,
+                "history": history,
+            }
+        )
+
+    atlas_families = sorted(
+        atlas_families,
+        key=lambda item: (
+            -int(item.get("active_lineage_count") or 0),
+            -int(item.get("max_depth") or 0),
+            str(item.get("label") or ""),
+        ),
+    )
+    all_nodes = [node for family in atlas_families for node in family.get("nodes") or []]
+    return {
+        "summary": {
+            "family_count": len(atlas_families),
+            "node_count": len(all_nodes),
+            "root_count": sum(len(family.get("root_lineage_ids") or []) for family in atlas_families),
+            "max_depth": max((int(family.get("max_depth") or 0) for family in atlas_families), default=0),
+            "mutation_count": sum(1 for node in all_nodes if node.get("creation_kind") == "mutation"),
+            "new_model_count": sum(1 for node in all_nodes if node.get("creation_kind") == "new_model"),
+            "positive_roi_count": sum(1 for node in all_nodes if _compact_number(node.get("monthly_roi_pct")) > 0),
+        },
+        "families": atlas_families,
+    }
+
+
 def _build_agent_desks(
     factory_state: Dict[str, Any],
     journal_actions: List[str],
@@ -940,8 +1175,11 @@ def _build_operator_signal_view(factory_state: Dict[str, Any]) -> Dict[str, Any]
         escalations.append(row)
     return {
         "positive_models": positives,
+        "research_positive_models": list(payload.get("research_positive_models") or []),
         "escalation_candidates": escalations,
         "human_action_required": list(payload.get("human_action_required") or []),
+        "action_inbox": list(payload.get("action_inbox") or []),
+        "maintenance_queue": list(payload.get("maintenance_queue") or []),
     }
 
 
@@ -1074,6 +1312,7 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
             "families": _build_family_view(factory_state),
             "model_league": _build_model_league_view(factory_state),
             "lineages": _build_lineage_table(factory_state),
+            "lineage_atlas": _build_lineage_atlas(factory_state),
             "queue": list(factory_state.get("queue") or []),
             "connectors": list(factory_state.get("connectors") or []),
             "manifests": dict(factory_state.get("manifests") or {}),
@@ -1139,6 +1378,7 @@ def build_dashboard_snapshot_light() -> Dict[str, Any]:
             "families": _build_family_view(factory_state),
             "model_league": _build_model_league_view(factory_state),
             "lineages": _build_lineage_table(factory_state),
+            "lineage_atlas": _build_lineage_atlas(factory_state),
             "queue": list(factory_state.get("queue") or []),
             "connectors": list(factory_state.get("connectors") or []),
             "manifests": dict(factory_state.get("manifests") or {}),

@@ -1,6 +1,6 @@
 # Factory Roadmap
 
-Last updated: 2026-03-11
+Last updated: 2026-03-12
 
 ## Current State
 
@@ -18,6 +18,10 @@ Last updated: 2026-03-11
 - Every factory-created `new_model` now needs a distinct generated name and a thesis normalized to `We believe we can create alpha by ...`.
 - Scheduled agent reviews now emit explicit maintenance actions (`hold`, `retrain`, `rework`, `replace`, `retire`) and can directly increase rework/replacement pressure on weak lineages.
 - Winner surfacing is stricter: immature or shared-evidence-only positives no longer qualify as true winner escalations.
+- Maintenance requests from reviews, stalled-model policy, and debug signals now flow into experiment refresh inputs instead of remaining dashboard-only metadata.
+- Review, retrain, rework, replace, retire, and human-action requests now surface as an explicit maintenance queue in factory state and operator signals.
+- Operator action inbox items now exist so a human can explicitly approve, reject, or send an instruction back to the factory/agents.
+- Live paper evidence and research/backtest evidence are now separated in factory state so current performance is not confused with shared scorecards or research bundles.
 
 ## Completed
 
@@ -50,8 +54,9 @@ Last updated: 2026-03-11
 - Define a reproducible restore path: clone repo, pull synced artifacts, restore `.env`, resume factory loop.
 
 2. Review-driven model maintenance
-- Extend the new maintenance-action contract into dashboard queues and automated retrain refresh dispatch, not just lineage pressure/state.
-- Make debug-agent outputs first-class maintenance inputs so runtime bugs and operator-owned blockers do not sit idle.
+- Extend the new maintenance-action contract further into dashboard queues and explicit operator-visible maintenance worklists.
+- Keep pushing debug-agent outputs deeper into retrain, retire, and human-escalation routing so runtime bugs and operator-owned blockers do not sit idle.
+- Add first-class operator controls in the dashboard so a human can act on inbox items with `yes`, `no`, or a written instruction for an agent, not just read alerts.
 
 3. Structured idea pipeline, phase 2
 - Promote idea usage from prompt context to explicit idea-backed lineage creation decisions.
@@ -63,6 +68,7 @@ Last updated: 2026-03-11
 - Make “why winner” and “why blocked” explicit in the dashboard.
 - Keep operator signoff mandatory before any real-trading push.
 - Separate shared portfolio evidence from independent lineage evidence, and require lineage-isolated paper books before treating repeated ROI signals as distinct model winners.
+- Keep `positive_models` and real-trading escalation tied to current live paper evidence; show research positives separately as research evidence only.
 
 5. Execution-side health contract
 - Make execution runners emit first-class runtime and health metadata directly.

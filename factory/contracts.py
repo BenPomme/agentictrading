@@ -150,6 +150,26 @@ class ExperimentQueueEntry(JsonMixin):
 
 
 @dataclass
+class OperatorAction(JsonMixin):
+    action_id: str
+    action_key: str
+    family_id: str
+    lineage_id: str
+    signal_type: str
+    requested_action: str
+    summary: str
+    context: Dict[str, Any] = field(default_factory=dict)
+    status: str = "pending"
+    decision: Optional[str] = None
+    note: Optional[str] = None
+    instruction: Optional[str] = None
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+    resolved_at: Optional[str] = None
+    resolved_by: Optional[str] = None
+
+
+@dataclass
 class EvaluationWindow(JsonMixin):
     label: str
     settled_count: int
