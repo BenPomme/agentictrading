@@ -1,0 +1,115 @@
+/* ─── IdeasPanel ─── */
+
+.idp__status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.idp__pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.idp__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.idp__card {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: fade-in 200ms ease both;
+}
+
+.idp__card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.idp__card-title {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.idp__card-status {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.idp__card-summary {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.idp__card-families {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.idp__card-fam {
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.52rem;
+}
+
+.idp__archived {
+  margin-top: 10px;
+}
+
+.idp__archived-summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 6px 0;
+  list-style: none;
+  user-select: none;
+}
+
+.idp__archived-summary::marker,
+.idp__archived-summary::-webkit-details-marker {
+  display: none;
+}
+
+.idp__archived-summary::before {
+  content: '▸ ';
+}
+
+.idp__archived[open] .idp__archived-summary::before {
+  content: '▾ ';
+}

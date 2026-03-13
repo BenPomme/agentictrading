@@ -1,0 +1,174 @@
+/* ─── APIFeedsStrip ─── */
+
+.afs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+/* ── Overall Status Pill ── */
+
+.afs__summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  border: 1px solid;
+  flex-shrink: 0;
+}
+
+.afs__summary--healthy {
+  color: var(--ok);
+  border-color: rgba(0, 255, 208, 0.3);
+  background: var(--ok-dim);
+}
+
+.afs__summary--warning {
+  color: var(--warn);
+  border-color: rgba(255, 176, 0, 0.3);
+  background: var(--warn-dim);
+}
+
+.afs__summary--critical {
+  color: var(--crit);
+  border-color: rgba(255, 59, 59, 0.3);
+  background: var(--crit-dim);
+}
+
+.afs__divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
+
+/* ── Connector Cards ── */
+
+.afs__cards {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.afs__card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-shrink: 0;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.afs__card:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.afs__card-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.afs__card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.afs__card-venue {
+  font-family: var(--font-display);
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.afs__card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ── Status Dot ── */
+
+.afs__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.afs__dot--healthy {
+  background: var(--ok);
+  box-shadow: 0 0 5px var(--ok);
+  animation: pulse-ok 2.5s ease-in-out infinite;
+}
+
+.afs__dot--warning {
+  background: var(--warn);
+  box-shadow: 0 0 5px var(--warn);
+  animation: pulse-warn 2s ease-in-out infinite;
+}
+
+.afs__dot--critical {
+  background: var(--crit);
+  box-shadow: 0 0 5px var(--crit);
+  animation: pulse-crit 1.4s ease-in-out infinite;
+}
+
+/* ── Status Label ── */
+
+.afs__status-label {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.afs__status-label--healthy { color: var(--ok); }
+.afs__status-label--warning { color: var(--warn); }
+.afs__status-label--critical { color: var(--crit); }
+
+.afs__card-records {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--text-dim);
+}
+
+/* ── Empty ── */
+
+.afs__empty {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 768px) {
+  .afs { padding: 8px 12px; }
+}

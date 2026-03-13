@@ -1,0 +1,109 @@
+/* ─── KPIDeck ─── */
+
+.kpi {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+/* ── Individual Card ── */
+
+.kpi__card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+  transition: transform var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+
+.kpi__card:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* Subtle top accent bar */
+.kpi__card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--border-strong);
+  transition: background var(--transition);
+}
+
+.kpi__card--ok::before { background: var(--ok); box-shadow: var(--ok-glow); }
+.kpi__card--warn::before { background: var(--warn); box-shadow: var(--warn-glow); }
+.kpi__card--crit::before { background: var(--crit); box-shadow: var(--crit-glow); }
+
+/* ── Value ── */
+
+.kpi__value {
+  font-family: var(--font-mono);
+  font-size: 1.8rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  transition: opacity 300ms ease;
+}
+
+.kpi__value--positive { color: var(--ok); }
+.kpi__value--negative { color: var(--crit); }
+
+/* Fraction part (denominator) */
+.kpi__value-denom {
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* ── Label ── */
+
+.kpi__label {
+  font-family: var(--font-body);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ── Subtitle ── */
+
+.kpi__subtitle {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--text-dim);
+}
+
+/* ── Empty State ── */
+
+.kpi__empty {
+  font-family: var(--font-mono);
+  font-size: 1.8rem;
+  color: var(--text-dim);
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 900px) {
+  .kpi { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 480px) {
+  .kpi {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 12px;
+  }
+  .kpi__value { font-size: 1.4rem; }
+}

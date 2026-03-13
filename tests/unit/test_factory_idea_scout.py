@@ -49,9 +49,11 @@ def test_idea_scout_respects_interval(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(config, "FACTORY_IDEA_SCOUT_ENABLED", True)
     monkeypatch.setattr(config, "FACTORY_IDEA_SCOUT_INTERVAL_HOURS", 48)
 
+    from datetime import datetime, timezone
     state_path = factory_root / "ideas" / "scout_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps({"last_run_at": "2026-03-11T12:00:00+00:00"}), encoding="utf-8")
+    recent_ts = datetime.now(timezone.utc).isoformat()
+    state_path.write_text(json.dumps({"last_run_at": recent_ts}), encoding="utf-8")
 
     import factory.idea_scout as scout
 

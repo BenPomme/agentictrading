@@ -1,0 +1,525 @@
+/* ─── Lineage Atlas ─── */
+
+.la {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fade-in 300ms ease both;
+}
+
+.la--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+}
+
+.la__empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+
+.la__empty-icon {
+  font-size: 2rem;
+  opacity: 0.4;
+}
+
+/* ─── Family Tabs ─── */
+
+.la__tabs {
+  display: flex;
+  gap: 6px;
+  padding: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.la__tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.la__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--transition),
+    color var(--transition),
+    border-color var(--transition),
+    box-shadow var(--transition);
+}
+
+.la__tab:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.la__tab--active {
+  background: var(--ok-dim);
+  border-color: var(--ok);
+  color: var(--ok);
+  box-shadow: var(--ok-glow);
+}
+
+.la__tab--active:hover {
+  background: var(--ok-dim);
+}
+
+.la__tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  font-size: 0.55rem;
+  font-weight: 700;
+}
+
+.la__tab--active .la__tab-count {
+  background: rgba(0, 255, 208, 0.25);
+}
+
+/* ─── Main Layout ─── */
+
+.la__main {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+@media (min-width: 900px) {
+  .la__main {
+    grid-template-columns: 3fr 2fr;
+  }
+}
+
+/* ─── Tree Panel ─── */
+
+.la__tree-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.la__tree-scroll {
+  padding: 16px;
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 500px;
+}
+
+.la__tree-empty {
+  text-align: center;
+  padding: 32px 10px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+/* ─── Tree Visualization ─── */
+
+.la-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.la-tree__subtree {
+  position: relative;
+  padding-left: 24px;
+}
+
+.la-tree__subtree:first-child {
+  padding-left: 0;
+}
+
+/* Vertical connector from parent to children region */
+.la-tree__children {
+  position: relative;
+  margin-top: 4px;
+  padding-left: 20px;
+}
+
+.la-tree__children::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 0;
+  bottom: 16px;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 255, 208, 0.5) 0%,
+    rgba(0, 255, 208, 0.15) 100%
+  );
+  box-shadow: 0 0 6px rgba(0, 255, 208, 0.2);
+}
+
+/* Horizontal connector branch to each child */
+.la-tree__children > .la-tree__subtree {
+  position: relative;
+  margin-top: 6px;
+}
+
+.la-tree__children > .la-tree__subtree::before {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 18px;
+  width: 12px;
+  height: 1px;
+  background: rgba(0, 255, 208, 0.4);
+  box-shadow: 0 0 4px rgba(0, 255, 208, 0.15);
+}
+
+/* ─── Tree Node Card ─── */
+
+.la-tree__node {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    border-color var(--transition),
+    box-shadow var(--transition),
+    background var(--transition);
+  max-width: 240px;
+}
+
+.la-tree__node:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.la-tree__node--selected {
+  border-color: var(--ok);
+  box-shadow: var(--ok-glow);
+  background: rgba(0, 255, 208, 0.05);
+}
+
+.la-tree__node--selected:hover {
+  background: rgba(0, 255, 208, 0.08);
+}
+
+.la-tree__node-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.la-tree__node-id {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.la-tree__role-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.6;
+}
+
+.la-tree__node-metrics {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.la-tree__stage-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.la-tree__roi {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.la-tree__trades {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--text-muted);
+}
+
+/* ─── Inspector Panel ─── */
+
+.la__inspector-panel {
+  min-height: 200px;
+}
+
+.la-inspector {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.la-inspector--empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.la-inspector__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+.la-inspector__placeholder-icon {
+  font-size: 1.6rem;
+  opacity: 0.4;
+}
+
+.la-inspector__title {
+  font-family: var(--font-display);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.la-inspector__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.la-inspector__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.la-inspector__label {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+
+.la-inspector__value {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  color: var(--text);
+  text-align: right;
+  word-break: break-all;
+  min-width: 0;
+}
+
+.la-inspector__mono {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+}
+
+.la-inspector__badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.la-inspector__stage {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.la-inspector__null {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ─── Evolution Ledger ─── */
+
+.la-ledger {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.la-ledger__title {
+  font-family: var(--font-display);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding: 10px 14px;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+}
+
+.la-ledger__empty {
+  text-align: center;
+  padding: 20px 10px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+.la-ledger__scroll {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 10px 14px;
+}
+
+.la-ledger__timeline {
+  position: relative;
+  padding-left: 16px;
+}
+
+.la-ledger__timeline::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    var(--border-strong) 0%,
+    var(--border) 100%
+  );
+}
+
+.la-ledger__event {
+  position: relative;
+  padding: 6px 0;
+  display: flex;
+  gap: 10px;
+  animation: slide-in 200ms ease both;
+}
+
+.la-ledger__dot {
+  position: absolute;
+  left: -14px;
+  top: 12px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.la-ledger__event-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.la-ledger__event-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.la-ledger__ts {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--text-dim);
+}
+
+.la-ledger__kind {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.la-ledger__lineage-id {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--text-secondary);
+}
+
+.la-ledger__detail {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}

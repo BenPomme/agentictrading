@@ -864,6 +864,55 @@ th {
   margin-top: 10px;
 }
 
+.portfolio-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pnl-toggle-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 252, 246, 0.84);
+  color: var(--accent);
+  font-family: "Menlo", "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 150ms ease, transform 150ms ease;
+}
+
+.pnl-toggle-btn:hover {
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+
+.pnl-chart-wrap {
+  display: none;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.pnl-chart-wrap.is-expanded {
+  display: block;
+}
+
+.pnl-chart-container {
+  position: relative;
+  height: 220px;
+  border-radius: 16px;
+  background: rgba(255, 253, 250, 0.6);
+  border: 1px solid rgba(31, 27, 22, 0.06);
+  padding: 8px;
+}
+
+.pnl-chart-container canvas {
+  border-radius: 12px;
+}
+
 @media (max-width: 1100px) {
   .layout {
     grid-template-columns: 1fr;

@@ -1,0 +1,232 @@
+.pg {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pg__title {
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.pg__empty {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding: 24px;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.pg__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+/* --- Card --- */
+
+.pg-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color var(--transition), box-shadow var(--transition);
+  animation: fade-in 0.3s ease both;
+}
+
+.pg-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 16px rgba(0, 255, 208, 0.05);
+}
+
+.pg-card--placeholder {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+/* Header */
+
+.pg-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pg-card__venue {
+  font-size: 1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.pg-card__label {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pg-card__dot--ok {
+  background: var(--ok);
+  animation: pulse-ok 2s ease-in-out infinite;
+}
+
+.pg-card__dot--warn {
+  background: var(--warn);
+  animation: pulse-warn 2s ease-in-out infinite;
+}
+
+.pg-card__dot--crit {
+  background: var(--crit);
+  animation: pulse-crit 1.5s ease-in-out infinite;
+}
+
+.pg-card__dot--dim {
+  background: var(--text-dim);
+}
+
+/* Status line */
+
+.pg-card__status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.7rem;
+}
+
+.pg-card__badge {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.pg-card__heartbeat {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+
+.pg-card__display-status {
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+/* Metrics */
+
+.pg-card__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.pg-card__metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pg-card__metric-label {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.pg-card__metric-value {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1;
+}
+
+/* Error */
+
+.pg-card__error {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--crit);
+  background: var(--crit-dim);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Chart toggle */
+
+.pg-card__chart-toggle {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: background var(--transition), border-color var(--transition);
+  text-align: left;
+}
+
+.pg-card__chart-toggle:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+/* Chart container */
+
+.pg-card__chart-container {
+  animation: fade-in 0.25s ease;
+}
+
+/* PnlChart internal */
+
+.pnl-chart {
+  height: 180px;
+  position: relative;
+}
+
+.pnl-chart__loading,
+.pnl-chart__error {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 120px;
+}
+
+.pnl-chart__error {
+  color: var(--crit);
+}

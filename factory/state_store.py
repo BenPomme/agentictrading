@@ -46,6 +46,9 @@ def _portfolio_state_root() -> Path:
     execution_root = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
     if execution_root:
         return Path(execution_root) / "data" / "portfolios"
+    portfolio_root = str(getattr(config, "PORTFOLIO_STATE_ROOT", "") or "").strip()
+    if portfolio_root:
+        return Path(portfolio_root)
     return Path("data/portfolios")
 
 

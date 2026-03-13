@@ -15,6 +15,7 @@ from factory.execution_evidence import build_portfolio_execution_evidence
 from factory.execution_targets import resolve_target_portfolio
 from factory.idea_intake import all_ideas, annotate_idea_statuses, split_active_and_archived_ideas
 from factory.registry import FactoryRegistry
+from factory.connectors import default_connector_catalog
 
 
 def _project_root() -> Path:
@@ -236,7 +237,9 @@ def _build_connector_feed_health(connectors: Iterable[Dict[str, Any]]) -> Dict[s
             "connectors": [],
         }
 
-    stale_after_seconds = 6 * 60 * 60
+    # Connector-level view is about **connectivity**, not model/runtime freshness.
+    # Treat a connector as healthy when it has any resolved source paths and records,
+    # and reserve warning/critical for truly missing data.
     healthy_count = 0
     warning_count = 0
     critical_count = 0
@@ -248,14 +251,20 @@ def _build_connector_feed_health(connectors: Iterable[Dict[str, Any]]) -> Dict[s
         ready = bool(connector.get("ready"))
         latest_ts = connector.get("latest_data_ts")
         latest_age = _age_seconds(latest_ts)
-        status = "healthy"
+        record_count = int(connector.get("record_count") or 0)
+
+        # New semantics:
+        # - not ready  -> critical (no data resolved at all)
+        # - ready but record_count == 0 -> warning (configured but empty)
+        # - ready and record_count > 0 -> healthy regardless of exact age
         if not ready:
             status = "critical"
             critical_count += 1
-        elif latest_age is None or latest_age > stale_after_seconds:
+        elif record_count == 0:
             status = "warning"
             warning_count += 1
         else:
+            status = "healthy"
             healthy_count += 1
 
         if latest_age is not None and (latest_age_seconds is None or latest_age < latest_age_seconds):
@@ -270,7 +279,7 @@ def _build_connector_feed_health(connectors: Iterable[Dict[str, Any]]) -> Dict[s
                 "ready": ready,
                 "latest_data_ts": latest_ts,
                 "latest_age_seconds": latest_age,
-                "record_count": int(connector.get("record_count") or 0),
+                "record_count": record_count,
                 "issue_count": len(list(connector.get("issues") or [])),
             }
         )
@@ -597,7 +606,9 @@ def _running_portfolio_ids() -> set[str]:
         return set()
     running: set[str] = set()
     for line in result.stdout.splitlines():
-        if "scripts/run_portfolio.py" not in line or "--portfolio" not in line:
+        is_external = "scripts/run_portfolio.py" in line and "--portfolio" in line
+        is_embedded = "factory.local_runner_main" in line and "--portfolio" in line
+        if not is_external and not is_embedded:
             continue
         try:
             runtime_portfolio = ""
@@ -754,6 +765,20 @@ def _best_execution_performer(portfolios: Iterable[Dict[str, Any]]) -> Dict[str,
         "roi_pct": _compact_number(best.get("roi_pct")),
         "trade_count": int(best.get("trade_count") or 0),
         "paper_days": int(best.get("paper_days") or 0),
+    }
+
+
+def _extract_trainability(training_state: Dict[str, Any]) -> Dict[str, Any]:
+    status = str(training_state.get("trainability_status") or "")
+    if not status and isinstance(training_state.get("trainability"), dict):
+        status = str(training_state["trainability"].get("status") or "")
+    return {
+        "status": status,
+        "required_model_count": int(training_state.get("required_model_count", 0) or 0),
+        "trainable_model_count": int(training_state.get("trainable_model_count", 0) or 0),
+        "trained_model_count": int(training_state.get("trained_model_count", 0) or 0),
+        "strict_pass_model_count": int(training_state.get("strict_pass_model_count", 0) or 0),
+        "blocked_models": list(training_state.get("blocked_models") or [])[:3],
     }
 
 
@@ -922,14 +947,7 @@ def _lineage_portfolio_light(factory_state: Dict[str, Any]) -> Dict[str, Any]:
                     "pending_labels": int(training_state.get("pending_labels", 0) or 0),
                     "closed_trades": int(training_state.get("closed_trades", 0) or 0),
                 },
-                "trainability": {
-                    "status": str(training_state.get("trainability", {}).get("status") or ""),
-                    "required_model_count": int(training_state.get("required_model_count", 0) or 0),
-                    "trainable_model_count": int(training_state.get("trainable_model_count", 0) or 0),
-                    "trained_model_count": int(training_state.get("trained_model_count", 0) or 0),
-                    "strict_pass_model_count": int(training_state.get("strict_pass_model_count", 0) or 0),
-                    "blocked_models": list(training_state.get("blocked_models") or [])[:3],
-                },
+                "trainability": _extract_trainability(training_state),
                 "candidate_context_count": len(related),
                 "runtime_lane_count": len(runtime_lanes),
                 "runtime_lanes": runtime_lanes[:4],
@@ -1063,7 +1081,7 @@ def _portfolio_snapshot(path: Path) -> Dict[str, Any]:
         "paper_days": observed_paper_days,
         "status": status,
         "display_status": display_status,
-        "running": bool(state.get("running", heartbeat.get("status") == "running")),
+        "running": bool(state.get("running", heartbeat.get("status") == "running")) or (heartbeat_age is not None and heartbeat_age <= 300),
         "heartbeat_ts": heartbeat_ts,
         "heartbeat_age_seconds": heartbeat_age,
         "error": _portfolio_error(state, readiness),
@@ -2247,6 +2265,7 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "last_debug_human_action": row.get("last_debug_human_action"),
                 "last_debug_bug_category": row.get("last_debug_bug_category"),
                 "last_debug_summary": row.get("last_debug_summary"),
+                "source_idea_id": row.get("source_idea_id"),
             }
         )
     return rows
@@ -2291,12 +2310,23 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
     research_summary = dict(factory_state.get("research_summary") or {})
     readiness = dict(factory_state.get("readiness") or {})
     paper_runtime = _paper_runtime_summary(factory_state)
-    connectors = list(factory_state.get("connectors") or [])
-    feed_health = _build_feed_health(factory_state, connectors)
+
+    # Derive live connector snapshots directly from the local filesystem/catalog so
+    # the API feeds view always includes all venues (binance, betfair, polymarket,
+    # yahoo, alpaca) even if the long-running factory process was started before
+    # new connectors were added.
+    project_root = _project_root()
+    connector_adapters = default_connector_catalog(project_root)
+    connector_snapshots = [adapter.snapshot().to_dict() for adapter in connector_adapters]
+
+    feed_health = _build_feed_health(factory_state, connector_snapshots)
 
     return {
         "generated_at": utc_now_iso(),
-        "project_root": str(_project_root()),
+        "project_root": str(project_root),
+        "factory_paused": (project_root / "data" / "factory" / "factory_paused.flag").exists(),
+        "api_health": {"status": "ok", "snapshot_source": "factory_state"},
+        "api_feeds": _build_connector_feed_health(connector_snapshots),
         "factory": {
             "mode": factory_state.get("agentic_factory_mode"),
             "status": factory_state.get("status"),
@@ -2310,7 +2340,9 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
             "lineages": _build_lineage_table(factory_state),
             "lineage_atlas": _build_lineage_atlas(factory_state),
             "queue": list(factory_state.get("queue") or []),
-            "connectors": connectors,
+            # Surface catalog-based connector snapshots so the UI can see all venues,
+            # independent of the long-running factory process.
+            "connectors": connector_snapshots,
             "manifests": dict(factory_state.get("manifests") or {}),
             "agent_runs": _build_agent_run_view(agent_run_rows),
             "operator_signals": _build_operator_signal_view(factory_state),

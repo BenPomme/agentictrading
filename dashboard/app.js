@@ -5,6 +5,7 @@ const uiState = {
   selectedLineageId: null,
 };
 let latestSnapshot = null;
+const pnlCharts = new Map();
 
 function formatNumber(value, digits = 2) {
   const number = Number(value ?? 0);
@@ -114,7 +115,13 @@ function renderKpis(snapshot) {
   const paperRuntime = factory.paper_runtime || {};
   const readiness = factory.readiness || {};
   const agentRuns = factory.agent_runs || [];
+  const apiHealth = snapshot.api_health || {};
   const cards = [
+    {
+      label: "API Health",
+      value: (apiHealth.status || "unknown").toUpperCase(),
+      detail: apiHealth.snapshot_source || "factory_state",
+    },
     {
       label: "Factory Readiness",
       value: `${formatNumber(readiness.score_pct, 0)}%`,
@@ -157,7 +164,7 @@ function renderKpis(snapshot) {
     {
       label: "Idea Notes",
       value: formatNumber(ideas.idea_count || 0, 0),
-      detail: ideas.present ? `${formatNumber((ideas.status_counts || {}).tested || 0, 0)} tested · ${formatNumber((ideas.status_counts || {}).promoted || 0, 0)} promoted` : "waiting for ideas.md",
+      detail: ideas.present ? `${formatNumber((ideas.status_counts || {}).incubated || 0, 0)} incubated · ${formatNumber((ideas.status_counts || {}).tested || 0, 0)} tested · ${formatNumber((ideas.status_counts || {}).promoted || 0, 0)} promoted · ${formatNumber((ideas.status_counts || {}).rejected || 0, 0)} rejected` : "waiting for ideas.md",
     },
   ];
 
@@ -522,6 +529,159 @@ function renderModelLeague(snapshot) {
     .join("");
 }
 
+async function renderPnlChart(portfolioId, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  try {
+    const resp = await fetch(`/api/portfolio/${encodeURIComponent(portfolioId)}/chart`, { cache: "no-store" });
+    if (!resp.ok) {
+      container.innerHTML = `<p class="card-subtitle">No chart data available.</p>`;
+      return;
+    }
+    const data = await resp.json();
+    if (!data.points || !data.points.length) {
+      container.innerHTML = `<p class="card-subtitle">No balance history yet.</p>`;
+      return;
+    }
+
+    const pnlData = data.points.map((pt) => ({ x: new Date(pt.ts).getTime(), y: pt.pnl }));
+
+    let tradeCounter = 0;
+    const tradePoints = data.trades.map((t) => {
+      tradeCounter++;
+      const tsMs = new Date(t.ts).getTime();
+      const closest = data.points.reduce((best, pt) => {
+        const d = Math.abs(new Date(pt.ts).getTime() - tsMs);
+        return d < best.d ? { d, pnl: pt.pnl } : best;
+      }, { d: Infinity, pnl: 0 });
+      return {
+        x: tsMs,
+        y: closest.pnl,
+        kind: t.kind,
+        symbol: t.symbol,
+        side: t.side,
+        pnl: t.pnl,
+        label: `Trade ${tradeCounter}`,
+      };
+    });
+
+    const openPoints = tradePoints.filter((p) => p.kind === "trade_opened");
+    const closePoints = tradePoints.filter((p) => p.kind === "trade_closed");
+
+    const existing = pnlCharts.get(containerId);
+    if (existing) {
+      existing.data.datasets[0].data = pnlData;
+      existing.data.datasets[1].data = openPoints;
+      existing.data.datasets[2].data = closePoints;
+      existing.update("none");
+      return;
+    }
+
+    const canvasEl = document.createElement("canvas");
+    container.innerHTML = "";
+    container.appendChild(canvasEl);
+
+    const monoFont = "'Menlo', 'SFMono-Regular', 'Consolas', monospace";
+    const gridColor = "rgba(31, 27, 22, 0.10)";
+    const accentColor = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#8c2f1b";
+    const okColor = getComputedStyle(document.documentElement).getPropertyValue("--ok").trim() || "#2b6d36";
+    const dangerColor = getComputedStyle(document.documentElement).getPropertyValue("--danger").trim() || "#a32222";
+
+    const chart = new Chart(canvasEl, {
+      type: "line",
+      data: {
+        datasets: [
+          {
+            label: "P&L",
+            data: pnlData,
+            borderColor: accentColor,
+            backgroundColor: `${accentColor}18`,
+            borderWidth: 2,
+            fill: true,
+            tension: 0.25,
+            pointRadius: 0,
+            pointHitRadius: 6,
+            order: 2,
+          },
+          {
+            label: "Trade Opened",
+            data: openPoints,
+            type: "scatter",
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            pointBackgroundColor: okColor,
+            pointBorderColor: "#fff",
+            pointBorderWidth: 1.5,
+            showLine: false,
+            order: 1,
+          },
+          {
+            label: "Trade Closed",
+            data: closePoints,
+            type: "scatter",
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            pointBackgroundColor: dangerColor,
+            pointBorderColor: "#fff",
+            pointBorderWidth: 1.5,
+            showLine: false,
+            order: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        parsing: false,
+        interaction: { mode: "nearest", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "rgba(31,27,22,0.92)",
+            titleFont: { family: monoFont, size: 11 },
+            bodyFont: { family: monoFont, size: 11 },
+            callbacks: {
+              title(items) {
+                if (!items.length) return "";
+                const raw = items[0].raw;
+                return raw.label || new Date(raw.x).toLocaleString();
+              },
+              label(item) {
+                const raw = item.raw;
+                if (raw.symbol) {
+                  const pnlText = raw.pnl != null ? ` · P&L $${raw.pnl}` : "";
+                  return `${raw.kind === "trade_opened" ? "OPEN" : "CLOSE"} ${raw.symbol} ${raw.side}${pnlText}`;
+                }
+                return `P&L: $${raw.y.toFixed(2)}`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: "time",
+            grid: { color: gridColor, drawTicks: false },
+            ticks: { font: { family: monoFont, size: 10 }, color: "rgba(31,27,22,0.5)", maxTicksLimit: 8 },
+            border: { display: false },
+          },
+          y: {
+            grid: { color: gridColor, drawTicks: false },
+            ticks: {
+              font: { family: monoFont, size: 10 },
+              color: "rgba(31,27,22,0.5)",
+              callback: (v) => `$${v}`,
+            },
+            border: { display: false },
+          },
+        },
+      },
+    });
+    pnlCharts.set(containerId, chart);
+  } catch {
+    container.innerHTML = `<p class="card-subtitle">Chart load failed.</p>`;
+  }
+}
+
 function renderPortfolios(snapshot) {
   const portfolios = snapshot.execution.portfolios || [];
   if (!portfolios.length) {
@@ -539,6 +699,17 @@ function renderPortfolios(snapshot) {
     `;
     return;
   }
+  const prevExpanded = new Set();
+  document.querySelectorAll(".pnl-chart-wrap.is-expanded").forEach((el) => {
+    const id = el.dataset.portfolioId;
+    if (id) prevExpanded.add(id);
+  });
+
+  for (const [chartId, chart] of pnlCharts) {
+    chart.destroy();
+    pnlCharts.delete(chartId);
+  }
+
   document.getElementById("portfolio-grid").innerHTML = portfolios
     .map((portfolio) => {
       const status = portfolio.display_status || (portfolio.error ? "blocked" : (portfolio.status || "unknown"));
@@ -548,6 +719,9 @@ function renderPortfolios(snapshot) {
       const trainabilityLabel = trainability.status || "n/a";
       const trainingDetail = `${formatNumber(training.labeled_examples || 0, 0)} labeled · ${formatNumber(training.pending_labels || 0, 0)} pending`;
       const modelDetail = `${formatNumber(trainability.trained_model_count || 0, 0)}/${formatNumber(trainability.required_model_count || 0, 0)} trained`;
+      const chartId = `pnl-chart-${escapeHtml(portfolio.portfolio_id)}`;
+      const hasActivity = Number(portfolio.realized_pnl || 0) !== 0 || Number(portfolio.trade_count || 0) > 0;
+      const expanded = prevExpanded.has(portfolio.portfolio_id) || (prevExpanded.size === 0 && hasActivity);
       return `
         <article class="portfolio-card">
           <header>
@@ -555,7 +729,10 @@ function renderPortfolios(snapshot) {
               <h3 class="card-title">${escapeHtml(portfolio.label)}</h3>
               <p class="card-subtitle">${escapeHtml(portfolio.portfolio_id)} · ${escapeHtml(portfolio.category)}</p>
             </div>
-            <span class="${pillClass(status)}">${escapeHtml(status)}</span>
+            <div class="portfolio-header-actions">
+              <button class="pnl-toggle-btn" type="button" data-pnl-toggle="${escapeHtml(portfolio.portfolio_id)}">${expanded ? "Hide P&L" : "View P&L"}</button>
+              <span class="${pillClass(status)}">${escapeHtml(status)}</span>
+            </div>
           </header>
           <div class="metric-row"><span class="metric-label">Execution Health</span><strong><span class="${pillClass(portfolio.execution_health_status || "info")}">${escapeHtml(portfolio.execution_health_status || "unknown")}</span></strong></div>
           <div class="metric-row"><span class="metric-label">Balance</span><strong>${formatCurrency(portfolio.current_balance, portfolio.currency)}</strong></div>
@@ -579,10 +756,18 @@ function renderPortfolios(snapshot) {
             ${(portfolio.execution_issue_codes || []).slice(0, 3).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}
             ${(portfolio.candidate_families || []).slice(0, 4).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}
           </div>
+          <div class="pnl-chart-wrap ${expanded ? "is-expanded" : ""}" data-portfolio-id="${escapeHtml(portfolio.portfolio_id)}">
+            <div class="pnl-chart-container" id="${chartId}"></div>
+          </div>
         </article>
       `;
     })
     .join("");
+
+  for (const pid of prevExpanded) {
+    const chartId = `pnl-chart-${pid}`;
+    renderPnlChart(pid, chartId);
+  }
 }
 
 function renderQueue(snapshot) {
@@ -743,18 +928,33 @@ function renderIdeas(snapshot) {
     document.getElementById("ideas-shell").innerHTML = `<div class="idea-empty">Create <code>ideas.md</code> in the repo root and it will appear here automatically.</div>`;
     return;
   }
-  const items = ideas.items || [];
+  const activeItems = ideas.items || [];
+  const archivedItems = ideas.archived_items || [];
+  const allItems = archivedItems.concat(activeItems);
   const summary = ideas.status_counts || {};
-  const cards = items.slice(0, 12).map((item) => `
+  const totalProcessed = (summary.incubated || 0) + (summary.tested || 0) + (summary.promoted || 0);
+  const renderIdeaCard = (item) => `
     <article class="alert-card" data-severity="${escapeHtml(item.status || "info")}">
       <header>
         <h3>${escapeHtml(item.title || item.idea_id)}</h3>
         <span class="${pillClass(item.status || "info")}">${escapeHtml(item.status || "new")}</span>
       </header>
       <p>${escapeHtml(item.summary || "No summary yet.")}</p>
-      <p class="card-subtitle">${escapeHtml((item.family_candidates || []).join(", ") || "unmapped")} · lineages ${escapeHtml(item.lineage_count || 0)}</p>
+      <p class="card-subtitle">${escapeHtml((item.family_candidates || []).join(", ") || "unmapped")} · ${escapeHtml(item.lineage_count || 0)} lineages · ${escapeHtml(item.family_count || 0)} families</p>
+      ${(item.related_lineage_ids || []).length ? `<div class="tag-row">${(item.related_lineage_ids || []).slice(0, 4).map((lid) => "<span class=\"tag\">" + escapeHtml(lid) + "</span>").join("")}${(item.related_lineage_ids || []).length > 4 ? "<span class=\"tag\">+" + ((item.related_lineage_ids || []).length - 4) + " more</span>" : ""}</div>` : ""}
     </article>
-  `).join("");
+  `;
+  const processedCards = archivedItems
+    .filter((item) => ["incubated", "tested", "promoted"].includes(item.status))
+    .slice(0, 12)
+    .map(renderIdeaCard)
+    .join("");
+  const rejectedCards = archivedItems
+    .filter((item) => item.status === "rejected")
+    .slice(0, 6)
+    .map(renderIdeaCard)
+    .join("");
+  const pipelineCards = activeItems.slice(0, 12).map(renderIdeaCard).join("");
   document.getElementById("ideas-shell").innerHTML = `
     <div class="tag-row">
       <span class="tag">new ${escapeHtml(summary.new || 0)}</span>
@@ -764,7 +964,9 @@ function renderIdeas(snapshot) {
       <span class="tag">promoted ${escapeHtml(summary.promoted || 0)}</span>
       <span class="tag">rejected ${escapeHtml(summary.rejected || 0)}</span>
     </div>
-    ${cards}
+    ${totalProcessed ? `<h3 style="margin: 1rem 0 0.5rem">Processed by Agents (${totalProcessed})</h3>${processedCards}` : ""}
+    ${pipelineCards ? `<h3 style="margin: 1rem 0 0.5rem">In Pipeline (${activeItems.length})</h3>${pipelineCards}` : ""}
+    ${rejectedCards ? `<h3 style="margin: 1rem 0 0.5rem">Rejected (${summary.rejected || 0})</h3>${rejectedCards}` : ""}
   `;
 }
 
@@ -1034,6 +1236,12 @@ function renderFrame(snapshot) {
   latestSnapshot = snapshot;
   document.getElementById("factory-mode").textContent = snapshot.factory.mode || "unknown";
   document.getElementById("snapshot-time").textContent = new Date(snapshot.generated_at).toLocaleTimeString();
+  const apiHealthEl = document.getElementById("api-health-status");
+  if (apiHealthEl) {
+    const apiStatus = (snapshot.api_health || {}).status || "unknown";
+    apiHealthEl.textContent = apiStatus.toUpperCase();
+    apiHealthEl.style.color = apiStatus === "ok" ? "var(--accent)" : "var(--critical)";
+  }
   document.getElementById("factory-status-tag").className = pillClass(snapshot.factory.readiness?.status || "info");
   document.getElementById("factory-status-tag").textContent = snapshot.factory.readiness?.status || "unknown";
   renderFeedHealth(snapshot);
@@ -1081,6 +1289,21 @@ document.addEventListener("click", (event) => {
   if (tabButton) {
     uiState.activeTab = tabButton.dataset.tabTarget || "overview";
     renderViewTabs();
+    return;
+  }
+  const pnlButton = event.target.closest("[data-pnl-toggle]");
+  if (pnlButton) {
+    const pid = pnlButton.dataset.pnlToggle;
+    const wrap = pnlButton.closest(".portfolio-card")?.querySelector(".pnl-chart-wrap");
+    if (wrap) {
+      const expanding = !wrap.classList.contains("is-expanded");
+      wrap.classList.toggle("is-expanded");
+      pnlButton.textContent = expanding ? "Hide P&L" : "View P&L";
+      if (expanding) {
+        const chartId = `pnl-chart-${pid}`;
+        renderPnlChart(pid, chartId);
+      }
+    }
     return;
   }
   const familyButton = event.target.closest("[data-family-select]");

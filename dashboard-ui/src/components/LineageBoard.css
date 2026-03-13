@@ -1,0 +1,83 @@
+/* ─── LineageBoard ─── */
+
+.lnb__scroll {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.lnb__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+}
+
+.lnb__table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  text-align: left;
+  padding: 6px 6px;
+  font-family: var(--font-display);
+  font-size: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: color var(--transition);
+}
+
+.lnb__table th:hover {
+  color: var(--text-secondary);
+}
+
+.lnb__th--active {
+  color: var(--info) !important;
+}
+
+.lnb__arrow {
+  margin-left: 3px;
+  font-size: 0.45rem;
+}
+
+.lnb__table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.lnb__table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.lnb__id {
+  font-weight: 600;
+  color: var(--text) !important;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lnb__role {
+  text-transform: capitalize;
+}
+
+.lnb__stage {
+  font-size: 0.58rem;
+  color: var(--text-muted) !important;
+}
+
+.lnb__roi {
+  font-weight: 700;
+}
+
+.lnb__lane {
+  font-size: 0.58rem;
+  color: var(--text-dim) !important;
+}

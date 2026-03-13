@@ -1,67 +1,58 @@
-# AgenticTrading Operator Notes
+# NEBULA Control Room — Operator Notes
 
 ## Repo Role
 
-This repo is the standalone autonomous strategy factory.
+This repo is the **NEBULA** standalone autonomous strategy factory.
 
 It owns:
 
-- agentic strategy invention
-- lineage registry and memory
-- experiment orchestration
+- agentic strategy invention and orchestration
+- lineage registry and learning memory
+- experiment orchestration and evaluation
 - Goldfish sidecar workspaces
-- evaluation and promotion governance
-- manifest and artifact publication
+- promotion governance and manifest publication
+- data ingestion (Yahoo, Alpaca, Binance, Betfair, Polymarket)
+- NEBULA Control Room dashboard (React + Vite)
 
 It does **not** own live trading execution.
 
-The execution repo remains:
+In standalone mode, paper execution runs via embedded runners. An external execution repo can optionally be connected through `EXECUTION_REPO_ROOT`.
 
-- `/Users/benjaminpommeraud/Desktop/Coding/Arbitrage`
+## Learned User Preferences
 
-This repo may read execution state and optionally start execution runners through explicit adapters only.
+- Be fully autonomous: do not ask the user to restart dashboards, servers, or processes -- do it yourself
+- Always verify work visually using browser tools (navigate to dashboard, take screenshots, inspect DOM) before claiming something works
+- Use available skills and MCPs proactively instead of doing things manually
+- Show progress frequently -- the user dislikes silent long-running work with no visibility
+- Use cheap/local agents and models for simple tasks (classification, formatting, tweaks); reserve expensive models only for tasks requiring serious reasoning
+- Expensive models (gpt-5.4, gpt-5.3, o3) should be used no more than 5-10% of total agent runs; the cost guard enforces this automatically
+- When Codex CLI quota is exhausted, gracefully fall back to the OpenAI API; never let quota exhaustion block the factory loop or paper trading
+- The user works with Codex CLI in parallel sessions; always check for uncommitted work on `main` before assuming the worktree is current
+- Preserve system state across sessions: if ideas were processed, models were trading, feeds were healthy -- that state must not regress
+- Keep this repo self-contained; no external repo dependencies required for standalone operation
+- Update `docs/ROADMAP.md` as work lands -- it is the canonical planning document
+- Do not add unnecessary HubSpot, marketing, or unrelated MCP servers to the Codex config
+- Start with a plan for complex multi-step work; execute the plan systematically
+- Delegate mechanical/routine tasks to cheaper subagents; handle only critical/hard tasks directly
+- All factory and research data should be version-controlled (data/ is tracked in git)
 
-## Working Style
+## Learned Workspace Facts
 
-Always start in plan work.
-
-Prepare work with multiple agents ranked by complexity:
-
-- use cheap/local agents first for search, grep, validation, scaffolding, and deterministic tasks
-- use stronger agents only for architecture, cross-file refactors, or model/pipeline design
-
-Use skills when available, and create skills for repeatable workflows.
-
-Do not silently re-couple this repo to the execution repo through direct imports. Prefer adapters and explicit contracts.
-
-## Current Status
-
-Migration status: extracted and pushed to GitHub.
-
-Remote:
-
-- `https://github.com/BenPomme/agentictrading.git`
-
-Local path:
-
-- `/Users/benjaminpommeraud/Documents/AgenticTrading`
-
-Current branch:
-
-- `main`
-
-Current state:
-
-- standalone factory repo exists and is pushed
-- production code no longer directly imports execution-repo modules for runtime behavior
-- integration with the execution repo is explicit through:
-  - `EXECUTION_REPO_ROOT`
-  - `EXECUTION_PORTFOLIO_STATE_ROOT`
-  - `factory/state_store.py`
-  - `factory/runtime_execution.py`
-  - `factory/experiment_sources.py`
-- standalone smoke run succeeds
-- extracted test subset passes
+- Remote: `https://github.com/BenPomme/agentictrading.git`
+- Local main repo: `/Users/benjaminpommeraud/Documents/AgenticTrading`
+- bng worktree: `/Users/benjaminpommeraud/.cursor/worktrees/AgenticTrading/bng`
+- Execution mode: standalone embedded (FACTORY_EMBEDDED_EXECUTION_ENABLED=true)
+- Dashboard: `http://127.0.0.1:8788` served by `scripts/factory_dashboard.py` (React build from `dashboard-ui/dist`)
+- Factory loop: `scripts/factory_loop.py` (15-minute cycle interval by default)
+- `.env` is gitignored and must exist in the repo root for the dashboard and factory loop to read config
+- `.env` must contain `PORTFOLIO_STATE_ROOT`, `OPENAI_API_KEY`, `FACTORY_AGENT_PROVIDER_ORDER`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`
+- Agent provider chain: `codex,openai_api,deterministic` (Codex CLI first, then direct OpenAI API fallback, then empty deterministic)
+- Cost guard: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10` caps frontier/deep model usage at 10% of recent runs
+- `data/` directory contains all local data (portfolios, Yahoo OHLCV, Alpaca, factory state) — no external symlinks
+- Yahoo data: 501 Parquet files in `data/yahoo/ohlcv/` (5yr daily OHLCV for S&P 500 + ETFs + VIX + Treasuries)
+- Alpaca data: stock quotes/bars in `data/alpaca/` (free tier, no SIP bars)
+- Portfolio runners run via embedded execution (`factory.local_runner_main`) in standalone mode
+- HMM regime-adaptive family is wired into experiment runner and uses Yahoo OHLCV data
 
 ## Integration Contract
 
@@ -74,23 +65,19 @@ This repo should communicate with the execution repo through:
 
 The execution repo should never import internal factory modules directly.
 
-## Local Environment
+## Commands
 
-Use the local `.env` in this repo.
-
-Important fields:
-
-- `EXECUTION_REPO_ROOT=/Users/benjaminpommeraud/Desktop/Coding/Arbitrage`
-- `EXECUTION_PORTFOLIO_STATE_ROOT=/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/data/portfolios`
-- `AGENTIC_FACTORY_MODE=full`
-
-Bootstrap helper:
+Start the NEBULA Control Room dashboard:
 
 ```bash
-python3 scripts/bootstrap_env.py --execution-repo-root /Users/benjaminpommeraud/Desktop/Coding/Arbitrage
+python3 scripts/factory_dashboard.py --host 0.0.0.0 --port 8788
 ```
 
-## Commands
+Start the factory loop:
+
+```bash
+python3 scripts/factory_loop.py --json
+```
 
 Smoke the standalone factory:
 
@@ -98,19 +85,37 @@ Smoke the standalone factory:
 python3 scripts/factory_smoke.py --cycles 1 --json
 ```
 
-Check Binance auth from this repo:
+Rebuild the React dashboard (after UI changes):
 
 ```bash
-python3 scripts/check_binance_auth.py
+cd dashboard-ui && npm run build
 ```
 
-List manifests:
+Run batch backtests on Yahoo data:
 
 ```bash
-python3 scripts/factory_manifest.py list
+python3 scripts/batch_backtest.py --param-grid --tickers "SPY,QQQ,AAPL,MSFT"
 ```
 
-Run focused extracted tests:
+Refresh Yahoo data (incremental daily):
+
+```bash
+python3 scripts/refresh_yahoo_data.py
+```
+
+Refresh Alpaca data:
+
+```bash
+python3 scripts/refresh_alpaca_data.py
+```
+
+Bulk download Yahoo data (one-time, 5 years):
+
+```bash
+python3 scripts/download_stock_data.py
+```
+
+Run focused tests:
 
 ```bash
 python3 -m pytest -q tests/unit/test_factory_evaluation.py tests/unit/test_factory_promotion.py tests/unit/test_factory_registry.py tests/unit/test_factory_runtime_mode.py tests/unit/test_factory_strategy_inventor.py tests/unit/test_factory_execution_bridge.py
@@ -149,38 +154,52 @@ If you need execution-repo functionality:
 
 ## Next Priorities
 
-The canonical roadmap now lives in:
+The canonical roadmap lives in `docs/ROADMAP.md`. Keep it up to date as work lands.
 
-- `/Users/benjaminpommeraud/Documents/AgenticTrading/docs/ROADMAP.md`
+## Agent Cost Architecture
 
-Keep that file up to date as work lands.
+The factory enforces a tiered cost model for all agent runs:
 
-Current priorities:
+- **Cost guard**: `_apply_cost_guard()` in `factory/agent_runtime.py` checks the rolling window of recent runs. If expensive tiers (`TASK_FRONTIER`/`TASK_DEEP`) exceed `FACTORY_AGENT_EXPENSIVE_CAP_PCT` (default 10%), subsequent expensive requests are auto-downgraded to `TASK_HARD`.
+- **Family bootstrap exempt**: `generate_family_proposal` always uses `TASK_FRONTIER` — creating new strategy families needs the best model.
+- **Provider chain**: `codex -> openai_api -> deterministic`. Each provider is tried in order; the first success wins. The `codex` provider calls the Codex CLI; `openai_api` calls `https://api.openai.com/v1/chat/completions` directly with the API key from `.env`.
+- **Proposal model default**: Changed from `gpt-5.4` to `gpt-5.2-codex` to avoid burning expensive budget on routine proposals.
 
-1. Cross-machine portability and regular cloud sync of state, datasets, and model artifacts.
-2. Structured idea pipeline from `ideas.md` into tracked agent work.
-3. Scheduled agent reviews and review-driven retrain/retire/replace loops.
-4. Tighten the execution health contract and reduce dashboard inference from partial files.
-5. Continue replacing execution-repo-assumption tests with adapter-focused tests.
-6. Continue improving strategy quality, not just factory plumbing.
+## Data Pipeline
+
+- **Yahoo Finance**: 501 Parquet files in `data/yahoo/ohlcv/`. Bulk download via `scripts/download_stock_data.py`. Daily incremental via `scripts/refresh_yahoo_data.py`. Used by HMM regime-adaptive family and batch backtest.
+- **Alpaca**: Stock bars and quotes in `data/alpaca/`. Refresh via `scripts/refresh_alpaca_data.py`. Requires API keys in `.env`. Free tier does not include SIP bar data.
+- **Binance**: Existing connector reads from `data/binance/`. Used by funding-contrarian and cascade families.
+- **Betfair**: Existing connector reads from `data/betfair/`. Used by betfair families.
+- **Polymarket**: Existing connector reads from `data/polymarket/`. Used by cross-venue family.
+- **Connectors**: All defined in `factory/connectors.py` via `default_connector_catalog()`. Dashboard `api_feeds` strip reads from these connectors.
+
+## Experiment Runner Families
+
+The experiment runner (`factory/experiment_runner.py`) dispatches experiments based on `lineage.family_id`:
+
+- **hmm_regime_adaptive**: Uses Yahoo OHLCV, `HMMRegimeModel` from `research/goldfish/hmm_regime_adaptive/model.py`. Walk-forward backtest with 70% train split.
+- **binance_funding_contrarian**, **binance_cascade_regime**, **polymarket_cross_venue**: Existing families using venue-specific data.
+
+## Batch Backtest
+
+`scripts/batch_backtest.py` is a standalone tool for systematic backtesting outside the factory loop:
+
+- Parameter grid search: `n_states` (2-5) x `lookback_days` (20,40,60)
+- Train/test split: configurable (default 3yr train, 1yr test)
+- Results: JSON files in `data/backtest_results/{family}/{ticker}_results.json`
+- Usage: `python3 scripts/batch_backtest.py --param-grid --tickers "SPY,QQQ,AAPL"`
 
 ## Fresh Session Handoff
 
-If starting a new Codex session in this repo, assume:
+If starting a new session in this repo:
 
-- the migration is complete enough to continue work here
-- the execution repo still exists separately at `/Users/benjaminpommeraud/Desktop/Coding/Arbitrage`
-- the correct first validation step is:
-
-```bash
-python3 scripts/factory_smoke.py --cycles 1 --json
-```
-
-Then inspect:
-
-- `factory/`
-- `scripts/`
-- `docs/EXTRACTION_PLAN.md`
-- `README.md`
-
-And continue from the `Next Priorities` section above.
+- check for uncommitted Codex CLI work on `main` before starting
+- verify the dashboard is running at http://127.0.0.1:8788 (start it if not)
+- verify the factory loop is running (`ps aux | grep factory_loop`)
+- verify embedded runners are alive if applicable
+- read `docs/ROADMAP.md` for current priorities and recent completions
+- inspect the dashboard visually with browser tools to confirm system health
+- check agent run success rate: `ls -lt data/factory/agent_runs/ | head` and verify recent runs show `openai_api` provider with `success: true`
+- if data feeds are showing stale/warning, run the relevant refresh scripts
+- if factory loop crashed, check for Python import errors (missing `logging` etc.) in the traceback

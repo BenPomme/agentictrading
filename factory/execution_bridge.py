@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 import config
 from factory.execution_targets import resolve_target_portfolio
 from factory.manifests import candidate_context_refs_for_portfolio
-from factory.runtime_execution import RuntimeProcessManager, get_runtime_portfolio_spec
+from factory.runtime_execution import RuntimeProcessManager, get_process_manager, get_runtime_portfolio_spec
 from factory.runtime_mode import current_agentic_factory_runtime_mode
 
 
@@ -14,7 +14,7 @@ class FactoryExecutionBridge:
     """Keeps the paper execution plane aligned with active factory families."""
 
     def __init__(self, process_manager: RuntimeProcessManager | None = None) -> None:
-        self._process_manager = process_manager or RuntimeProcessManager()
+        self._process_manager = process_manager or get_process_manager()
         self._auto_start = bool(getattr(config, "FACTORY_EXECUTION_AUTOSTART_ENABLED", True))
 
     def _target_lane_kind(self, item: Dict[str, Any]) -> str:

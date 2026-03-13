@@ -82,6 +82,8 @@ DEFAULTS = {
     "FACTORY_PAPER_GATE_MIN_FAST_TRADES": "50",
     "FACTORY_PAPER_GATE_MIN_SLOW_SETTLED": "10",
     "FACTORY_EXECUTION_AUTOSTART_ENABLED": "false",
+    "FACTORY_EMBEDDED_EXECUTION_ENABLED": "true",
+    "FACTORY_VALIDATION_PROFILE": "paper",
     "CASCADE_ALPHA_ENABLED": "true",
     "CONTRARIAN_LEGACY_ENABLED": "true",
     "POLYMARKET_QF_ENABLED": "true",
@@ -131,17 +133,22 @@ DEFAULTS = {
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Write a local .env for AgenticTrading extraction mode.")
-    parser.add_argument("--execution-repo-root", required=True, help="Absolute path to the execution repo.")
+    parser.add_argument("--execution-repo-root", default=None, help="Absolute path to the execution repo. Optional; omit for embedded-only mode.")
     parser.add_argument("--output", default=".env", help="Target .env path.")
     args = parser.parse_args()
 
-    execution_root = Path(args.execution_repo_root).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
 
     rows = [f"{key}={value}" for key, value in DEFAULTS.items()]
-    rows.append(f"EXECUTION_REPO_ROOT={execution_root}")
-    rows.append(f"EXECUTION_PORTFOLIO_STATE_ROOT={execution_root / 'data' / 'portfolios'}")
+    if args.execution_repo_root:
+        execution_root = Path(args.execution_repo_root).expanduser().resolve()
+        rows.append(f"EXECUTION_REPO_ROOT={execution_root}")
+        rows.append(f"EXECUTION_PORTFOLIO_STATE_ROOT={execution_root / 'data' / 'portfolios'}")
+        rows.append("FACTORY_EMBEDDED_EXECUTION_ENABLED=false")
+    else:
+        rows.append("EXECUTION_REPO_ROOT=")
+        rows.append("EXECUTION_PORTFOLIO_STATE_ROOT=")
     output.write_text("\n".join(rows) + "\n", encoding="utf-8")
     print(output)
     return 0

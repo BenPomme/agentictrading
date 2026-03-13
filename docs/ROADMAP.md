@@ -4,10 +4,10 @@ Last updated: 2026-03-13
 
 ## Current State
 
-- Standalone factory repo is live and integrated with the execution repo through adapters and shared state.
-- Repo-local operator dashboard is running.
-- Real Codex-backed research agents are active for proposal generation and underperformance tweaks.
-- Research lake and curated scorecards now exist through the execution repo research store.
+- **NEBULA is fully standalone** — zero dependencies on the Arbitrage repo. All portfolio, funding, and prediction data has been ported locally.
+- NEBULA Control Room dashboard (React + Vite) is live with mission-control aesthetic.
+- Real Codex-backed research agents are active for proposal generation and underperformance tweaks, with OpenAI API fallback when Codex quota is exhausted.
+- Research lake and curated scorecards now exist in the local data store.
 - Positive ROI models and operator escalation candidates are surfaced in the dashboard.
 - Challenger generation now follows an explicit `80% mutation / 20% new_model` policy.
 - Background factory loop exists via `scripts/factory_loop.py`.
@@ -93,9 +93,13 @@ Last updated: 2026-03-13
 
 ## In Progress
 
-1. Clear separation between execution failure, validation-blocked, and research-only states in the dashboard.
-2. Continuous factory background operation.
-3. Idea-to-lineage status quality: move more ideas from `adapted` into `tested`.
+1. Embedded execution layer: in-repo paper runners via `factory.local_runner_main`, `EmbeddedExecutionManager`, and `get_process_manager()` factory function that switches between embedded and external execution based on `FACTORY_EMBEDDED_EXECUTION_ENABLED`.
+2. Validation profiles: `FACTORY_VALIDATION_PROFILE` (dev/paper/prod) with profile-based thresholds in execution evidence for heartbeat staleness, rejection rates, and no-trade scan minimums.
+3. Standalone mode: `EXECUTION_REPO_ROOT` and `EXECUTION_PORTFOLIO_STATE_ROOT` are now optional. When empty, embedded mode uses `PORTFOLIO_STATE_ROOT` for state, `execution_refresh` skips gracefully, and `bootstrap_env.py` supports embedded-only `.env` generation.
+4. Clear separation between execution failure, validation-blocked, and research-only states in the dashboard.
+5. Continuous factory background operation.
+6. Idea-to-lineage status quality: move more ideas from `adapted` into `tested`.
+7. ~~**Agent cost optimization and OpenAI API fallback**~~ — **COMPLETED 2026-03-13** (see Completed section below).
 4. Surface assessment maturity more clearly in the dashboard so high ROI on tiny trade counts is visibly blocked as insufficient evidence.
 5. Shared-evidence dedupe and lineage-isolated paper assessment need tightening so one portfolio scorecard is not mistaken for multiple independent winners.
 6. Every required execution-side model needs an explicit trainability contract so untrainable books are treated as bugs, not quietly left in paper purgatory.
@@ -182,11 +186,46 @@ Last updated: 2026-03-13
 - Surface `trade_stalled`, `training_stalled`, and `stalled_model` in execution evidence and the dashboard.
 - Use that signal to trigger debug-agent review, maintenance review, challenger pressure, and eventual retirement if the model keeps stalling after rework.
 
+## Completed: NEBULA Independence and Data Expansion (2026-03-13)
+
+1. **Arbitrage repo fully severed**: All `EXECUTION_REPO_ROOT` and `EXECUTION_PORTFOLIO_STATE_ROOT` references cleared. Portfolio data (492MB), funding history (76MB), and prediction/state data ported locally. `factory/connectors.py` now uses only local `data/` paths. `factory/execution_refresh.py` and `factory/runtime_execution.py` guard gracefully when no external execution repo is configured.
+2. **Yahoo Finance bulk data**: 5-year daily OHLCV for all S&P 500 constituents + major ETFs + VIX + Treasury yields downloaded to `data/yahoo/ohlcv/` as Parquet files (~530 tickers). Script: `scripts/download_stock_data.py`. Incremental refresh: `scripts/refresh_yahoo_data.py`.
+3. **Yahoo Finance connector**: `yahoo_stocks` connector in `factory/connectors.py` tracks `data/yahoo/ohlcv/`, `sp500_components.json`, and `metadata.json`. Appears as a first-class API feed in the NEBULA Control Room and is treated as healthy whenever local data exists.
+4. **Alpaca connector**: `alpaca_stocks` connector in `factory/connectors.py` tracks `data/alpaca/bars/`, `data/alpaca/quotes/`, and `metadata.json`. Refresh script: `scripts/refresh_alpaca_data.py`. Requires `ALPACA_API_KEY` and `ALPACA_API_SECRET` in `.env`, and appears alongside Binance/Betfair/Polymarket/Yahoo in the API feeds strip.
+5. **Alpaca MCP server**: Official [alpaca-mcp-server](https://github.com/alpacahq/alpaca-mcp-server) can be installed via `uvx alpaca-mcp-server init` for direct natural-language trading from Cursor/agents.
+6. **HMM regime-adaptive strategy family**: New instrument-agnostic strategy using Hidden Markov Models for market regime detection. Idea in `ideas.md`, family bootstrap in `data/factory/families/hmm_regime_adaptive/`, model scaffold in `research/goldfish/hmm_regime_adaptive/model.py`.
+7. **Dashboard bug fixes**: Fixed 5 component crashes (PnlChart, LineageAtlas, LineageBoard, JournalPanel, FamiliesPanel) with null safety and field name alignment.
+8. **Codex fallback logging**: Added startup diagnostics showing OPENAI_API_KEY status, provider order, and standalone mode. Agent runtime now logs each provider attempt and failure reason.
+
+## Completed: Agent Cost Control, Backtest Automation, HMM Wiring (2026-03-13)
+
+1. **Codex fallback fully operational**: Fixed missing `import logging` / `logger` in `factory/agent_runtime.py` that was crashing the factory loop. After restart, all agent runs successfully fall back from Codex CLI to OpenAI API. Post-fix stats: 21/21 runs successful, 100% using `openai_api` provider.
+2. **Cost guard implemented**: New `_apply_cost_guard()` method in `agent_runtime.py` auto-downgrades `TASK_FRONTIER`/`TASK_DEEP` to `TASK_HARD` when expensive-model usage exceeds a rolling cap. Config: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10` (default 10%), `FACTORY_AGENT_COST_WINDOW=50` (last 50 runs). Family bootstrap (`generate_family_proposal`) is exempt since it needs frontier quality. Post-fix stats: 90% cheap models (`gpt-4.1`), 10% expensive.
+3. **Post-eval critique downgraded**: `critique_post_evaluation` changed from `TASK_DEEP` (gpt-5.4/o3) to `TASK_HARD` (gpt-5.2-codex/gpt-4.1). This was the single largest cost reduction since critiques run frequently.
+4. **Proposal model default lowered**: `_proposal_model()` default changed from `gpt-5.4` to `gpt-5.2-codex`. Proposals still get quality reasoning via `TASK_HARD` tier but no longer burn frontier/deep budget.
+5. **Proposal escalation tightened**: `_proposal_task_class()` no longer escalates to `TASK_FRONTIER` for critical-health or high-retirement scenarios — it caps at `TASK_HARD`. Only `generate_family_proposal` (brand-new family creation) uses `TASK_FRONTIER`.
+6. **Batch backtest script**: New `scripts/batch_backtest.py` for automated 3yr+1yr parameter-grid backtesting on Yahoo historical data. Supports `--param-grid` (n_states x lookback_days), `--tickers`, `--train-years`, `--test-years`. Results stored as JSON in `data/backtest_results/`.
+7. **HMM wired into experiment runner**: `factory/experiment_runner.py` now dispatches `hmm_regime_adaptive` family experiments using Yahoo OHLCV data. Full pipeline: load Parquet, instantiate `HMMRegimeModel` with genome parameters, run walk-forward backtest, emit `EvaluationBundle` artifacts. Also bootstrapped in `factory/orchestrator.py`.
+8. **Model tiering enforced end-to-end**: The full tiering table is now actively enforced:
+
+   | Task Class | Codex Model | OpenAI API Fallback | When Used |
+   |---|---|---|---|
+   | `cheap_structured` | gpt-5.1-codex-mini | gpt-4.1-nano | Simple tweaks, classification |
+   | `standard_research` | gpt-5.1-codex | gpt-4.1-mini | Standard proposals, research |
+   | `hard_research` | gpt-5.2-codex | gpt-4.1 | Complex proposals, critiques, debug |
+   | `frontier_research` | gpt-5.3-codex | o4-mini | Family bootstrap only |
+   | `deep_review` | gpt-5.4 | o3 | Reserved, cost-guard capped at 10% |
+
+### Remaining work (agent costs)
+
+- Add token usage tracking per agent run so cost per cycle is visible in the dashboard.
+- Consider OpenAI Batch API (50% off) for non-time-sensitive agent tasks like scheduled reviews.
+- Add rate-limit / quota detection for the OpenAI API fallback so it can surface "both Codex and API quota exhausted" cleanly.
+- Periodically re-evaluate model pricing as OpenAI releases new models.
+
 ## Later
 
-1. External market-data expansion after factory core is stable
-- Keep this below the current factory/control-plane priorities; do not let external API integration distract from finishing the factory itself.
-- Add adapter-driven research inputs for new tradable universes, especially equities and options, rather than coupling this repo directly to broker execution.
+1. External market-data expansion
 - First-wave candidate APIs:
   - `FRED` for macro regime and release-aware economic features.
   - `SEC EDGAR Data` for filings, company facts, and earnings-driven event research.
@@ -194,8 +233,7 @@ Last updated: 2026-03-13
   - `Tradier` for US equity/options chain, expiries, and options-surface research.
   - `MarketAux` for ticker-linked market news and sentiment inputs.
   - `Financial Modeling Prep` for fundamentals, statements, and transcript-style equity research features.
-- Consider one stronger market-data backbone only after the above is useful in research:
-  - `Alpaca` for stock/options market-data prototyping and possible paper-path alignment.
+- Consider deeper coverage:
   - `Polygon` if deeper equities/options coverage becomes worth the higher cost.
 - Broader crypto and macro expansion can follow through `CoinGecko`, `Messari`, `Econdb`, `Fed Treasury`, or `Nasdaq Data Link` when the factory is ready for more research breadth.
 - Any addition should land through explicit connectors, persisted artifacts, and family-level research hypotheses, not ad hoc API calls.

@@ -529,6 +529,18 @@ class FactoryOrchestrator:
                 "role": LineageRole.CHAMPION.value,
                 "explainer": "Runs signal leagues on Polymarket quotes and cross-venue confirmations to rank paper-only opportunities.",
             },
+            {
+                "family_id": "hmm_regime_adaptive",
+                "label": "HMM Regime-Adaptive",
+                "thesis": "Instrument-agnostic regime detection via HMM on returns/vol/volume. Regime-aware sizing reduces drawdowns and improves risk-adjusted returns.",
+                "target_portfolios": ["hedge_validation", "hedge_research"],
+                "target_venues": ["yahoo", "multi"],
+                "connectors": ["yahoo_stocks"],
+                "budget_bucket": "moonshot",
+                "budget_weight_pct": 10.0,
+                "role": LineageRole.CHAMPION.value,
+                "explainer": "HMM regime detection on Yahoo OHLCV with adaptive position sizing.",
+            },
         ]
         for spec in family_specs:
             self._seed_family_from_spec(
@@ -2775,6 +2787,8 @@ class FactoryOrchestrator:
             if action == "review_due":
                 return True
             if reviewed_action and action == reviewed_action:
+                return True
+            if action == "family_autopilot" and reviewed_action:
                 return True
             return False
 

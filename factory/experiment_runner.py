@@ -98,6 +98,12 @@ class FactoryExperimentRunner:
                 experiment=experiment,
                 family_mode="cross_venue",
             )
+        if lineage.family_id == "hmm_regime_adaptive":
+            return self._run_hmm_regime_experiment(
+                lineage=lineage,
+                genome=genome,
+                experiment=experiment,
+            )
         return {"mode": "unsupported", "bundles": [], "artifact_summary": None}
 
     def _execution_refresh_request(
@@ -736,6 +742,226 @@ class FactoryExperimentRunner:
         )
         return {
             "mode": family_mode,
+            "bundles": bundles,
+            "artifact_summary": artifact_summary,
+        }
+
+    def _run_hmm_regime_experiment(
+        self,
+        *,
+        lineage: LineageRecord,
+        genome: StrategyGenome,
+        experiment: ExperimentSpec,
+    ) -> Dict[str, Any]:
+        parameters = dict(genome.parameters)
+        hmm_config = {
+            "n_hidden_states": int(parameters.get("n_hidden_states", 3) or 3),
+            "covariance_type": str(parameters.get("covariance_type", "full") or "full"),
+            "n_iter": int(parameters.get("n_iter", 100) or 100),
+            "features": list(parameters.get("features", ["log_returns", "vol_ratio_20_60", "volume_zscore"]) or []),
+            "lookback_days": int(parameters.get("lookback_days", 252) or 252),
+            "retrain_frequency_days": int(parameters.get("retrain_frequency_days", 21) or 21),
+            "min_samples_per_state": int(parameters.get("min_samples_per_state", 20) or 20),
+        }
+        if not hmm_config["features"]:
+            hmm_config["features"] = ["log_returns", "vol_ratio_20_60", "volume_zscore"]
+
+        instrument = (experiment.inputs or {}).get("instrument")
+        if not instrument:
+            hypo_path = self.project_root / "data" / "factory" / "families" / "hmm_regime_adaptive" / "hypothesis.json"
+            hypo = self._load_json_object(hypo_path)
+            candidates = hypo.get("target_instruments") or ["SPY", "QQQ", "AAPL"]
+        else:
+            candidates = [str(instrument)]
+
+        ohlcv_root = self.project_root / "data" / "yahoo" / "ohlcv"
+        df = None
+        used_instrument = None
+        for ticker in candidates:
+            ticker = str(ticker).strip()
+            if not ticker:
+                continue
+            safe_name = ticker.replace("^", "_").replace("/", "_")
+            for ext in (".parquet", ".csv"):
+                path = ohlcv_root / f"{safe_name}{ext}"
+                if not path.exists():
+                    path = ohlcv_root / f"{ticker}{ext}"
+                if path.exists():
+                    try:
+                        if ext == ".parquet":
+                            df = pd.read_parquet(path)
+                        else:
+                            df = pd.read_csv(path, index_col=0, parse_dates=True)
+                        if df is not None and len(df) >= 252:
+                            used_instrument = ticker
+                            break
+                    except Exception:
+                        continue
+            if df is not None and used_instrument:
+                break
+        if df is None or len(df) < 252:
+            return {"mode": "hmm_regime_adaptive", "bundles": [], "artifact_summary": None}
+
+        required = ["Open", "High", "Low", "Close", "Volume"]
+        for col in required:
+            if col not in df.columns:
+                return {"mode": "hmm_regime_adaptive", "bundles": [], "artifact_summary": None}
+
+        run_id, run_root = self._build_run_root(lineage=lineage, experiment=experiment)
+        run_root.mkdir(parents=True, exist_ok=True)
+
+        try:
+            from research.goldfish.hmm_regime_adaptive.model import HMMRegimeModel
+        except ImportError as e:
+            self._write_json(
+                run_root / "error.json",
+                {"error": "import_failed", "message": str(e), "generated_at": utc_now_iso()},
+            )
+            return {"mode": "hmm_regime_adaptive", "bundles": [], "artifact_summary": None}
+
+        model = HMMRegimeModel(config=hmm_config)
+        try:
+            backtest = model.backtest(df, train_frac=0.7)
+        except Exception as e:
+            self._write_json(
+                run_root / "error.json",
+                {"error": "backtest_failed", "message": str(e), "generated_at": utc_now_iso()},
+            )
+            return {"mode": "hmm_regime_adaptive", "bundles": [], "artifact_summary": None}
+
+        if "error" in backtest:
+            return {"mode": "hmm_regime_adaptive", "bundles": [], "artifact_summary": None}
+
+        total_return = float(backtest.get("total_return", 0.0) or 0.0)
+        sharpe = float(backtest.get("sharpe_ratio", 0.0) or 0.0)
+        max_dd = float(backtest.get("max_drawdown", 0.0) or 0.0)
+        n_trades = int(backtest.get("n_trades", 0) or 0)
+        monthly_roi_pct = round(total_return * 100, 4)
+        max_drawdown_pct = round(abs(max_dd) * 100, 4)
+        slippage_headroom_pct = round(monthly_roi_pct - 1.0, 4)
+        failure_rate = 0.0 if n_trades > 0 else 1.0
+        regime_robustness = min(1.0, max(0.0, (sharpe + 1) / 2)) if sharpe is not None else 0.5
+
+        window = EvaluationWindow(
+            label="backtest",
+            settled_count=n_trades,
+            monthly_roi_pct=monthly_roi_pct,
+            baseline_roi_pct=float(backtest.get("buy_hold_return", 0.0) or 0.0) * 100,
+            brier_lift_abs=0.0,
+            drawdown_pct=max_drawdown_pct,
+            slippage_headroom_pct=slippage_headroom_pct,
+            failure_rate=failure_rate,
+            regime_robustness=regime_robustness,
+        )
+        walkforward_summary = {
+            "resolved_model_engine": "hmm_regime",
+            "source_mode": "yahoo_ohlcv",
+            "windows": [window],
+            "monthly_roi_pct": monthly_roi_pct,
+            "max_drawdown_pct": max_drawdown_pct,
+            "slippage_headroom_pct": slippage_headroom_pct,
+            "calibration_lift_abs": 0.0,
+            "turnover": round(n_trades / max(1, len(df)), 4),
+            "capacity_score": 0.5,
+            "failure_rate": failure_rate,
+            "regime_robustness": regime_robustness,
+            "baseline_beaten_windows": 1 if total_return > float(backtest.get("buy_hold_return", 0) or 0) else 0,
+            "trade_count": n_trades,
+            "settled_count": n_trades,
+            "paper_days": min(30, n_trades),
+            "net_pnl": total_return,
+            "stress_positive": monthly_roi_pct > 0.0 and slippage_headroom_pct > 0.0,
+        }
+        stress_summary = {
+            **walkforward_summary,
+            "monthly_roi_pct": round(monthly_roi_pct - 1.0, 4),
+            "max_drawdown_pct": round(max_drawdown_pct * 1.15, 4),
+            "slippage_headroom_pct": round(slippage_headroom_pct - 0.75, 4),
+            "failure_rate": min(1.0, failure_rate + 0.08),
+            "regime_robustness": max(0.0, regime_robustness - 0.1),
+            "stress_positive": (monthly_roi_pct - 1.0) > 0.0 and (slippage_headroom_pct - 0.75) > 0.0,
+        }
+        stress_summary["windows"] = [
+            EvaluationWindow(
+                label="backtest_stress",
+                settled_count=w.settled_count,
+                monthly_roi_pct=round(w.monthly_roi_pct - 1.0, 4),
+                baseline_roi_pct=w.baseline_roi_pct,
+                brier_lift_abs=w.brier_lift_abs,
+                drawdown_pct=round(w.drawdown_pct * 1.15, 4),
+                slippage_headroom_pct=round(w.slippage_headroom_pct - 0.75, 4),
+                failure_rate=min(1.0, w.failure_rate + 0.08),
+                regime_robustness=max(0.0, w.regime_robustness - 0.1),
+            )
+            for w in walkforward_summary["windows"]
+        ]
+
+        self._write_json(
+            run_root / "dataset.json",
+            {
+                "generated_at": utc_now_iso(),
+                "family_id": lineage.family_id,
+                "lineage_id": lineage.lineage_id,
+                "source": str(ohlcv_root),
+                "instrument": used_instrument,
+                "rows": len(df),
+            },
+        )
+        self._write_json(
+            run_root / "features.json",
+            {
+                "generated_at": utc_now_iso(),
+                "feature_family": "hmm_regime",
+                "feature_columns": hmm_config["features"],
+                "feature_count": len(hmm_config["features"]),
+            },
+        )
+        self._write_json(
+            run_root / "train.json",
+            {
+                "generated_at": utc_now_iso(),
+                "resolved_model_engine": "hmm_regime",
+                "hmm_config": hmm_config,
+            },
+        )
+        self._write_json(run_root / "walkforward.json", {"backtest": backtest, "summary": walkforward_summary})
+        self._write_json(run_root / "stress.json", {"summary": stress_summary})
+
+        package_path = run_root / "package.json"
+        artifact_summary = {
+            "run_id": run_id,
+            "mode": "hmm_regime_adaptive",
+            "package_path": str(package_path),
+            "run_root": str(run_root),
+            "resolved_model_engine": "hmm_regime",
+            "instrument": used_instrument,
+            "dataset_rows": len(df),
+        }
+        self._write_json(
+            package_path,
+            {
+                "generated_at": utc_now_iso(),
+                "lineage_id": lineage.lineage_id,
+                "family_id": lineage.family_id,
+                "artifact_summary": artifact_summary,
+                "files": {
+                    "dataset": str(run_root / "dataset.json"),
+                    "features": str(run_root / "features.json"),
+                    "train": str(run_root / "train.json"),
+                    "walkforward": str(run_root / "walkforward.json"),
+                    "stress": str(run_root / "stress.json"),
+                },
+            },
+        )
+        bundles = self._full_stage_bundle_set(
+            lineage=lineage,
+            summary=walkforward_summary,
+            stress_summary=stress_summary,
+            package_path=package_path,
+            source="factory_hmm_regime_artifact",
+        )
+        return {
+            "mode": "hmm_regime_adaptive",
             "bundles": bundles,
             "artifact_summary": artifact_summary,
         }

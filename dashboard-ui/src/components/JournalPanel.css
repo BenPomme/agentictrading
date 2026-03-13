@@ -1,0 +1,82 @@
+/* ─── JournalPanel ─── */
+
+.jnp__timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: 380px;
+  overflow-y: auto;
+  padding-left: 14px;
+}
+
+.jnp__timeline::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--border-strong);
+}
+
+.jnp__entry {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  animation: slide-in 200ms ease both;
+}
+
+.jnp__dot {
+  position: absolute;
+  left: -14px;
+  top: 10px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--info);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 4px var(--info);
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.jnp__content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.jnp__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.jnp__action-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--info-dim);
+  color: var(--info);
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.jnp__ts {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.jnp__detail {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}

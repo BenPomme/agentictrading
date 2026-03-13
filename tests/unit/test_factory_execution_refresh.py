@@ -49,3 +49,25 @@ def test_execution_refresh_runner_invokes_explicit_adapter(monkeypatch, tmp_path
     assert result["selected_model"] == "xgboost"
     assert result["returncode"] == 0
     assert output_path.exists()
+
+
+def test_execution_refresh_skips_embedded_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "EXECUTION_REPO_ROOT", "")
+    monkeypatch.setattr(config, "FACTORY_EMBEDDED_EXECUTION_ENABLED", True)
+    monkeypatch.setattr(config, "FACTORY_EXECUTION_REFRESH_ENABLED", True)
+    monkeypatch.setattr(config, "FACTORY_EXECUTION_REFRESH_FAMILIES", "binance_funding_contrarian")
+    runner = ExecutionRefreshRunner(tmp_path)
+    result = runner.run(request_path=tmp_path / "req.json", output_path=tmp_path / "out.json")
+    assert result["status"] == "skipped"
+    assert result["reason"] == "embedded_mode_refresh_skipped"
+
+
+def test_execution_refresh_skips_no_execution_repo(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "EXECUTION_REPO_ROOT", "")
+    monkeypatch.setattr(config, "FACTORY_EMBEDDED_EXECUTION_ENABLED", False)
+    monkeypatch.setattr(config, "FACTORY_EXECUTION_REFRESH_ENABLED", True)
+    monkeypatch.setattr(config, "FACTORY_EXECUTION_REFRESH_FAMILIES", "binance_funding_contrarian")
+    runner = ExecutionRefreshRunner(tmp_path)
+    result = runner.run(request_path=tmp_path / "req.json", output_path=tmp_path / "out.json")
+    assert result["status"] == "skipped"
+    assert result["reason"] == "execution_repo_not_configured"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import tempfile
@@ -30,6 +31,7 @@ from factory.strategy_inventor import (
     normalize_family_thesis,
 )
 
+logger = logging.getLogger(__name__)
 
 TASK_CHEAP = "cheap_structured"
 TASK_STANDARD = "standard_research"
@@ -187,6 +189,17 @@ def _task_model(task_class: str) -> str:
     return mapping.get(task_class, str(getattr(config, "FACTORY_AGENT_CODEX_MODEL_STANDARD", "gpt-5.1-codex")))
 
 
+def _openai_api_model(task_class: str) -> str:
+    mapping = {
+        TASK_CHEAP: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_CHEAP", "gpt-4.1-nano")),
+        TASK_STANDARD: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_STANDARD", "gpt-4.1-mini")),
+        TASK_HARD: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_HARD", "gpt-4.1")),
+        TASK_FRONTIER: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_FRONTIER", "o4-mini")),
+        TASK_DEEP: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_DEEP", "o3")),
+    }
+    return mapping.get(task_class, str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_STANDARD", "gpt-4.1-mini")))
+
+
 def _task_reasoning(task_class: str) -> str:
     mapping = {
         TASK_CHEAP: str(getattr(config, "FACTORY_AGENT_REASONING_CHEAP", "medium")),
@@ -199,7 +212,7 @@ def _task_reasoning(task_class: str) -> str:
 
 
 def _proposal_model() -> str:
-    return str(getattr(config, "FACTORY_AGENT_CODEX_MODEL_PROPOSAL", "gpt-5.4") or "gpt-5.4")
+    return str(getattr(config, "FACTORY_AGENT_CODEX_MODEL_PROPOSAL", "gpt-5.2-codex") or "gpt-5.2-codex")
 
 
 def _proposal_reasoning() -> str:
@@ -834,12 +847,12 @@ class RealResearchAgentRuntime:
         }
         prompt_payload["codex_multi_agent_plan"] = self._codex_multi_agent_plan(
             task_type="post_eval_critique",
-            task_class=TASK_DEEP,
+            task_class=TASK_HARD,
         )
-        prompt = self._critique_prompt(prompt_payload, task_class=TASK_DEEP)
+        prompt = self._critique_prompt(prompt_payload, task_class=TASK_HARD)
         return self._run_structured(
             task_type="post_eval_critique",
-            task_class=TASK_DEEP,
+            task_class=TASK_HARD,
             family_id=family.family_id,
             lineage_id=lineage.lineage_id,
             prompt=prompt,
@@ -977,9 +990,9 @@ class RealResearchAgentRuntime:
             "stalled_model",
         }
         if health_status == "critical" and len(issue_codes) >= 4:
-            return TASK_FRONTIER
+            return TASK_HARD
         if retired_count >= 4:
-            return TASK_FRONTIER
+            return TASK_HARD
         if retired_count >= 2 or self._contradictory_memories(learning_memory) or issue_codes.intersection(model_quality_issues):
             return TASK_HARD
         return TASK_STANDARD
@@ -1108,6 +1121,49 @@ class RealResearchAgentRuntime:
             "- Return only the requested final object, not free-form child-agent transcripts.\n"
         )
 
+    def _apply_cost_guard(
+        self,
+        task_type: str,
+        task_class: str,
+        model_override: str | None,
+        reasoning_override: str | None,
+    ) -> tuple:
+        """Auto-downgrade TASK_FRONTIER/TASK_DEEP to TASK_HARD when expensive-model
+        usage exceeds the configured budget cap (default 10% of recent runs).
+        Family-bootstrap tasks are exempt -- they need frontier quality."""
+        expensive_tiers = {TASK_FRONTIER, TASK_DEEP}
+        if task_class not in expensive_tiers:
+            return task_class, model_override, reasoning_override
+        if task_type == "family_bootstrap_generation":
+            return task_class, model_override, reasoning_override
+
+        cap_pct = float(getattr(config, "FACTORY_AGENT_EXPENSIVE_CAP_PCT", 10))
+        window = int(getattr(config, "FACTORY_AGENT_COST_WINDOW", 50))
+
+        runs = recent_agent_runs(self.project_root, limit=window)
+        if len(runs) < 5:
+            return task_class, model_override, reasoning_override
+
+        expensive_count = sum(
+            1 for r in runs if r.get("model_class") in expensive_tiers
+        )
+        current_pct = (expensive_count / len(runs)) * 100
+
+        if current_pct >= cap_pct:
+            logger.warning(
+                "Cost guard: expensive tier at %.1f%% (cap %.1f%%), "
+                "downgrading %s/%s from %s to %s",
+                current_pct, cap_pct, task_type, task_class,
+                task_class, TASK_HARD,
+            )
+            return (
+                TASK_HARD,
+                None,
+                None,
+            )
+
+        return task_class, model_override, reasoning_override
+
     def _run_structured(
         self,
         *,
@@ -1121,13 +1177,18 @@ class RealResearchAgentRuntime:
         model_override: str | None = None,
         reasoning_override: str | None = None,
     ) -> AgentRunResult:
+        task_class, model_override, reasoning_override = self._apply_cost_guard(
+            task_type, task_class, model_override, reasoning_override,
+        )
         errors: List[str] = []
         attempted: List[str] = []
         providers = _provider_order()
+        logger.info("Agent run [%s/%s]: provider order=%s", task_type, task_class, providers)
         for provider in providers:
             if provider == "ollama" and (not _ollama_fallback_enabled() or task_class != TASK_CHEAP):
                 continue
             attempted.append(provider)
+            logger.info("Agent run [%s]: trying provider '%s'", task_type, provider)
             if provider == "deterministic":
                 multi_agent_plan = dict(prompt_payload.get("codex_multi_agent_plan") or {})
                 result = AgentRunResult(
@@ -1167,6 +1228,28 @@ class RealResearchAgentRuntime:
                         attempted=list(attempted),
                     )
                     return self._write_run_artifact(result)
+                if provider == "openai_api":
+                    api_key = str(getattr(config, "FACTORY_AGENT_OPENAI_API_KEY", "") or "").strip()
+                    if not api_key:
+                        logger.warning("Agent run [%s]: openai_api skipped — OPENAI_API_KEY not configured", task_type)
+                        errors.append("openai_api:no_api_key")
+                        continue
+                    logger.info("Agent run [%s]: openai_api key present (len=%d), proceeding", task_type, len(api_key))
+                    result = self._run_openai_api(
+                        task_type=task_type,
+                        task_class=task_class,
+                        family_id=family_id,
+                        lineage_id=lineage_id,
+                        prompt=prompt,
+                        prompt_payload=prompt_payload,
+                        schema=schema,
+                        model_override=model_override,
+                        reasoning_override=reasoning_override,
+                        fallback_used=bool(errors),
+                        attempted=list(attempted),
+                        api_key=api_key,
+                    )
+                    return self._write_run_artifact(result)
                 if provider == "ollama":
                     result = self._run_ollama(
                         task_type=task_type,
@@ -1183,7 +1266,9 @@ class RealResearchAgentRuntime:
                     )
                     return self._write_run_artifact(result)
             except Exception as exc:
-                errors.append(_compact_agent_error(provider, str(exc)))
+                err_msg = _compact_agent_error(provider, str(exc))
+                logger.warning("Agent run [%s]: provider '%s' failed: %s", task_type, provider, err_msg)
+                errors.append(err_msg)
         failure = AgentRunResult(
             run_id=self._new_run_id(task_type),
             task_type=task_type,
@@ -1286,6 +1371,96 @@ class RealResearchAgentRuntime:
         finally:
             Path(schema_path).unlink(missing_ok=True)
             Path(output_path).unlink(missing_ok=True)
+
+    def _run_openai_api(
+        self,
+        *,
+        task_type: str,
+        task_class: str,
+        family_id: str,
+        lineage_id: Optional[str],
+        prompt: str,
+        prompt_payload: Dict[str, Any],
+        schema: Dict[str, Any],
+        model_override: str | None,
+        reasoning_override: str | None,
+        fallback_used: bool,
+        attempted: List[str],
+        api_key: str,
+    ) -> AgentRunResult:
+        model = model_override or _openai_api_model(task_class)
+        reasoning = reasoning_override or _task_reasoning(task_class)
+        start = time.perf_counter()
+        try:
+            import urllib.request
+
+            is_reasoning_model = model.startswith("o1") or model.startswith("o3") or model.startswith("o4")
+
+            messages = [
+                {"role": "system" if not is_reasoning_model else "user", "content": (
+                    "You are a quantitative trading research agent. "
+                    "Respond ONLY with valid JSON matching the provided schema. No markdown, no commentary."
+                )},
+            ]
+            if is_reasoning_model:
+                messages.append({"role": "user", "content": (
+                    f"Task:\n{prompt}\n\n"
+                    f"Required JSON output schema:\n{json.dumps(schema, indent=2)}\n\n"
+                    "Respond with ONLY the JSON object."
+                )})
+            else:
+                messages.append({"role": "user", "content": (
+                    f"Task:\n{prompt}\n\n"
+                    f"Required JSON output schema:\n{json.dumps(schema, indent=2)}\n\n"
+                    "Respond with ONLY the JSON object."
+                )})
+
+            body: Dict[str, Any] = {"model": model, "messages": messages, "temperature": 0.2}
+            if not is_reasoning_model:
+                body["response_format"] = {"type": "json_object"}
+
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/chat/completions",
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+
+            raw_content = resp_data["choices"][0]["message"]["content"].strip()
+            if raw_content.startswith("```"):
+                lines = raw_content.split("\n")
+                lines = lines[1:] if lines[0].startswith("```") else lines
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                raw_content = "\n".join(lines).strip()
+
+            payload = json.loads(raw_content)
+            return AgentRunResult(
+                run_id=self._new_run_id(task_type),
+                task_type=task_type,
+                model_class=task_class,
+                provider="openai_api",
+                model=model,
+                reasoning_effort=reasoning,
+                success=True,
+                fallback_used=fallback_used,
+                family_id=family_id,
+                lineage_id=lineage_id,
+                duration_ms=int((time.perf_counter() - start) * 1000),
+                prompt_payload=prompt_payload,
+                result_payload=payload,
+                raw_text=raw_content,
+                attempted_providers=list(attempted),
+                multi_agent_requested=False,
+                multi_agent_roles=[],
+            )
+        except Exception as exc:
+            raise RuntimeError(f"openai_api:{model}:{exc}") from exc
 
     def _run_ollama(
         self,

@@ -1,0 +1,51 @@
+/* ─── AlertsPanel ─── */
+
+.alp__list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.alp__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  border-left: 3px solid var(--border-strong);
+  animation: slide-in 200ms ease both;
+}
+
+.alp__item--crit {
+  border-left-color: var(--crit);
+  background: var(--crit-dim);
+}
+
+.alp__icon {
+  flex-shrink: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.alp__content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.alp__title {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.alp__detail {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}

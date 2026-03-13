@@ -234,6 +234,7 @@ def annotate_idea_statuses(ideas: Iterable[Dict[str, Any]], lineages: Iterable[D
         row["status"] = status
         row["lineage_count"] = len(related)
         row["family_count"] = len({item.get("family_id") for item in related if item.get("family_id")})
+        row["related_lineage_ids"] = [str(item.get("lineage_id") or "") for item in related if item.get("lineage_id")]
         annotated.append(row)
     return annotated
 

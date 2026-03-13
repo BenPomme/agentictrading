@@ -1,30 +1,39 @@
-# AgenticTrading
+# NEBULA Control Room
 
 Autonomous strategy factory for generating, testing, ranking, and promoting trading models.
 
-This repo is being extracted from the execution repo at:
-
-- `/Users/benjaminpommeraud/Desktop/Coding/Arbitrage`
-
-Target ownership split:
-
-- `Arbitrage`: execution, paper/live runners, venue adapters, trading dashboard
-- `AgenticTrading`: research factory, agent system, lineage registry, experiment orchestration, promotion governance
-
-The near-term contract between the two repos is:
-
-- approved manifests
-- candidate context payloads
-- packaged artifacts
-- shared storage root or object storage bucket
+This repo is fully standalone. It owns research, paper execution, and the control plane.
 
 No live trading should happen from this repo. This repo is the control plane and research plane.
 
-To connect this repo to the execution repo during extraction, set:
+## Dashboard
 
-- `EXECUTION_REPO_ROOT=/absolute/path/to/Arbitrage`
+The NEBULA Control Room is a React + Vite dashboard with a mission-control aesthetic:
 
-That allows the factory to read execution state and, where adapters support it, launch execution runners without importing the execution repo directly from business logic modules.
+```bash
+python3 scripts/factory_dashboard.py --host 0.0.0.0 --port 8788
+```
+
+Open `http://127.0.0.1:8788` to see API feed health, factory status, agent activity, portfolio performance, lineage atlas, and the maintenance queue.
+
+## Execution Modes
+
+The factory supports two paper execution modes:
+
+### Embedded mode (default for standalone operation)
+
+Runners live inside this repo via `factory.local_runner_main`. Set:
+
+- `FACTORY_EMBEDDED_EXECUTION_ENABLED=true`
+- `PORTFOLIO_STATE_ROOT=data/portfolios` (state written under this path)
+- `EXECUTION_REPO_ROOT=` (leave empty)
+- `EXECUTION_PORTFOLIO_STATE_ROOT=` (leave empty)
+
+Start a runner: `python -m factory.local_runner_main --portfolio betfair_core --interval 60`
+
+### External mode (connected to a separate execution repo)
+
+Set `EXECUTION_REPO_ROOT=/absolute/path/to/execution-repo` to read execution state and launch runners in the external repo.
 
 Use the local `.env` in this repo as the operator contract.
 
@@ -35,6 +44,9 @@ Minimum required values for this repo shape:
 - `FACTORY_AGENT_PROVIDER_ORDER`
 - `FACTORY_ROOT`
 - `FACTORY_GOLDFISH_ROOT`
+- `PORTFOLIO_STATE_ROOT`
+
+Optional (only needed for external execution mode):
 - `EXECUTION_REPO_ROOT`
 - `EXECUTION_PORTFOLIO_STATE_ROOT`
 
@@ -61,30 +73,59 @@ Venue credentials are optional unless you are running the venue auth or data scr
 For real agent-backed research:
 
 - primary backend: local `codex` CLI auth with task-routed GPT models
-- high-value loops can explicitly request Codex child-agent decomposition for proposal, family bootstrap, review, and debug tasks
-- default fallback: deterministic inventor/tweaker
+- first fallback: OpenAI API (`OPENAI_API_KEY` in `.env`) via direct HTTP calls
+- second fallback: deterministic inventor/tweaker
 - optional local fallback for cheap tasks only: `ollama`
+- high-value loops can explicitly request Codex child-agent decomposition for proposal, family bootstrap, review, and debug tasks
 
-If `codex` is the first provider in `FACTORY_AGENT_PROVIDER_ORDER`, make sure the machine is already authenticated with `codex login`.
+Provider order is configured via `FACTORY_AGENT_PROVIDER_ORDER=codex,openai_api,deterministic`.
 
-The v1 default routing is:
+If `codex` is the first provider, make sure the machine is already authenticated with `codex login`. When Codex quota is exhausted, the factory automatically falls back to the OpenAI API.
 
-- `cheap_structured` -> `gpt-5.1-codex-mini`
-- `proposal_generation` -> `gpt-5.4`
-- `standard_research` -> `gpt-5.1-codex`
-- `hard_research` -> `gpt-5.2-codex`
-- `frontier_research` -> `gpt-5.3-codex`
-- `deep_review` -> `gpt-5.4`
+### Model Tiering
 
-Every real agent call writes a JSON artifact under `data/factory/agent_runs/`, and the repo-local dashboard surfaces recent runs plus per-lineage agent provenance.
+| Task Class | Codex Model | OpenAI API Fallback | Use Case |
+|---|---|---|---|
+| `cheap_structured` | gpt-5.1-codex-mini | gpt-4.1-nano | Classification, formatting, simple tweaks |
+| `standard_research` | gpt-5.1-codex | gpt-4.1-mini | Standard proposals, moderate research |
+| `hard_research` | gpt-5.2-codex | gpt-4.1 | Complex proposals, critiques, debug |
+| `frontier_research` | gpt-5.3-codex | o4-mini | Family bootstrap only |
+| `deep_review` | gpt-5.4 | o3 | Reserved; cost-guard capped at 10% |
+
+### Cost Guard
+
+A rolling-window cost guard (`_apply_cost_guard()` in `factory/agent_runtime.py`) enforces that expensive models (`TASK_FRONTIER`/`TASK_DEEP`) are used at most `FACTORY_AGENT_EXPENSIVE_CAP_PCT` percent of recent runs (default 10%, window of 50 runs). When over budget, requests are auto-downgraded to `TASK_HARD`. Family bootstrap tasks are exempt.
+
+Every real agent call writes a JSON artifact under `data/factory/agent_runs/`, and the NEBULA dashboard surfaces recent runs plus per-lineage agent provenance.
+
+### Data Sources
+
+| Source | Data | Location | Refresh Script |
+|---|---|---|---|
+| Yahoo Finance | 5yr daily OHLCV for S&P 500 + ETFs + VIX | `data/yahoo/ohlcv/` (501 Parquet files) | `scripts/refresh_yahoo_data.py` |
+| Alpaca | Stock bars, quotes | `data/alpaca/` | `scripts/refresh_alpaca_data.py` |
+| Binance | Crypto funding/price data | `data/binance/` | Built-in connector |
+| Betfair | Sports/event data | `data/betfair/` | Built-in connector |
+| Polymarket | Prediction market data | `data/polymarket/` | Built-in connector |
+
+### Batch Backtesting
+
+Run systematic backtests outside the factory loop:
+
+```bash
+python3 scripts/batch_backtest.py --param-grid --tickers "SPY,QQQ,AAPL,MSFT,NVDA"
+```
+
+Supports configurable train/test splits, parameter grid search, and JSON result output.
 
 The default real-agent family allowlist is:
 
 - `binance_funding_contrarian`
 - `binance_cascade_regime`
 - `polymarket_cross_venue`
+- `hmm_regime_adaptive` (instrument-agnostic HMM regime detection, uses Yahoo OHLCV data)
 
-Those are the families currently intended to invent, test, retire, and replace paper models with Codex-backed challengers.
+Those are the families currently intended to invent, test, retire, and replace paper models with agent-backed challengers.
 
 The factory also supports explicit incumbent refresh jobs through the execution repo:
 
@@ -104,7 +145,11 @@ Refresh behavior is family-specific:
 Bootstrap helper:
 
 ```bash
-python3 scripts/bootstrap_env.py --execution-repo-root /Users/benjaminpommeraud/Desktop/Coding/Arbitrage
+# Standalone embedded mode (default):
+python3 scripts/bootstrap_env.py
+
+# External mode (connected to a separate execution repo):
+python3 scripts/bootstrap_env.py --execution-repo-root /path/to/execution-repo
 ```
 
 Key commands in extraction mode:
@@ -121,7 +166,7 @@ python3 scripts/factory_loop.py --interval-seconds 900
 The dashboard reads:
 
 - factory state from `data/factory/state/summary.json`
-- execution portfolio snapshots through `EXECUTION_PORTFOLIO_STATE_ROOT`
+- execution portfolio snapshots through `EXECUTION_PORTFOLIO_STATE_ROOT` (external mode) or `PORTFOLIO_STATE_ROOT` (embedded mode)
 - idea intake from `ideas.md` or `IDEAS.md` in the repo root
 
 The demo runner is the fastest proof path for real agents. It isolates a temporary factory root by default, runs the specified family through the orchestrator, and prints the resulting real-agent lineages plus recent Codex artifacts.

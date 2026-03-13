@@ -51,12 +51,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Emit compact JSON progress to stdout.")
     args = parser.parse_args(argv)
 
-    orchestrator = FactoryOrchestrator(Path(args.project_root))
+    loop_root = Path(args.project_root)
+
+    # Startup diagnostics
+    _api_key = os.getenv("OPENAI_API_KEY", "")
+    _exec_root = os.getenv("EXECUTION_REPO_ROOT", "")
+    print(f"[factory-loop] NEBULA standalone mode: EXECUTION_REPO_ROOT={'<empty>' if not _exec_root else _exec_root}", flush=True)
+    print(f"[factory-loop] OPENAI_API_KEY configured: {bool(_api_key)} (len={len(_api_key)})", flush=True)
+    print(f"[factory-loop] Provider order: {os.getenv('FACTORY_AGENT_PROVIDER_ORDER', 'codex,deterministic')}", flush=True)
+
+    orchestrator = FactoryOrchestrator(loop_root)
     log_path = _resolve_log_path(args.log_path)
     cycle_limit = max(0, int(args.max_cycles))
     cycles_completed = 0
+    interval = max(1, int(args.interval_seconds))
 
     while True:
+        pause_flag = loop_root / "data" / "factory" / "factory_paused.flag"
+        if pause_flag.exists():
+            print(
+                f"[factory-loop] Factory paused by operator (flag file present). Sleeping {interval}s.",
+                flush=True,
+            )
+            time.sleep(interval)
+            continue
+
         started_at = time.time()
         cycle_started = _utc_now()
         try:
@@ -101,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         cycles_completed += 1
         if cycle_limit and cycles_completed >= cycle_limit:
             return 0 if payload["status"] == "ok" else 1
-        time.sleep(max(1, int(args.interval_seconds)))
+        time.sleep(interval)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,94 @@
+/* ─── MaintenancePanel ─── */
+
+.mtp__scroll {
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mtp__item {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  border-left: 3px solid var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: slide-in 200ms ease both;
+}
+
+.mtp__row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mtp__dots {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 1px;
+  color: var(--warn);
+}
+
+.mtp__family {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mtp__lineage {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.mtp__row-mid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mtp__action-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mtp__roi {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+}
+
+.mtp__trades {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+}
+
+.mtp__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.mtp__rec {
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.52rem;
+  letter-spacing: 0.03em;
+}

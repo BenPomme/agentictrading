@@ -1479,7 +1479,7 @@ def test_dashboard_snapshot_light_derives_feed_health(tmp_path, monkeypatch):
     snapshot = build_dashboard_snapshot_light()
     feed_health = snapshot["factory"]["feed_health"]
 
-    assert feed_health["status"] == "degraded"
+    assert feed_health["status"] == "critical"
     assert feed_health["headline"] == "1/3 feeds healthy"
     assert feed_health["healthy_count"] == 1
     assert feed_health["warning_count"] == 1
@@ -1826,6 +1826,26 @@ def test_dashboard_snapshot_light_prefers_current_runtime_health_and_exposes_win
         json.dumps({"status": "paper_validating", "blockers": ["calibration_lift_positive"]}),
         encoding="utf-8",
     )
+    (portfolio_dir / "state.json").write_text(
+        json.dumps({
+            "status": "running",
+            "running": True,
+            "training_progress": {
+                "tracked_examples": 1913,
+                "labeled_examples": 1746,
+                "pending_labels": 6457,
+                "targets": {"closed_trades": 90},
+            },
+            "trainability": {
+                "status": "warming_up",
+                "required_model_count": 3,
+                "trained_model_count": 0,
+                "trainable_model_count": 2,
+                "blocked_models": ["qm_coherence"],
+            },
+        }),
+        encoding="utf-8",
+    )
 
     (state_root / "summary.json").write_text(
         json.dumps(
@@ -1872,8 +1892,8 @@ def test_dashboard_snapshot_light_prefers_current_runtime_health_and_exposes_win
     portfolio = snapshot["execution"]["portfolios"][0]
 
     assert portfolio["execution_health_status"] == "healthy"
-    assert portfolio["display_status"] == "paper_validating"
-    assert portfolio["readiness_status"] == "paper_validating"
+    assert portfolio["display_status"] == "running"
+    assert portfolio["readiness_status"] == "running"
     assert portfolio["win_rate"] == pytest.approx(0.0111, rel=1e-4)
     assert portfolio["wins"] == 1
     assert portfolio["losses"] == 89

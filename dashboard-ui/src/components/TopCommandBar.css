@@ -1,0 +1,306 @@
+/* ─── TopCommandBar ─── */
+
+.tcb {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 20px;
+  background: rgba(10, 14, 23, 0.82);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Left: Brand ── */
+
+.tcb__brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tcb__logo {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--ok);
+  text-shadow: 0 0 14px rgba(0, 255, 208, 0.55), 0 0 40px rgba(0, 255, 208, 0.2);
+}
+
+.tcb__subtitle {
+  font-family: var(--font-body);
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ── Center: Factory Toggle ── */
+
+.tcb__center {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.tcb__toggle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tcb__power-btn {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: var(--surface);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+}
+
+.tcb__power-btn:hover {
+  background: var(--surface-hover);
+}
+
+.tcb__power-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tcb__power-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+  fill: none;
+}
+
+.tcb__power-btn--on {
+  border-color: var(--ok);
+  box-shadow: 0 0 10px rgba(0, 255, 208, 0.35), 0 0 24px rgba(0, 255, 208, 0.12);
+}
+
+.tcb__power-btn--on svg {
+  stroke: var(--ok);
+}
+
+.tcb__power-btn--off {
+  border-color: var(--crit);
+  animation: pulse-crit 2s ease-in-out infinite;
+}
+
+.tcb__power-btn--off svg {
+  stroke: var(--crit);
+}
+
+.tcb__toggle-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.tcb__toggle-label--on {
+  color: var(--ok);
+  text-shadow: 0 0 8px rgba(0, 255, 208, 0.3);
+}
+
+.tcb__toggle-label--off {
+  color: var(--crit);
+  animation: label-blink 1.6s ease-in-out infinite;
+}
+
+@keyframes label-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Mode Badge ── */
+
+.tcb__mode-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 1px solid;
+}
+
+.tcb__mode-badge--full {
+  color: var(--ok);
+  border-color: rgba(0, 255, 208, 0.3);
+  background: var(--ok-dim);
+}
+
+.tcb__mode-badge--cost_saver {
+  color: var(--warn);
+  border-color: rgba(255, 176, 0, 0.3);
+  background: var(--warn-dim);
+}
+
+.tcb__mode-badge--hard_stop {
+  color: var(--crit);
+  border-color: rgba(255, 59, 59, 0.3);
+  background: var(--crit-dim);
+}
+
+/* ── Right: Telemetry ── */
+
+.tcb__right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.tcb__clock {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: 0.06em;
+  min-width: 70px;
+  text-align: right;
+}
+
+.tcb__age {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.tcb__health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tcb__health-dot--healthy {
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+  animation: pulse-ok 2.5s ease-in-out infinite;
+}
+
+.tcb__health-dot--warning {
+  background: var(--warn);
+  box-shadow: 0 0 6px var(--warn);
+  animation: pulse-warn 2s ease-in-out infinite;
+}
+
+.tcb__health-dot--critical {
+  background: var(--crit);
+  box-shadow: 0 0 6px var(--crit);
+  animation: pulse-crit 1.4s ease-in-out infinite;
+}
+
+/* ── Confirmation Overlay ── */
+
+.tcb__confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(6px);
+  animation: fade-in 150ms ease;
+}
+
+.tcb__confirm-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  max-width: 380px;
+  text-align: center;
+  box-shadow: 0 8px 48px rgba(0, 0, 0, 0.6);
+}
+
+.tcb__confirm-title {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.12em;
+  margin-bottom: 8px;
+  color: var(--text);
+}
+
+.tcb__confirm-msg {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+
+.tcb__confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.tcb__confirm-btn {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  padding: 6px 20px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-alt);
+  color: var(--text);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.tcb__confirm-btn:hover {
+  background: var(--surface-hover);
+}
+
+.tcb__confirm-btn--danger {
+  border-color: var(--crit);
+  color: var(--crit);
+}
+
+.tcb__confirm-btn--danger:hover {
+  background: var(--crit-dim);
+}
+
+.tcb__confirm-btn--go {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.tcb__confirm-btn--go:hover {
+  background: var(--ok-dim);
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 768px) {
+  .tcb { padding: 0 12px; }
+  .tcb__subtitle { display: none; }
+  .tcb__center { position: static; transform: none; }
+  .tcb__clock { display: none; }
+}

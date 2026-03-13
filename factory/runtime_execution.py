@@ -16,6 +16,14 @@ from factory.execution_targets import parse_runtime_portfolio_alias
 from factory.state_store import PortfolioStateStore
 
 
+def get_process_manager():
+    """Return the execution process manager: embedded (in-repo) or external."""
+    if getattr(config, "FACTORY_EMBEDDED_EXECUTION_ENABLED", False):
+        from factory.embedded_execution import EmbeddedExecutionManager
+        return EmbeddedExecutionManager()
+    return RuntimeProcessManager()
+
+
 @dataclass(frozen=True)
 class RuntimePortfolioSpec:
     portfolio_id: str

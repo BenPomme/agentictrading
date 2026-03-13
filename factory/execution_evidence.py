@@ -20,6 +20,39 @@ REJECTION_WARNING_COUNT = 25
 NO_TRADE_SCAN_MINIMUM = 25
 
 
+def _validation_profile() -> str:
+    raw = (getattr(config, "FACTORY_VALIDATION_PROFILE", "paper") or "paper").strip().lower()
+    return raw if raw in ("dev", "paper", "prod") else "paper"
+
+
+def _validation_thresholds() -> Dict[str, Any]:
+    """Thresholds for execution evidence; relaxed in dev/paper, strict in prod."""
+    profile = _validation_profile()
+    if profile == "dev":
+        return {
+            "heartbeat_stale_warning_sec": 300.0,
+            "heartbeat_stale_critical_sec": 600.0,
+            "rejection_warning_rate": 0.95,
+            "rejection_warning_count": 50,
+            "no_trade_scan_minimum": 50,
+        }
+    if profile == "paper":
+        return {
+            "heartbeat_stale_warning_sec": 180.0,
+            "heartbeat_stale_critical_sec": 420.0,
+            "rejection_warning_rate": 0.9,
+            "rejection_warning_count": 35,
+            "no_trade_scan_minimum": 35,
+        }
+    return {
+        "heartbeat_stale_warning_sec": HEARTBEAT_STALE_WARNING_SECONDS,
+        "heartbeat_stale_critical_sec": HEARTBEAT_STALE_CRITICAL_SECONDS,
+        "rejection_warning_rate": REJECTION_WARNING_RATE,
+        "rejection_warning_count": REJECTION_WARNING_COUNT,
+        "no_trade_scan_minimum": NO_TRADE_SCAN_MINIMUM,
+    }
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value or 0.0)
@@ -404,15 +437,16 @@ def build_portfolio_execution_evidence(
         issues.append(_issue("critical", "runtime_error", error))
     if blockers:
         issues.append(_issue("warning", "readiness_blocked", ", ".join(blockers[:4])))
-    if heartbeat_age is not None and heartbeat_age >= HEARTBEAT_STALE_CRITICAL_SECONDS:
+    th = _validation_thresholds()
+    if heartbeat_age is not None and heartbeat_age >= th["heartbeat_stale_critical_sec"]:
         issues.append(_issue("critical", "heartbeat_stale", f"heartbeat age {heartbeat_age:.1f}s"))
-    elif heartbeat_age is not None and heartbeat_age >= HEARTBEAT_STALE_WARNING_SECONDS:
+    elif heartbeat_age is not None and heartbeat_age >= th["heartbeat_stale_warning_sec"]:
         issues.append(_issue("warning", "heartbeat_slow", f"heartbeat age {heartbeat_age:.1f}s"))
     if quality["drawdown_halt_active"]:
         issues.append(_issue("critical", "drawdown_halt_active", "risk controls halted execution"))
     if quality["stale_quote_halts"] > 0:
         issues.append(_issue("warning", "stale_quote_halts", f"{quality['stale_quote_halts']} stale quote halts"))
-    if quality["rejection_count"] >= REJECTION_WARNING_COUNT and quality["rejection_rate"] >= REJECTION_WARNING_RATE:
+    if quality["rejection_count"] >= th["rejection_warning_count"] and quality["rejection_rate"] >= th["rejection_warning_rate"]:
         issues.append(_issue("warning", "excessive_rejections", f"{quality['rejection_count']} rejections at rate {quality['rejection_rate']:.2f}"))
     avg_slippage = max(
         quality["avg_modeled_slippage_bps"],
@@ -438,7 +472,7 @@ def build_portfolio_execution_evidence(
     no_trade_context = (
         running
         and account_trade_count == 0
-        and _safe_int(state.get("scan_count") or state.get("signal_count") or state.get("opportunity_count")) >= NO_TRADE_SCAN_MINIMUM
+        and _safe_int(state.get("scan_count") or state.get("signal_count") or state.get("opportunity_count")) >= th["no_trade_scan_minimum"]
     )
     if no_trade_context:
         issues.append(_issue("warning", "no_trade_syndrome", "runner is scanning but not converting into paper trades"))
@@ -463,7 +497,7 @@ def build_portfolio_execution_evidence(
             )
         )
     stalled_hours = max(1, int(getattr(config, "FACTORY_STALLED_MODEL_HOURS", 8) or 8))
-    stalled_scan_floor = max(1, int(getattr(config, "FACTORY_STALLED_MODEL_MIN_SCANS", NO_TRADE_SCAN_MINIMUM) or NO_TRADE_SCAN_MINIMUM))
+    stalled_scan_floor = max(1, int(getattr(config, "FACTORY_STALLED_MODEL_MIN_SCANS", th["no_trade_scan_minimum"]) or th["no_trade_scan_minimum"]))
     scan_count = _safe_int(state.get("scan_count") or state.get("signal_count") or state.get("opportunity_count"))
     trade_stalled = False
     training_stalled = False

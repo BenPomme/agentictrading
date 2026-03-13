@@ -42,10 +42,15 @@ class ExecutionRefreshRunner:
         output_path: Path,
     ) -> Dict[str, Any]:
         execution_root_raw = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
-        if not execution_root_raw:
+        if not execution_root_raw or not Path(execution_root_raw).is_dir():
+            reason = (
+                "embedded_mode_refresh_skipped"
+                if getattr(config, "FACTORY_EMBEDDED_EXECUTION_ENABLED", False)
+                else "execution_repo_not_configured"
+            )
             return {
                 "status": "skipped",
-                "reason": "execution_repo_not_configured",
+                "reason": reason,
                 "request_path": str(request_path),
                 "output_path": str(output_path),
             }

@@ -1,0 +1,95 @@
+/* ─── LeaguePanel ─── */
+
+.lgp__scroll {
+  overflow-x: auto;
+}
+
+.lgp__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+}
+
+.lgp__table th {
+  text-align: left;
+  padding: 6px 8px;
+  font-family: var(--font-display);
+  font-size: 0.52rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.lgp__table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.lgp__table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.lgp__row--rp {
+  background: rgba(0, 255, 208, 0.04);
+}
+
+.lgp__fam {
+  color: var(--text) !important;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.lgp__rp {
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ok-dim);
+  color: var(--ok);
+  font-size: 0.48rem;
+  font-weight: 700;
+}
+
+.lgp__mono {
+  font-size: 0.6rem;
+  color: var(--text-muted) !important;
+}
+
+.lgp__score {
+  font-weight: 700;
+  color: var(--info) !important;
+}
+
+.lgp__inc {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.52rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lgp__inc--active,
+.lgp__inc--running,
+.lgp__inc--approved {
+  background: var(--ok-dim);
+  color: var(--ok);
+}
+
+.lgp__inc--pending,
+.lgp__inc--incubating {
+  background: var(--warn-dim);
+  color: var(--warn);
+}
+
+.lgp__inc--rejected,
+.lgp__inc--failed {
+  background: var(--crit-dim);
+  color: var(--crit);
+}

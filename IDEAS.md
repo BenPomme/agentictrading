@@ -117,3 +117,39 @@ If you want to run your own backtests, polybacktest has subsecond historical dat
 
 11: new idea: war in iran
 Should we find a way to trade oil because of the war
+
+---
+
+## Hidden Markov Model Regime-Adaptive Trading
+
+**Status**: proposed  
+**Priority**: high  
+**Venue**: multi (stocks via Yahoo/Alpaca, crypto via Binance, potentially sports via Betfair)  
+**Author**: factory-agent  
+
+### Hypothesis
+
+Markets exhibit distinct regimes (bull, bear, sideways, turbulent) that can be detected using Hidden Markov Models. By inferring the current regime from observable features (returns, volatility, volume), we can adaptively size positions and select direction:
+- **Bull regime**: full long exposure
+- **Bear regime**: flat or short (where allowed)
+- **Sideways regime**: mean-reversion micro-trades
+- **Turbulent regime**: reduced size, wider stops
+
+### Approach
+
+1. **Feature engineering**: Normalized log returns, rolling volatility ratio (20d/60d), volume Z-score, VIX level (for stocks)
+2. **Model**: `hmmlearn.GaussianHMM` with 3-4 hidden states, full covariance
+3. **State ordering**: Sort states by mean return to assign semantic labels
+4. **Signal generation**: Map current state to position sizing and direction
+5. **Instrument-agnostic**: Same model architecture applied across stocks (SPY, QQQ, individual), crypto (BTC, ETH), and potentially other venues
+6. **Backtest**: Walk-forward with expanding training window, minimum 2yr train / 6mo test
+
+### Key References
+
+- Christensen et al. 2020 (arXiv:2006.08307) - HMM for regime detection
+- Hamilton 1989 - Markov switching models
+- Bulla & Bulla 2006 - Stylized facts of financial time series and HMMs
+
+### Expected Edge
+
+Regime-aware position sizing should reduce drawdowns during bear/turbulent periods while capturing upside during bull regimes. The key advantage over static strategies is adaptivity.
