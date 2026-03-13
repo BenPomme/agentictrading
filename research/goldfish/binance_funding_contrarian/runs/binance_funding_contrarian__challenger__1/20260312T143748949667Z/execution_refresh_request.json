@@ -1,0 +1,54 @@
+{
+  "generated_at": "2026-03-12T14:37:48.950579+00:00",
+  "project_root": "/Users/benjaminpommeraud/Documents/AgenticTrading",
+  "factory_run_root": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T143748949667Z",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:1",
+  "role": "champion",
+  "family_mode": "funding_contrarian",
+  "goldfish_workspace": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian",
+  "resolved_model_engine": "naive_contrarian_backtest",
+  "retrain": {
+    "generated_at": "2026-03-12T14:37:48.950413+00:00",
+    "family_id": "binance_funding_contrarian",
+    "lineage_id": "binance_funding_contrarian:challenger:1",
+    "family_mode": "funding_contrarian",
+    "trigger_health_status": "healthy",
+    "trigger_issue_codes": [],
+    "recommendation_context": [],
+    "maintenance_request": {},
+    "retrain_triggered": false,
+    "retrain_action": "scheduled_refresh",
+    "target_objective": "reduce missed settlement windows while improving strict-gate pass rate on funding dislocations",
+    "requested_model_class": "gbdt",
+    "resolved_model_engine": "naive_contrarian_backtest",
+    "source_mode": "log_fallback",
+    "source_paths": [],
+    "dataset_rows": 0,
+    "current_parameters": {
+      "selected_model_class": "gbdt",
+      "selected_feature_subset": "regime",
+      "selected_horizon_seconds": 600,
+      "selected_min_edge": 0.05,
+      "selected_stake_fraction": 0.015,
+      "selected_learning_rate": 0.04,
+      "selected_lookback_hours": 96.0
+    }
+  },
+  "maintenance_request": {},
+  "current_parameters": {
+    "selected_model_class": "gbdt",
+    "selected_feature_subset": "regime",
+    "selected_horizon_seconds": 600,
+    "selected_min_edge": 0.05,
+    "selected_stake_fraction": 0.015,
+    "selected_learning_rate": 0.04,
+    "selected_lookback_hours": 96.0
+  },
+  "target_portfolios": [
+    "hedge_validation",
+    "hedge_research",
+    "contrarian_legacy"
+  ],
+  "execution_repo_root": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage"
+}

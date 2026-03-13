@@ -1,0 +1,24 @@
+{
+  "error": "IO Error: Could not set lock on file \"/Users/benjaminpommeraud/Documents/Coding/Arbitrage/data/research/research.duckdb\": Conflicting lock is held in /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python (PID 22421) by user benjaminpommeraud. See also https://duckdb.org/docs/stable/connect/concurrency",
+  "family_id": "binance_funding_contrarian",
+  "generated_at": "2026-03-13T07:32:51.687336+00:00",
+  "reason": "funding_refresh_exception",
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260313T073249442807Z/execution_refresh_request.json",
+  "status": "failed",
+  "symbols": [
+    "API3USDT",
+    "BCHUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT"
+  ],
+  "duration_ms": 2323,
+  "output_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260313T073249442807Z/execution_refresh_raw.json",
+  "script_path": "/Users/benjaminpommeraud/Documents/Coding/Arbitrage/scripts/factory_refresh_models.py",
+  "returncode": 1,
+  "stdout": "",
+  "stderr": "2026-03-13 08:32:49  INFO      train_contrarian_models \u2014 Discovered top-8 symbols by row count: API3USDT(7676), BCHUSDT(6788), BTCUSDT(6788), ETHUSDT(6788), XRPUSDT(6772), LTCUSDT(6739), LINKUSDT(6715), ADAUSDT(6708)\n2026-03-13 08:32:49  INFO      funding.ml.contrarian_features \u2014 Loaded pooled contrarian features from curated research store: 17957 rows, 35 columns\n2026-03-13 08:32:50  INFO      funding.ml.regime_features \u2014 Building regime features: primary=API3USDT, all=['API3USDT', 'BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT']\n2026-03-13 08:32:50  WARNING   funding.ml.regime_features \u2014 No klines data for primary symbol API3USDT; returning empty DataFrame\n2026-03-13 08:32:51  INFO      train_contrarian_models \u2014 Building contrarian features for symbols: ['API3USDT', 'BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT']"
+}

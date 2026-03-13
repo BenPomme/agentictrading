@@ -1,0 +1,10 @@
+{
+  "generated_at": "2026-03-13T01:25:22.513735+00:00",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:24",
+  "source_mode": "log_fallback",
+  "source_paths": [],
+  "symbol_count": 0,
+  "dataset_rows": 0,
+  "lookback_hours": 168.0
+}

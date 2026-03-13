@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-03-12T16:43:16.148202+00:00",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:1",
+  "family_mode": "funding_contrarian",
+  "trigger_health_status": "warning",
+  "trigger_issue_codes": [
+    "readiness_blocked",
+    "excessive_rejections",
+    "no_trade_syndrome",
+    "zero_simulated_fills",
+    "negative_realized_pnl",
+    "negative_paper_roi"
+  ],
+  "recommendation_context": [
+    "review filters and execution thresholds because the runner is failing to convert opportunities",
+    "improve model quality and data coverage before promoting this family",
+    "tighten entry logic and retrain for better trade selection quality"
+  ],
+  "maintenance_request": {
+    "source": "agent_review",
+    "action": "replace",
+    "reason": "Latest paper evidence is decisively negative for the incumbent lineage: 58 settled trades over 29 days produced -1.3246% monthly ROI and -203.79 net PnL, with hard vetoes on failure rate, slippage stress, and regime robustness. The core problem is mixed but unfavorable in both branches: two targets are effectively non-executable under current gates and costs, while the only target that does trade still has negative ROI and zero calibration lift. Given repeated family history of the same failure pattern, the lineage should not stay as the active paper incumbent.",
+    "requires_human": false,
+    "requires_new_challenger": true
+  },
+  "retrain_triggered": true,
+  "retrain_action": "agent_requested_replace",
+  "target_objective": "reduce missed settlement windows while improving strict-gate pass rate on funding dislocations",
+  "requested_model_class": "gbdt",
+  "resolved_model_engine": "naive_contrarian_backtest",
+  "source_mode": "log_fallback",
+  "source_paths": [],
+  "dataset_rows": 0,
+  "current_parameters": {
+    "selected_model_class": "gbdt",
+    "selected_feature_subset": "regime",
+    "selected_horizon_seconds": 600,
+    "selected_min_edge": 0.05,
+    "selected_stake_fraction": 0.015,
+    "selected_learning_rate": 0.04,
+    "selected_lookback_hours": 96.0
+  }
+}

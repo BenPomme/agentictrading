@@ -6,8 +6,13 @@ from typing import Any, Dict, List
 
 import config
 from factory.contracts import AcceptedStrategyManifest
-from factory.execution_targets import portfolio_target_matches, resolve_target_portfolio
+from factory.execution_targets import (
+    build_runtime_portfolio_alias,
+    portfolio_target_matches,
+    resolve_target_portfolio,
+)
 from factory.registry import FactoryRegistry
+from factory.runtime_lanes import decide_runtime_lane_policy, runtime_lane_selection_key
 from factory.runtime_mode import current_agentic_factory_runtime_mode
 
 _CANDIDATE_STAGES = {"shadow", "paper", "canary_ready", "live_ready"}
@@ -123,6 +128,44 @@ def _candidate_context_sort_key(item: Dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _select_runtime_candidate_lanes(refs: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for item in refs:
+        family_id = str(item.get("family_id") or "").strip()
+        if not family_id:
+            continue
+        grouped.setdefault(family_id, []).append(item)
+    selected: List[Dict[str, object]] = []
+    for family_id, family_refs in grouped.items():
+        prefer_challenger, lane_reason = decide_runtime_lane_policy(family_refs)
+        ordered = sorted(
+            family_refs,
+            key=lambda item: runtime_lane_selection_key(item, prefer_challenger=prefer_challenger),
+        )
+        primary = dict(ordered[0])
+        primary["runtime_lane_selected"] = True
+        primary["runtime_lane_kind"] = "isolated_challenger" if prefer_challenger else "primary_incumbent"
+        primary["runtime_lane_reason"] = lane_reason
+        canonical_target_portfolio = str(primary.get("resolved_target_portfolio") or "")
+        if prefer_challenger and canonical_target_portfolio:
+            primary["runtime_target_portfolio"] = build_runtime_portfolio_alias(
+                canonical_target_portfolio,
+                str(primary.get("lineage_id") or ""),
+            )
+        else:
+            primary["runtime_target_portfolio"] = canonical_target_portfolio
+        primary["canonical_target_portfolio"] = canonical_target_portfolio
+        primary["family_candidate_count"] = len(family_refs)
+        primary["suppressed_sibling_count"] = max(0, len(family_refs) - 1)
+        primary["suppressed_sibling_lineage_ids"] = [
+            str(item.get("lineage_id") or "")
+            for item in ordered[1:]
+            if str(item.get("lineage_id") or "").strip()
+        ]
+        selected.append(primary)
+    return sorted(selected, key=_candidate_context_sort_key)
+
+
 def live_manifests_for_portfolio(portfolio_id: str) -> List[AcceptedStrategyManifest]:
     if not current_agentic_factory_runtime_mode().factory_influence_allowed:
         return []
@@ -187,6 +230,8 @@ def candidate_context_refs_for_portfolio(portfolio_id: str) -> List[Dict[str, ob
                 "current_stage": current_stage,
                 "role": row.get("role"),
                 "iteration_status": row.get("iteration_status"),
+                "activation_status": row.get("activation_status"),
+                "alias_runner_running": bool(row.get("alias_runner_running")),
                 "strict_gate_pass": bool(row.get("strict_gate_pass")),
                 "fitness_score": row.get("fitness_score"),
                 "pareto_rank": row.get("pareto_rank"),
@@ -195,10 +240,15 @@ def candidate_context_refs_for_portfolio(portfolio_id: str) -> List[Dict[str, ob
                 "trade_count": row.get("trade_count"),
                 "settled_count": row.get("settled_count"),
                 "paper_days": row.get("paper_days"),
+                "live_paper_target_portfolio_id": row.get("live_paper_target_portfolio_id"),
+                "live_paper_trade_count": row.get("live_paper_trade_count"),
+                "live_paper_realized_pnl": row.get("live_paper_realized_pnl"),
+                "execution_issue_codes": list(row.get("execution_issue_codes") or []),
                 "blockers": list(row.get("blockers") or []),
                 "hard_vetoes": list(row.get("hard_vetoes") or []),
                 "requested_targets": target_portfolios,
                 "resolved_targets": [resolve_target_portfolio(target) for target in target_portfolios],
+                "resolved_target_portfolio": str(portfolio_id),
                 "matched_targets": [
                     target for target in target_portfolios if resolve_target_portfolio(target) == str(portfolio_id)
                 ],
@@ -213,7 +263,7 @@ def candidate_context_refs_for_portfolio(portfolio_id: str) -> List[Dict[str, ob
                 ),
             }
         )
-    return sorted(refs, key=_candidate_context_sort_key)
+    return _select_runtime_candidate_lanes(refs)
 
 
 def approve_manifest_for_live(manifest_id: str, *, approved_by: str, note: str | None = None) -> AcceptedStrategyManifest | None:

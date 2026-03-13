@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 import time
@@ -21,7 +22,13 @@ from factory.contracts import (
     utc_now_iso,
 )
 from factory.idea_intake import relevant_ideas_for_family
-from factory.strategy_inventor import ScientificAgentProposal, build_proposal_title, normalize_alpha_thesis
+from factory.strategy_inventor import (
+    ScientificAgentProposal,
+    ScientificFamilyProposal,
+    build_proposal_title,
+    normalize_alpha_thesis,
+    normalize_family_thesis,
+)
 
 
 TASK_CHEAP = "cheap_structured"
@@ -38,6 +45,71 @@ OVERRIDE_KEYS = [
     "selected_learning_rate",
     "selected_lookback_hours",
 ]
+
+MULTI_AGENT_TASK_PROFILES: Dict[str, Dict[str, Any]] = {
+    "proposal_generation": {
+        "strategy": "parallel_panel",
+        "child_roles": [
+            "alpha_hypothesis_proposer",
+            "falsification_critic",
+            "execution_microstructure_reviewer",
+        ],
+        "instruction": (
+            "Use Codex child agents to split the work into three bounded passes: "
+            "one proposer for the alpha hypothesis, one critic looking for overfit "
+            "or broken assumptions, and one execution/microstructure reviewer to "
+            "reject ideas that look untradeable in paper execution."
+        ),
+    },
+    "post_eval_critique": {
+        "strategy": "parallel_panel",
+        "child_roles": [
+            "performance_reviewer",
+            "retrain_planner",
+            "risk_assessor",
+        ],
+        "instruction": (
+            "Use Codex child agents to separate performance diagnosis, retrain planning, "
+            "and risk assessment before writing the final structured critique."
+        ),
+    },
+    "runtime_debug_review": {
+        "strategy": "parallel_panel",
+        "child_roles": [
+            "runtime_debugger",
+            "data_pipeline_debugger",
+            "operator_escalation_classifier",
+        ],
+        "instruction": (
+            "Use Codex child agents to inspect runtime failure modes, data/training failure "
+            "modes, and whether this needs explicit human intervention."
+        ),
+    },
+    "maintenance_resolution_review": {
+        "strategy": "parallel_panel",
+        "child_roles": [
+            "maintenance_triager",
+            "replacement_planner",
+            "execution_realism_reviewer",
+        ],
+        "instruction": (
+            "Use Codex child agents to separate maintenance triage, replacement/retrain planning, "
+            "and execution-realism review before choosing the best maintenance action."
+        ),
+    },
+    "family_bootstrap_generation": {
+        "strategy": "parallel_panel",
+        "child_roles": [
+            "family_thesis_proposer",
+            "venue_connector_planner",
+            "incubation_risk_critic",
+        ],
+        "instruction": (
+            "Use Codex child agents to separate family-thesis invention, venue/connector planning, "
+            "and incubation-risk critique before synthesizing one bounded new-family proposal."
+        ),
+    },
+}
 
 
 def _project_root() -> Path:
@@ -86,6 +158,22 @@ def _ollama_fallback_enabled() -> bool:
 
 def _post_eval_critique_enabled() -> bool:
     return bool(getattr(config, "FACTORY_AGENT_POST_EVAL_CRITIQUE_ENABLED", False))
+
+
+def _codex_multi_agent_enabled() -> bool:
+    return bool(getattr(config, "FACTORY_AGENT_CODEX_MULTI_AGENT_ENABLED", True))
+
+
+def _codex_multi_agent_tasks() -> List[str]:
+    raw = str(
+        getattr(
+            config,
+            "FACTORY_AGENT_CODEX_MULTI_AGENT_TASKS",
+            "proposal_generation,post_eval_critique,runtime_debug_review,family_bootstrap_generation",
+        )
+        or ""
+    ).strip()
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def _task_model(task_class: str) -> str:
@@ -190,6 +278,30 @@ def _budget_bucket_default(family: FactoryFamily) -> str:
     return max(split.items(), key=lambda item: float(item[1] or 0.0))[0]
 
 
+def _multi_agent_trace_schema() -> Dict[str, Any]:
+    return {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+        "required": ["strategy", "roles", "synthesis"],
+        "properties": {
+            "strategy": {"type": "string"},
+            "roles": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["role", "finding"],
+                    "properties": {
+                        "role": {"type": "string"},
+                        "finding": {"type": "string"},
+                    },
+                },
+            },
+            "synthesis": {"type": "string"},
+        },
+    }
+
+
 def _proposal_schema() -> Dict[str, Any]:
     parameter_override_properties = {
         "selected_horizon_seconds": {"type": ["integer", "null"]},
@@ -206,6 +318,7 @@ def _proposal_schema() -> Dict[str, Any]:
         "properties": parameter_override_properties,
         "required": list(parameter_override_properties),
     }
+    multi_agent_trace_schema = _multi_agent_trace_schema()
     return {
         "type": "object",
         "additionalProperties": False,
@@ -220,6 +333,7 @@ def _proposal_schema() -> Dict[str, Any]:
             "source_idea_id",
             "parameter_overrides",
             "agent_notes",
+            "multi_agent_trace",
         ],
         "properties": {
             "title": {"type": "string"},
@@ -232,6 +346,7 @@ def _proposal_schema() -> Dict[str, Any]:
             "source_idea_id": {"type": ["string", "null"]},
             "parameter_overrides": parameter_override_schema,
             "agent_notes": {"type": "array", "items": {"type": "string"}},
+            "multi_agent_trace": multi_agent_trace_schema,
         },
     }
 
@@ -262,6 +377,7 @@ def _tweak_schema() -> Dict[str, Any]:
 
 
 def _critique_schema() -> Dict[str, Any]:
+    multi_agent_trace_schema = _multi_agent_trace_schema()
     return {
         "type": "object",
         "additionalProperties": False,
@@ -273,6 +389,7 @@ def _critique_schema() -> Dict[str, Any]:
             "maintenance_reason",
             "requires_retrain",
             "requires_new_challenger",
+            "multi_agent_trace",
         ],
         "properties": {
             "summary": {"type": "string"},
@@ -285,11 +402,13 @@ def _critique_schema() -> Dict[str, Any]:
             "maintenance_reason": {"type": "string"},
             "requires_retrain": {"type": "boolean"},
             "requires_new_challenger": {"type": "boolean"},
+            "multi_agent_trace": multi_agent_trace_schema,
         },
     }
 
 
 def _debug_schema() -> Dict[str, Any]:
+    multi_agent_trace_schema = _multi_agent_trace_schema()
     return {
         "type": "object",
         "additionalProperties": False,
@@ -304,6 +423,7 @@ def _debug_schema() -> Dict[str, Any]:
             "human_action",
             "human_owner",
             "should_pause_lineage",
+            "multi_agent_trace",
         ],
         "properties": {
             "summary": {"type": "string"},
@@ -316,6 +436,107 @@ def _debug_schema() -> Dict[str, Any]:
             "human_action": {"type": ["string", "null"]},
             "human_owner": {"type": ["string", "null"]},
             "should_pause_lineage": {"type": "boolean"},
+            "multi_agent_trace": multi_agent_trace_schema,
+        },
+    }
+
+
+def _maintenance_resolution_schema() -> Dict[str, Any]:
+    multi_agent_trace_schema = _multi_agent_trace_schema()
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "summary",
+            "maintenance_action",
+            "maintenance_reason",
+            "next_steps",
+            "requires_new_challenger",
+            "multi_agent_trace",
+        ],
+        "properties": {
+            "summary": {"type": "string"},
+            "maintenance_action": {
+                "type": "string",
+                "enum": ["hold", "retrain", "rework", "replace", "retire"],
+            },
+            "maintenance_reason": {"type": "string"},
+            "next_steps": {"type": "array", "items": {"type": "string"}},
+            "requires_new_challenger": {"type": "boolean"},
+            "multi_agent_trace": multi_agent_trace_schema,
+        },
+    }
+
+
+def _fallback_family_venues(idea: Dict[str, Any]) -> List[str]:
+    haystack = " ".join(
+        [
+            str(idea.get("title") or ""),
+            str(idea.get("summary") or ""),
+            " ".join(str(item) for item in (idea.get("tags") or [])),
+        ]
+    ).lower()
+    venues: List[str] = []
+    if "polymarket" in haystack:
+        venues.append("polymarket")
+    if "betfair" in haystack or "sports" in haystack:
+        venues.append("betfair")
+    if "binance" in haystack or not venues:
+        venues.append("binance")
+    unique: List[str] = []
+    for venue in venues:
+        if venue not in unique:
+            unique.append(venue)
+    return unique
+
+
+def _fallback_family_connectors(target_venues: Sequence[str]) -> List[str]:
+    connectors: List[str] = []
+    for venue in target_venues:
+        venue_text = str(venue).strip().lower()
+        if venue_text == "polymarket":
+            connectors.append("polymarket_core")
+        elif venue_text == "betfair":
+            connectors.append("betfair_core")
+        elif venue_text == "binance":
+            connectors.append("binance_core")
+    return connectors or ["binance_core"]
+
+
+def _family_proposal_schema() -> Dict[str, Any]:
+    multi_agent_trace_schema = _multi_agent_trace_schema()
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "family_id",
+            "label",
+            "thesis",
+            "explainer",
+            "target_venues",
+            "primary_connector_ids",
+            "target_portfolios",
+            "scientific_domains",
+            "lead_agent_role",
+            "collaborating_agent_roles",
+            "source_idea_id",
+            "incubation_notes",
+            "multi_agent_trace",
+        ],
+        "properties": {
+            "family_id": {"type": "string"},
+            "label": {"type": "string"},
+            "thesis": {"type": "string"},
+            "explainer": {"type": "string"},
+            "target_venues": {"type": "array", "items": {"type": "string"}},
+            "primary_connector_ids": {"type": "array", "items": {"type": "string"}},
+            "target_portfolios": {"type": "array", "items": {"type": "string"}},
+            "scientific_domains": {"type": "array", "items": {"type": "string"}},
+            "lead_agent_role": {"type": "string"},
+            "collaborating_agent_roles": {"type": "array", "items": {"type": "string"}},
+            "source_idea_id": {"type": ["string", "null"]},
+            "incubation_notes": {"type": "array", "items": {"type": "string"}},
+            "multi_agent_trace": multi_agent_trace_schema,
         },
     }
 
@@ -339,6 +560,8 @@ class AgentRunResult:
     error: Optional[str] = None
     artifact_path: Optional[str] = None
     attempted_providers: List[str] = field(default_factory=list)
+    multi_agent_requested: bool = False
+    multi_agent_roles: List[str] = field(default_factory=list)
 
     def to_lineage_decision(self, *, kind: str, used_real_agent: bool) -> Dict[str, Any]:
         return {
@@ -353,6 +576,8 @@ class AgentRunResult:
             "fallback_used": self.fallback_used,
             "artifact_path": self.artifact_path,
             "generated_at": utc_now_iso(),
+            "multi_agent_requested": self.multi_agent_requested,
+            "multi_agent_roles": list(self.multi_agent_roles),
         }
 
 
@@ -370,6 +595,33 @@ def recent_agent_runs(project_root: Path | None = None, *, limit: int = 20) -> L
         rows.append(payload)
     rows.sort(key=lambda row: str(row.get("generated_at") or ""), reverse=True)
     return rows[:limit]
+
+
+def _compact_agent_error(provider: str, details: str) -> str:
+    text = str(details or "").strip()
+    if not text:
+        return f"{provider}:unknown_error"
+    if "invalid_json_schema" in text:
+        match = re.search(r'"message":\s*"([^"]+)"', text)
+        message = match.group(1) if match else "invalid_json_schema"
+        return f"{provider}:structured_output_error: {message}"
+    if "The hubspot MCP server is not logged in" in text:
+        return f"{provider}:mcp_auth_missing: hubspot"
+    if "The meta-ads MCP server is not logged in" in text:
+        return f"{provider}:mcp_auth_missing: meta-ads"
+    env_match = re.search(r"Environment variable ([A-Z0-9_]+) .* is not set", text)
+    if env_match:
+        return f"{provider}:missing_env: {env_match.group(1)}"
+    if "OpenAI Codex v" in text or "mcp startup:" in text:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for line in reversed(lines):
+            if line.startswith("ERROR:"):
+                return f"{provider}:{line.removeprefix('ERROR:').strip()[:240]}"
+            if "invalid_json_schema" in line or "failed:" in line or "not logged in" in line:
+                return f"{provider}:{line[:240]}"
+        return f"{provider}:codex_exec_failed"
+    first_line = text.splitlines()[0].strip()
+    return f"{provider}:{first_line[:240]}"
 
 
 class RealResearchAgentRuntime:
@@ -422,6 +674,10 @@ class RealResearchAgentRuntime:
                 "new_model_pct": int(getattr(config, "FACTORY_CHALLENGER_NEW_MODEL_PCT", 20)),
             },
         }
+        prompt_payload["codex_multi_agent_plan"] = self._codex_multi_agent_plan(
+            task_type="proposal_generation",
+            task_class=task_class,
+        )
         prompt = self._proposal_prompt(prompt_payload, task_class=task_class)
         return self._run_structured(
             task_type="proposal_generation",
@@ -431,6 +687,55 @@ class RealResearchAgentRuntime:
             prompt=prompt,
             prompt_payload=prompt_payload,
             schema=_proposal_schema(),
+            model_override=_proposal_model(),
+            reasoning_override=_proposal_reasoning(),
+        )
+
+    def generate_family_proposal(
+        self,
+        *,
+        idea: Dict[str, Any],
+        existing_family_ids: Sequence[str],
+        cycle_count: int,
+        proposal_index: int,
+        research_portfolio_id: str,
+        active_incubation_count: int = 0,
+    ) -> AgentRunResult | None:
+        if not bool(getattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)):
+            return None
+        task_class = TASK_FRONTIER
+        prompt_payload = {
+            "cycle_count": cycle_count,
+            "proposal_index": proposal_index,
+            "idea": dict(idea),
+            "existing_family_ids": [str(item) for item in existing_family_ids if str(item).strip()],
+            "active_incubation_count": int(active_incubation_count),
+            "research_portfolio_id": str(research_portfolio_id),
+            "idea_intake_excerpt": _idea_excerpt(self.project_root),
+            "family_creation_policy": {
+                "goal": "Create a genuinely new incubating family, not just another lineage inside an existing family.",
+                "constraints": [
+                    "Return one unique snake_case family_id not already present in existing_family_ids.",
+                    "Keep this paper-only and research-first.",
+                    "Target a plausible venue/connector set already represented in the idea or current factory context.",
+                    "Write the thesis in the form 'We believe we can create alpha by ...'.",
+                    "Prefer bounded, testable families that can incubate locally before runtime promotion.",
+                ],
+            },
+        }
+        prompt_payload["codex_multi_agent_plan"] = self._codex_multi_agent_plan(
+            task_type="family_bootstrap_generation",
+            task_class=task_class,
+        )
+        prompt = self._family_bootstrap_prompt(prompt_payload, task_class=task_class)
+        return self._run_structured(
+            task_type="family_bootstrap_generation",
+            task_class=task_class,
+            family_id="incubating_family",
+            lineage_id=None,
+            prompt=prompt,
+            prompt_payload=prompt_payload,
+            schema=_family_proposal_schema(),
             model_override=_proposal_model(),
             reasoning_override=_proposal_reasoning(),
         )
@@ -479,6 +784,10 @@ class RealResearchAgentRuntime:
             "learning_memory": _truncate_memories(learning_memory, limit=4),
             "execution_evidence": _truncate_execution_evidence(execution_evidence),
         }
+        prompt_payload["codex_multi_agent_plan"] = self._codex_multi_agent_plan(
+            task_type="underperformance_tweak",
+            task_class=task_class,
+        )
         prompt = self._tweak_prompt(prompt_payload, task_class=task_class)
         return self._run_structured(
             task_type="underperformance_tweak",
@@ -505,7 +814,12 @@ class RealResearchAgentRuntime:
         if (not force and not _post_eval_critique_enabled()) or not self._family_enabled(family.family_id):
             return None
         prompt_payload = {
-            "family": {"family_id": family.family_id, "label": family.label, "thesis": family.thesis},
+            "family": {
+                "family_id": family.family_id,
+                "label": family.label,
+                "thesis": family.thesis,
+                "scientific_domains": list((genome.scientific_domains if genome else []) or []),
+            },
             "lineage": {
                 "lineage_id": lineage.lineage_id,
                 "role": lineage.role,
@@ -518,6 +832,10 @@ class RealResearchAgentRuntime:
             "execution_evidence": _truncate_execution_evidence(execution_evidence),
             "review_context": dict(review_context or {}),
         }
+        prompt_payload["codex_multi_agent_plan"] = self._codex_multi_agent_plan(
+            task_type="post_eval_critique",
+            task_class=TASK_DEEP,
+        )
         prompt = self._critique_prompt(prompt_payload, task_class=TASK_DEEP)
         return self._run_structured(
             task_type="post_eval_critique",
@@ -543,7 +861,12 @@ class RealResearchAgentRuntime:
             return None
         task_class = self._debug_task_class(lineage, execution_evidence)
         prompt_payload = {
-            "family": {"family_id": family.family_id, "label": family.label, "thesis": family.thesis},
+            "family": {
+                "family_id": family.family_id,
+                "label": family.label,
+                "thesis": family.thesis,
+                "scientific_domains": list((genome.scientific_domains if genome else []) or []),
+            },
             "lineage": {
                 "lineage_id": lineage.lineage_id,
                 "role": lineage.role,
@@ -555,6 +878,10 @@ class RealResearchAgentRuntime:
             "execution_evidence": _truncate_execution_evidence(execution_evidence),
             "debug_context": dict(debug_context or {}),
         }
+        prompt_payload["codex_multi_agent_plan"] = self._codex_multi_agent_plan(
+            task_type="runtime_debug_review",
+            task_class=task_class,
+        )
         prompt = self._debug_prompt(prompt_payload, task_class=task_class)
         return self._run_structured(
             task_type="runtime_debug_review",
@@ -564,6 +891,58 @@ class RealResearchAgentRuntime:
             prompt=prompt,
             prompt_payload=prompt_payload,
             schema=_debug_schema(),
+        )
+
+    def resolve_maintenance_item(
+        self,
+        *,
+        family: FactoryFamily,
+        lineage: LineageRecord,
+        genome: StrategyGenome | None,
+        latest_bundle: EvaluationBundle | None,
+        learning_memory: Sequence[LearningMemoryEntry],
+        execution_evidence: Dict[str, Any] | None,
+        maintenance_request: Dict[str, Any],
+        review_context: Dict[str, Any] | None = None,
+    ) -> AgentRunResult | None:
+        if not bool(getattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)):
+            return None
+        task_class = self._maintenance_task_class(lineage, execution_evidence, maintenance_request)
+        prompt_payload = {
+            "family": {
+                "family_id": family.family_id,
+                "label": family.label,
+                "thesis": family.thesis,
+                "scientific_domains": list((genome.scientific_domains if genome else []) or []),
+            },
+            "lineage": {
+                "lineage_id": lineage.lineage_id,
+                "role": lineage.role,
+                "current_stage": lineage.current_stage,
+                "iteration_status": lineage.iteration_status,
+                "tweak_count": int(lineage.tweak_count or 0),
+                "loss_streak": int(lineage.loss_streak or 0),
+            },
+            "genome_parameters": dict((genome.parameters if genome else {}) or {}),
+            "latest_evaluation": dict((latest_bundle.to_dict() if latest_bundle else {}) or {}),
+            "learning_memory": _truncate_memories(learning_memory, limit=6),
+            "execution_evidence": _truncate_execution_evidence(execution_evidence),
+            "maintenance_request": dict(maintenance_request or {}),
+            "review_context": dict(review_context or {}),
+        }
+        prompt_payload["codex_multi_agent_plan"] = self._codex_multi_agent_plan(
+            task_type="maintenance_resolution_review",
+            task_class=task_class,
+        )
+        prompt = self._maintenance_prompt(prompt_payload, task_class=task_class)
+        return self._run_structured(
+            task_type="maintenance_resolution_review",
+            task_class=task_class,
+            family_id=family.family_id,
+            lineage_id=lineage.lineage_id,
+            prompt=prompt,
+            prompt_payload=prompt_payload,
+            schema=_maintenance_resolution_schema(),
         )
 
     def _family_enabled(self, family_id: str) -> bool:
@@ -657,6 +1036,23 @@ class RealResearchAgentRuntime:
             return TASK_HARD
         return TASK_CHEAP
 
+    def _maintenance_task_class(
+        self,
+        lineage: LineageRecord,
+        execution_evidence: Dict[str, Any] | None,
+        maintenance_request: Dict[str, Any] | None,
+    ) -> str:
+        action = str((maintenance_request or {}).get("action") or "").strip().lower()
+        issue_codes = {str(item) for item in ((execution_evidence or {}).get("issue_codes") or [])}
+        if (
+            str((execution_evidence or {}).get("health_status") or "") == "critical"
+            or action in {"replace", "retire"}
+            or issue_codes.intersection({"negative_paper_roi", "poor_win_rate", "untrainable_model", "training_stalled", "stalled_model"})
+            or str(lineage.iteration_status or "").strip().lower() in {"review_requested_replace", "review_recommended_retire"}
+        ):
+            return TASK_HARD
+        return TASK_STANDARD
+
     def _contradictory_memories(self, learning_memory: Sequence[LearningMemoryEntry]) -> bool:
         rois = [
             float(memory.metrics.get("monthly_roi_pct", 0.0) or 0.0)
@@ -676,6 +1072,41 @@ class RealResearchAgentRuntime:
                 if feature in text:
                     recommended_features.add(feature)
         return len(recommended_models) > 1 or len(recommended_features) > 1
+
+    def _codex_multi_agent_plan(self, *, task_type: str, task_class: str) -> Dict[str, Any]:
+        enabled = _codex_multi_agent_enabled() and task_type in set(_codex_multi_agent_tasks())
+        profile = dict(MULTI_AGENT_TASK_PROFILES.get(task_type) or {})
+        if not enabled:
+            return {
+                "enabled": False,
+                "strategy": "single_agent",
+                "task_class": task_class,
+                "child_roles": [],
+                "instruction": "",
+            }
+        return {
+            "enabled": True,
+            "strategy": str(profile.get("strategy") or "parallel_panel"),
+            "task_class": task_class,
+            "child_roles": [str(item) for item in (profile.get("child_roles") or []) if str(item).strip()],
+            "instruction": str(profile.get("instruction") or "").strip(),
+        }
+
+    def _codex_multi_agent_prompt_suffix(self, prompt_payload: Dict[str, Any]) -> str:
+        plan = dict(prompt_payload.get("codex_multi_agent_plan") or {})
+        if not bool(plan.get("enabled")):
+            return ""
+        roles = [str(item) for item in (plan.get("child_roles") or []) if str(item).strip()]
+        role_text = ", ".join(roles) if roles else "specialized child agents"
+        instruction = str(plan.get("instruction") or "").strip()
+        return (
+            "\n\nCodex multi-agent execution:\n"
+            f"- {instruction}\n"
+            f"- Use these child-agent roles if helpful: {role_text}.\n"
+            "- Synthesize the child-agent conclusions into one final structured answer.\n"
+            "- If the schema allows `multi_agent_trace`, include one concise finding per child role plus a short synthesis.\n"
+            "- Return only the requested final object, not free-form child-agent transcripts.\n"
+        )
 
     def _run_structured(
         self,
@@ -698,6 +1129,7 @@ class RealResearchAgentRuntime:
                 continue
             attempted.append(provider)
             if provider == "deterministic":
+                multi_agent_plan = dict(prompt_payload.get("codex_multi_agent_plan") or {})
                 result = AgentRunResult(
                     run_id=self._new_run_id(task_type),
                     task_type=task_type,
@@ -715,6 +1147,8 @@ class RealResearchAgentRuntime:
                     raw_text="",
                     error="; ".join(errors) if errors else "deterministic fallback selected",
                     attempted_providers=list(attempted),
+                    multi_agent_requested=bool(multi_agent_plan.get("enabled")),
+                    multi_agent_roles=list(multi_agent_plan.get("child_roles") or []),
                 )
                 return self._write_run_artifact(result)
             try:
@@ -749,7 +1183,7 @@ class RealResearchAgentRuntime:
                     )
                     return self._write_run_artifact(result)
             except Exception as exc:
-                errors.append(f"{provider}:{exc}")
+                errors.append(_compact_agent_error(provider, str(exc)))
         failure = AgentRunResult(
             run_id=self._new_run_id(task_type),
             task_type=task_type,
@@ -767,6 +1201,8 @@ class RealResearchAgentRuntime:
             raw_text="",
             error="; ".join(errors) if errors else "no providers attempted",
             attempted_providers=list(attempted),
+            multi_agent_requested=bool((prompt_payload.get("codex_multi_agent_plan") or {}).get("enabled")),
+            multi_agent_roles=list((prompt_payload.get("codex_multi_agent_plan") or {}).get("child_roles") or []),
         )
         return self._write_run_artifact(failure)
 
@@ -787,6 +1223,7 @@ class RealResearchAgentRuntime:
     ) -> AgentRunResult:
         model = model_override or _task_model(task_class)
         reasoning = reasoning_override or _task_reasoning(task_class)
+        multi_agent_plan = dict(prompt_payload.get("codex_multi_agent_plan") or {})
         start = time.perf_counter()
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as schema_file:
             json.dump(schema, schema_file)
@@ -811,6 +1248,8 @@ class RealResearchAgentRuntime:
             f'model_reasoning_effort="{reasoning}"',
             prompt,
         ]
+        if bool(multi_agent_plan.get("enabled")):
+            cmd[5:5] = ["--enable", "multi_agent"]
         try:
             proc = subprocess.run(
                 cmd,
@@ -841,6 +1280,8 @@ class RealResearchAgentRuntime:
                 result_payload=payload,
                 raw_text=proc.stdout.strip(),
                 attempted_providers=list(attempted),
+                multi_agent_requested=bool(multi_agent_plan.get("enabled")),
+                multi_agent_roles=list(multi_agent_plan.get("child_roles") or []),
             )
         finally:
             Path(schema_path).unlink(missing_ok=True)
@@ -898,6 +1339,8 @@ class RealResearchAgentRuntime:
             result_payload=payload,
             raw_text=raw_text,
             attempted_providers=list(attempted),
+            multi_agent_requested=False,
+            multi_agent_roles=[],
         )
 
     def _write_run_artifact(self, result: AgentRunResult) -> AgentRunResult:
@@ -919,6 +1362,8 @@ class RealResearchAgentRuntime:
             "error": result.error,
             "attempted_providers": list(result.attempted_providers),
             "raw_text": result.raw_text,
+            "multi_agent_requested": result.multi_agent_requested,
+            "multi_agent_roles": list(result.multi_agent_roles),
         }
         path = self.log_dir / f"{result.run_id}.json"
         path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
@@ -942,7 +1387,7 @@ class RealResearchAgentRuntime:
             "Context JSON:\n"
             f"{json.dumps(prompt_payload, indent=2, default=str)}\n\n"
             "Return only the structured object requested by the schema."
-        )
+        ) + self._codex_multi_agent_prompt_suffix(prompt_payload)
 
     def _tweak_prompt(self, prompt_payload: Dict[str, Any], *, task_class: str) -> str:
         return (
@@ -956,7 +1401,7 @@ class RealResearchAgentRuntime:
             "Context JSON:\n"
             f"{json.dumps(prompt_payload, indent=2, default=str)}\n\n"
             "Return only the structured object requested by the schema."
-        )
+        ) + self._codex_multi_agent_prompt_suffix(prompt_payload)
 
     def _critique_prompt(self, prompt_payload: Dict[str, Any], *, task_class: str) -> str:
         return (
@@ -973,7 +1418,7 @@ class RealResearchAgentRuntime:
             "Context JSON:\n"
             f"{json.dumps(prompt_payload, indent=2, default=str)}\n\n"
             "Return only the structured object requested by the schema."
-        )
+        ) + self._codex_multi_agent_prompt_suffix(prompt_payload)
 
     def _debug_prompt(self, prompt_payload: Dict[str, Any], *, task_class: str) -> str:
         return (
@@ -986,7 +1431,40 @@ class RealResearchAgentRuntime:
             "Context JSON:\n"
             f"{json.dumps(prompt_payload, indent=2, default=str)}\n\n"
             "Return only the structured object requested by the schema."
-        )
+        ) + self._codex_multi_agent_prompt_suffix(prompt_payload)
+
+    def _maintenance_prompt(self, prompt_payload: Dict[str, Any], *, task_class: str) -> str:
+        return (
+            "You are a maintenance-resolution agent inside a paper-only trading factory.\n"
+            "Review the active maintenance pressure on this lineage and choose the strongest credible maintenance action.\n"
+            "You must choose exactly one maintenance_action:\n"
+            "- hold: current maintenance pressure is not yet strong enough to act\n"
+            "- retrain: keep the lineage, refresh the incumbent model/training state\n"
+            "- rework: keep the lineage but require bounded fixes or algorithm changes\n"
+            "- replace: lineage is weak enough that fresher challengers should take over\n"
+            "- retire: evidence is bad enough that the lineage should leave active rotation\n"
+            "Prefer realism over optimism. Account for execution quality, fee/slippage realism, trainability, and whether the current evidence is actually trustworthy.\n"
+            f"Research tier: {task_class}.\n\n"
+            "Context JSON:\n"
+            f"{json.dumps(prompt_payload, indent=2, default=str)}\n\n"
+            "Return only the structured object requested by the schema."
+        ) + self._codex_multi_agent_prompt_suffix(prompt_payload)
+
+    def _family_bootstrap_prompt(self, prompt_payload: Dict[str, Any], *, task_class: str) -> str:
+        return (
+            "You are an incubation agent inside a paper-only trading strategy factory.\n"
+            "Create one genuinely new strategy family from the supplied idea.\n"
+            "Constraints:\n"
+            "- This must be a new family, not just a challenger mutation inside an existing family.\n"
+            "- The family_id must be unique versus existing_family_ids and must be snake_case.\n"
+            "- Keep it bounded, local-first, and incubatable before any runtime promotion.\n"
+            "- Do not invent live trading permissions, credentials, or unsupported venues.\n"
+            "- Thesis must begin with 'We believe we can create alpha by ...'.\n"
+            f"- Research tier: {task_class}.\n\n"
+            "Context JSON:\n"
+            f"{json.dumps(prompt_payload, indent=2, default=str)}\n\n"
+            "Return only the structured object requested by the schema."
+        ) + self._codex_multi_agent_prompt_suffix(prompt_payload)
 
 
 def apply_real_agent_proposal(
@@ -1038,6 +1516,7 @@ def apply_real_agent_proposal(
             f"model={result.model}",
             f"task_type={result.task_type}",
             f"task_class={result.model_class}",
+            f"multi_agent_requested={str(bool(result.multi_agent_requested)).lower()}",
         ],
         agent_metadata={
             "run_id": result.run_id,
@@ -1048,5 +1527,68 @@ def apply_real_agent_proposal(
             "task_class": result.model_class,
             "reasoning_effort": result.reasoning_effort,
             "fallback_used": result.fallback_used,
+            "multi_agent_requested": result.multi_agent_requested,
+            "multi_agent_roles": list(result.multi_agent_roles),
         },
+    )
+
+
+def apply_real_family_proposal(
+    *,
+    result: AgentRunResult,
+    idea: Dict[str, Any],
+    existing_family_ids: Sequence[str],
+    cycle_count: int,
+    proposal_index: int,
+    research_portfolio_id: str,
+) -> ScientificFamilyProposal:
+    payload = dict(result.result_payload)
+    requested_family_id = str(payload.get("family_id") or "").strip().lower().replace("-", "_")
+    clean_family_id = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in requested_family_id).strip("_")
+    if not clean_family_id:
+        clean_family_id = f"incubated_family_{cycle_count}_{proposal_index}"
+    family_id = clean_family_id
+    existing = {str(item).strip() for item in existing_family_ids if str(item).strip()}
+    suffix = 2
+    while family_id in existing:
+        family_id = f"{clean_family_id}_{suffix}"
+        suffix += 1
+    idea_id = str(payload.get("source_idea_id") or idea.get("idea_id") or "").strip() or None
+    target_venues = [str(item) for item in (payload.get("target_venues") or []) if str(item).strip()]
+    if not target_venues:
+        target_venues = _fallback_family_venues(idea)
+    primary_connector_ids = [str(item) for item in (payload.get("primary_connector_ids") or []) if str(item).strip()]
+    if not primary_connector_ids:
+        primary_connector_ids = _fallback_family_connectors(target_venues)
+    target_portfolios = [str(item) for item in (payload.get("target_portfolios") or []) if str(item).strip()]
+    if not target_portfolios:
+        target_portfolios = [str(research_portfolio_id)]
+    scientific_domains = [str(item) for item in (payload.get("scientific_domains") or []) if str(item).strip()]
+    incubation_notes = [str(item) for item in (payload.get("incubation_notes") or []) if str(item).strip()]
+    incubation_notes.extend(
+        [
+            f"provider={result.provider}",
+            f"model={result.model}",
+            f"task_type={result.task_type}",
+            f"task_class={result.model_class}",
+            f"multi_agent_requested={str(bool(result.multi_agent_requested)).lower()}",
+        ]
+    )
+    return ScientificFamilyProposal(
+        proposal_id=f"{family_id}:family_proposal:{cycle_count}:{proposal_index}:{result.run_id}",
+        family_id=family_id,
+        label=str(payload.get("label") or str(idea.get("title") or family_id).strip()),
+        thesis=normalize_family_thesis(str(payload.get("thesis") or str(idea.get("summary") or ""))),
+        explainer=str(payload.get("explainer") or f"Incubating family proposed from idea {idea_id or 'unknown'}."),
+        target_venues=target_venues,
+        primary_connector_ids=primary_connector_ids,
+        target_portfolios=target_portfolios,
+        scientific_domains=scientific_domains,
+        lead_agent_role=str(payload.get("lead_agent_role") or "Family Incubator"),
+        collaborating_agent_roles=[
+            str(item) for item in (payload.get("collaborating_agent_roles") or []) if str(item).strip()
+        ],
+        source_idea_id=idea_id,
+        origin=f"real_agent_{result.provider}",
+        incubation_notes=incubation_notes,
     )

@@ -1,0 +1,49 @@
+{
+  "generated_at": "2026-03-12T18:53:47.667052+00:00",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:17",
+  "family_mode": "funding_contrarian",
+  "trigger_health_status": "warning",
+  "trigger_issue_codes": [
+    "readiness_blocked",
+    "excessive_rejections",
+    "no_trade_syndrome",
+    "zero_simulated_fills",
+    "negative_realized_pnl",
+    "negative_paper_roi"
+  ],
+  "recommendation_context": [
+    "review filters and execution thresholds because the runner is failing to convert opportunities",
+    "improve model quality and data coverage before promoting this family",
+    "tighten entry logic and retrain for better trade selection quality"
+  ],
+  "maintenance_request": {
+    "source": "execution_policy",
+    "action": "replace",
+    "reason": "Execution evidence says the incumbent is weak enough that maintenance pressure should escalate now.",
+    "requires_human": false,
+    "requires_new_challenger": true,
+    "issue_codes": [
+      "negative_paper_roi",
+      "no_trade_syndrome",
+      "zero_simulated_fills"
+    ]
+  },
+  "retrain_triggered": true,
+  "retrain_action": "agent_requested_replace",
+  "target_objective": "reduce missed settlement windows while improving strict-gate pass rate on funding dislocations",
+  "requested_model_class": "gbdt",
+  "resolved_model_engine": "naive_contrarian_backtest",
+  "source_mode": "log_fallback",
+  "source_paths": [],
+  "dataset_rows": 0,
+  "current_parameters": {
+    "selected_model_class": "gbdt",
+    "selected_feature_subset": "cross_science",
+    "selected_horizon_seconds": 1800,
+    "selected_min_edge": 0.07,
+    "selected_stake_fraction": 0.01,
+    "selected_learning_rate": 0.02,
+    "selected_lookback_hours": 144.0
+  }
+}

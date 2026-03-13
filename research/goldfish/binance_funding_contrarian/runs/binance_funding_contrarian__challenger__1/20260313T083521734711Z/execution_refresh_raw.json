@@ -1,0 +1,17 @@
+{
+  "family_id": "binance_funding_contrarian",
+  "generated_at": "2026-03-13T08:35:33.358948+00:00",
+  "reason": "funding_refresh_failed:1",
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260313T083521734711Z/execution_refresh_request.json",
+  "status": "failed",
+  "symbols": [
+    "API3USDT",
+    "BCHUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT"
+  ]
+}

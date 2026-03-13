@@ -1,0 +1,7 @@
+{
+  "status": "skipped",
+  "reason": "execution_refresh_script_missing",
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T143748949667Z/execution_refresh_request.json",
+  "output_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T143748949667Z/execution_refresh_raw.json",
+  "script_path": "/Users/benjaminpommeraud/Desktop/Coding/Arbitrage/scripts/factory_refresh_models.py"
+}

@@ -1,0 +1,16 @@
+{
+  "kind": "hybrid_logit",
+  "bias": -0.027786,
+  "weights": {
+    "depth_total_eur": 0.16602163406164228,
+    "imbalance": -0.008137745887647279,
+    "lay_back_ratio": 0.01663012767999537,
+    "price_velocity": -0.0001467225248680521,
+    "selection_count": 0.011281011415925815,
+    "short_volatility": -0.00015493601094515428,
+    "spread_mean": 0.009737032849728213,
+    "time_to_start_sec": -150.38926047087708,
+    "top_of_book_concentration": -0.0017613488535592294,
+    "weighted_spread": 0.00023817887209487943
+  }
+}

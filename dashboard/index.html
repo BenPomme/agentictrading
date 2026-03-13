@@ -27,8 +27,16 @@
           </div>
         </div>
       </header>
+      <section class="hero-feed-strip" id="feed-health-strip" aria-label="Data feed health"></section>
 
-      <main class="layout">
+      <main class="dashboard-shell">
+        <nav class="view-tabs" aria-label="Control room views">
+          <button class="view-tab is-active" type="button" data-tab-target="overview" aria-pressed="true">Overview</button>
+          <button class="view-tab" type="button" data-tab-target="lineage" aria-pressed="false">Lineage Atlas</button>
+        </nav>
+
+        <section class="tab-panel is-active" data-tab-panel="overview">
+          <div class="layout">
         <section class="panel panel-wide">
           <div class="panel-header">
             <h2>Executive Summary</h2>
@@ -55,8 +63,32 @@
 
         <section class="panel">
           <div class="panel-header">
-            <h2>Agent Desks</h2>
-            <span class="panel-tag">Company View</span>
+            <h2>Operator Inbox</h2>
+            <span class="panel-tag">Decisions</span>
+          </div>
+          <div class="queue-list" id="operator-inbox-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Maintenance Queue</h2>
+            <span class="panel-tag">Autopilot</span>
+          </div>
+          <div class="queue-list" id="maintenance-queue-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Paper Qualification Queue</h2>
+            <span class="panel-tag">Live Feed Validation</span>
+          </div>
+          <div class="queue-list" id="paper-qualification-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Research Systems</h2>
+            <span class="panel-tag">Agents + Algorithms</span>
           </div>
           <div id="desks"></div>
         </section>
@@ -138,6 +170,51 @@
             <span class="panel-tag" id="ideas-tag">Waiting</span>
           </div>
           <div class="ideas-shell" id="ideas-shell"></div>
+        </section>
+          </div>
+        </section>
+
+        <section class="tab-panel" data-tab-panel="lineage">
+          <div class="lineage-layout">
+            <section class="panel panel-wide">
+              <div class="panel-header">
+                <div>
+                  <h2>Model Lineage Atlas</h2>
+                  <p class="card-subtitle">Follow each family from champion roots through mutations, new-model forks, and active challengers.</p>
+                </div>
+                <span class="panel-tag" id="lineage-family-tag">Family View</span>
+              </div>
+              <div class="atlas-hero" id="lineage-atlas-hero"></div>
+            </section>
+
+            <section class="panel panel-wide">
+              <div class="panel-header">
+                <h2>Family Tree</h2>
+                <span class="panel-tag">History + Structure</span>
+              </div>
+              <div class="lineage-toolbar">
+                <div class="family-chip-row" id="lineage-family-tabs"></div>
+                <div class="legend-row">
+                  <span class="tag">Champion root</span>
+                  <span class="tag">Mutation branch</span>
+                  <span class="tag">New model fork</span>
+                  <span class="tag">Click any node for detail</span>
+                </div>
+              </div>
+              <div class="lineage-atlas-layout">
+                <div class="lineage-tree-shell" id="lineage-tree-shell"></div>
+                <aside class="lineage-inspector" id="lineage-inspector"></aside>
+              </div>
+            </section>
+
+            <section class="panel panel-wide">
+              <div class="panel-header">
+                <h2>Evolution Ledger</h2>
+                <span class="panel-tag">Chronology</span>
+              </div>
+              <div class="lineage-ledger" id="lineage-ledger"></div>
+            </section>
+          </div>
         </section>
       </main>
     </div>

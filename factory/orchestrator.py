@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
 
 import config
-from factory.agent_runtime import AgentRunResult, RealResearchAgentRuntime, apply_real_agent_proposal
+from factory.agent_runtime import (
+    AgentRunResult,
+    RealResearchAgentRuntime,
+    apply_real_agent_proposal,
+    apply_real_family_proposal,
+)
+from factory.assessment import assessment_progress
 from factory.connectors import default_connector_catalog
 from factory.contracts import (
     EvaluationBundle,
@@ -29,18 +35,20 @@ from factory.contracts import (
     StrategyGenome,
     utc_now_iso,
 )
-from factory.execution_evidence import summarize_execution_targets
+from factory.execution_bridge import FactoryExecutionBridge
+from factory.execution_evidence import build_portfolio_execution_evidence, summarize_execution_targets
 from factory.evaluation import assign_pareto_ranks, compute_hard_vetoes
 from factory.experiment_runner import FactoryExperimentRunner
 from factory.experiment_sources import family_model_rankings, portfolio_scorecards
 from factory.goldfish_bridge import GoldfishBridge
-from factory.idea_intake import annotate_idea_statuses, parse_ideas_markdown, relevant_ideas_for_family
+from factory.idea_intake import all_ideas, annotate_idea_statuses, maybe_run_manual_idea_watch, relevant_ideas_for_family
 from factory.idea_scout import maybe_run_idea_scout
 from factory.promotion import PromotionController
 from factory.registry import FactoryRegistry
+from factory.runtime_lanes import decide_runtime_lane_policy, runtime_lane_selection_key
 from factory.runtime_mode import current_agentic_factory_runtime_mode
 from factory.state_store import PortfolioStateStore
-from factory.strategy_inventor import ScientificAgentProposal, ScientificStrategyInventor
+from factory.strategy_inventor import ScientificAgentProposal, ScientificFamilyProposal, ScientificStrategyInventor
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -68,6 +76,16 @@ def _parse_iso_dt(value: Any) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _observed_live_paper_days(runtime_age_hours: Any) -> int:
+    try:
+        hours = float(runtime_age_hours or 0.0)
+    except Exception:
+        hours = 0.0
+    if hours <= 0.0:
+        return 0
+    return max(1, int((hours / 24.0) + 0.9999))
 
 
 def _budget_split() -> Dict[str, float]:
@@ -139,6 +157,7 @@ class FactoryOrchestrator:
             goldfish_root = self.project_root / goldfish_root
         self.registry = FactoryRegistry(factory_root)
         self.bridge = GoldfishBridge(goldfish_root)
+        self.execution_bridge = FactoryExecutionBridge()
         self.experiment_runner = FactoryExperimentRunner(self.project_root)
         self.strategy_inventor = ScientificStrategyInventor()
         self.agent_runtime = RealResearchAgentRuntime(self.project_root)
@@ -204,6 +223,247 @@ class FactoryOrchestrator:
             pause_reason="agentic_factory_hard_stopped",
         )
         return dict(self._last_state)
+
+    def _seed_family_from_spec(
+        self,
+        spec: Dict[str, Any],
+        *,
+        family_origin: str,
+        source_idea_id: str | None = None,
+        incubation_status: str = "core",
+        incubation_cycle_created: int = 0,
+        incubation_notes: List[str] | None = None,
+    ) -> FactoryFamily:
+        family_id = str(spec["family_id"])
+        hypothesis_id = f"{family_id}:hypothesis"
+        lineage_id = f"{family_id}:champion"
+        genome_id = f"{family_id}:genome:champion"
+        experiment_id = f"{family_id}:experiment:champion"
+        hypothesis = ResearchHypothesis(
+            hypothesis_id=hypothesis_id,
+            family_id=family_id,
+            title=spec["label"],
+            thesis=spec["thesis"],
+            scientific_domains=list(spec.get("scientific_domains") or _scientific_researchers()[:4]),
+            lead_agent_role=str(spec.get("lead_agent_role") or "Director"),
+            success_metric="paper_monthly_roi_pct",
+            guardrails=[
+                "No live promotion without human approval.",
+                "Mutation bounds may not touch credentials or hard risk caps.",
+                "Paper-first and net-of-costs only.",
+            ],
+            origin=family_origin,
+            agent_notes=list(spec.get("agent_notes") or ["Initial seeded champion for family bootstrap."]),
+        )
+        genome = StrategyGenome(
+            genome_id=genome_id,
+            lineage_id=lineage_id,
+            family_id=family_id,
+            parent_genome_id=None,
+            role=str(spec.get("role") or LineageRole.CHAMPION.value),
+            parameters={
+                "resource_profile": "local-first-hybrid",
+                "budget_mix": _budget_split(),
+                "max_shadow_challengers": 5,
+                "max_paper_challengers": 2,
+                "source_idea_id": source_idea_id,
+                "family_origin": family_origin,
+                "incubation_status": incubation_status,
+            },
+            mutation_bounds=MutationBounds(
+                horizons_seconds=[120, 600, 1800, 14400],
+                feature_subsets=["baseline", "microstructure", "cross_science", "regime"],
+                model_classes=["logit", "gbdt", "tft", "transformer", "rules"],
+                execution_thresholds={"min_edge": [0.01, 0.10], "stake_fraction": [0.01, 0.10]},
+                hyperparameter_ranges={"learning_rate": [0.001, 0.1], "lookback_hours": [6, 168]},
+            ),
+            scientific_domains=list(spec.get("scientific_domains") or _scientific_researchers()),
+            budget_bucket=str(spec["budget_bucket"]),
+            resource_profile="local-first-hybrid",
+            budget_weight_pct=float(spec["budget_weight_pct"]),
+        )
+        experiment = ExperimentSpec(
+            experiment_id=experiment_id,
+            lineage_id=lineage_id,
+            family_id=family_id,
+            hypothesis_id=hypothesis_id,
+            genome_id=genome_id,
+            goldfish_workspace=str(self.bridge.workspace_path(family_id)),
+            pipeline_stages=["dataset", "features", "train", "walkforward", "stress", "package"],
+            backend_mode="goldfish_sidecar",
+            resource_profile="local-first-hybrid",
+            inputs={"source_idea_id": source_idea_id} if source_idea_id else {},
+        )
+        lineage = LineageRecord(
+            lineage_id=lineage_id,
+            family_id=family_id,
+            label=f"{spec['label']} Champion",
+            role=str(spec.get("role") or LineageRole.CHAMPION.value),
+            current_stage=PromotionStage.IDEA.value,
+            target_portfolios=list(spec["target_portfolios"]),
+            target_venues=list(spec["target_venues"]),
+            hypothesis_id=hypothesis_id,
+            genome_id=genome_id,
+            experiment_id=experiment_id,
+            budget_bucket=str(spec["budget_bucket"]),
+            budget_weight_pct=float(spec["budget_weight_pct"]),
+            connector_ids=list(spec["connectors"]),
+            goldfish_workspace=str(self.bridge.workspace_path(family_id)),
+            iteration_status=str(spec.get("iteration_status") or "seeded_champion"),
+            creation_kind="new_model" if incubation_status == "incubating" else "seeded",
+        )
+        family = FactoryFamily(
+            family_id=family_id,
+            label=str(spec["label"]),
+            thesis=str(spec["thesis"]),
+            target_portfolios=list(spec["target_portfolios"]),
+            target_venues=list(spec["target_venues"]),
+            primary_connector_ids=list(spec["connectors"]),
+            champion_lineage_id=lineage_id,
+            shadow_challenger_ids=[],
+            paper_challenger_ids=[],
+            budget_split=_budget_split(),
+            queue_stage=PromotionStage.IDEA.value,
+            explainer=str(spec["explainer"]),
+            origin=family_origin,
+            source_idea_id=source_idea_id,
+            incubation_status=incubation_status,
+            incubation_cycle_created=int(incubation_cycle_created or 0),
+            incubation_notes=list(incubation_notes or []),
+        )
+        self.registry.save_family(family)
+        self.registry.save_research_pack(
+            hypothesis=hypothesis,
+            genome=genome,
+            experiment=experiment,
+            lineage=lineage,
+        )
+        return family
+
+    def _new_family_candidate_ideas(self) -> List[Dict[str, Any]]:
+        existing_families = {family.family_id for family in self.registry.families()}
+        used_idea_ids = {
+            str(family.source_idea_id or "").strip()
+            for family in self.registry.families()
+            if str(family.source_idea_id or "").strip()
+        }
+        lineage_rows = [lineage.to_dict() for lineage in self.registry.lineages()]
+        candidates: List[Dict[str, Any]] = []
+        for row in annotate_idea_statuses(all_ideas(self.project_root), lineage_rows):
+            idea_id = str(row.get("idea_id") or "").strip()
+            if not idea_id or idea_id in used_idea_ids:
+                continue
+            if str(row.get("status") or "") not in {"new", "adapted"}:
+                continue
+            family_candidates = [str(item) for item in (row.get("family_candidates") or []) if str(item).strip()]
+            if family_candidates and any(item in existing_families for item in family_candidates):
+                novelty_haystack = " ".join(
+                    [
+                        str(row.get("title") or ""),
+                        str(row.get("summary") or ""),
+                        " ".join(str(item) for item in (row.get("tags") or [])),
+                    ]
+                ).lower()
+                novelty_markers = {
+                    "entropy",
+                    "ladder",
+                    "novel",
+                    "incubator",
+                    "cross venue",
+                    "hybrid",
+                    "reflex",
+                    "new family",
+                }
+                if not any(marker in novelty_haystack for marker in novelty_markers):
+                    continue
+            candidates.append(dict(row))
+        return candidates
+
+    def _seed_new_families(
+        self,
+        *,
+        lineages_by_family: Dict[str, List[LineageRecord]],
+        runtime_mode_value: str,
+        recent_actions: List[str],
+    ) -> None:
+        if runtime_mode_value != "full" or not bool(getattr(config, "FACTORY_NEW_FAMILY_ENABLED", True)):
+            return
+        interval = max(1, int(getattr(config, "FACTORY_NEW_FAMILY_INTERVAL_CYCLES", 2)))
+        if (max(1, self._cycle_count) - 1) % interval != 0:
+            return
+        max_active = max(0, int(getattr(config, "FACTORY_NEW_FAMILY_MAX_ACTIVE_INCUBATIONS", 3)))
+        proposals_per_cycle = max(0, int(getattr(config, "FACTORY_NEW_FAMILY_PROPOSALS_PER_CYCLE", 1)))
+        incubating_families = [
+            family
+            for family in self.registry.families()
+            if str(family.incubation_status or "") == "incubating"
+        ]
+        remaining_slots = max(0, max_active - len(incubating_families))
+        if remaining_slots <= 0 or proposals_per_cycle <= 0:
+            return
+        existing_family_ids = [family.family_id for family in self.registry.families()]
+        research_portfolio_id = str(getattr(config, "RESEARCH_FACTORY_PORTFOLIO_ID", "research_factory"))
+        idea_candidates = self._new_family_candidate_ideas()[: min(remaining_slots, proposals_per_cycle)]
+        for offset, idea in enumerate(idea_candidates, start=1):
+            real_result = self.agent_runtime.generate_family_proposal(
+                idea=idea,
+                existing_family_ids=existing_family_ids,
+                cycle_count=self._cycle_count,
+                proposal_index=offset,
+                research_portfolio_id=research_portfolio_id,
+                active_incubation_count=len(incubating_families),
+            )
+            if real_result is not None and real_result.success and real_result.provider != "deterministic":
+                proposal = apply_real_family_proposal(
+                    result=real_result,
+                    idea=idea,
+                    existing_family_ids=existing_family_ids,
+                    cycle_count=self._cycle_count,
+                    proposal_index=offset,
+                    research_portfolio_id=research_portfolio_id,
+                )
+            else:
+                proposal = self.strategy_inventor.generate_family_proposal(
+                    idea=idea,
+                    existing_family_ids=existing_family_ids,
+                    cycle_count=self._cycle_count,
+                    proposal_index=offset,
+                    research_portfolio_id=research_portfolio_id,
+                )
+            family = self._seed_family_from_spec(
+                {
+                    "family_id": proposal.family_id,
+                    "label": proposal.label,
+                    "thesis": proposal.thesis,
+                    "target_portfolios": list(proposal.target_portfolios),
+                    "target_venues": list(proposal.target_venues),
+                    "connectors": list(proposal.primary_connector_ids),
+                    "budget_bucket": "moonshot",
+                    "budget_weight_pct": 8.0,
+                    "role": LineageRole.CHAMPION.value,
+                    "explainer": proposal.explainer,
+                    "scientific_domains": list(proposal.scientific_domains),
+                    "lead_agent_role": proposal.lead_agent_role,
+                    "agent_notes": list(proposal.incubation_notes) + ["Incubating new family from idea intake."],
+                    "iteration_status": "incubating_family_seed",
+                },
+                family_origin=proposal.origin,
+                source_idea_id=proposal.source_idea_id,
+                incubation_status="incubating",
+                incubation_cycle_created=self._cycle_count,
+                incubation_notes=list(proposal.incubation_notes),
+            )
+            champion = self.registry.load_lineage(family.champion_lineage_id)
+            if champion is not None:
+                lineages_by_family.setdefault(family.family_id, []).append(champion)
+            existing_family_ids.append(family.family_id)
+            _append_recent_action(
+                recent_actions,
+                (
+                    f"[cycle {self._cycle_count}] Incubated new family {family.family_id} from idea "
+                    f"{proposal.source_idea_id or 'unknown'} targeting {','.join(proposal.target_venues)}."
+                ),
+            )
 
     def bootstrap(self) -> None:
         if self.registry.families():
@@ -271,99 +531,9 @@ class FactoryOrchestrator:
             },
         ]
         for spec in family_specs:
-            family_id = spec["family_id"]
-            hypothesis_id = f"{family_id}:hypothesis"
-            lineage_id = f"{family_id}:champion"
-            genome_id = f"{family_id}:genome:champion"
-            experiment_id = f"{family_id}:experiment:champion"
-            hypothesis = ResearchHypothesis(
-                hypothesis_id=hypothesis_id,
-                family_id=family_id,
-                title=spec["label"],
-                thesis=spec["thesis"],
-                scientific_domains=_scientific_researchers()[:4],
-                lead_agent_role="Director",
-                success_metric="paper_monthly_roi_pct",
-                guardrails=[
-                    "No live promotion without human approval.",
-                    "Mutation bounds may not touch credentials or hard risk caps.",
-                    "Paper-first and net-of-costs only.",
-                ],
-                origin="seeded_family",
-                agent_notes=["Initial seeded champion for family bootstrap."],
-            )
-            genome = StrategyGenome(
-                genome_id=genome_id,
-                lineage_id=lineage_id,
-                family_id=family_id,
-                parent_genome_id=None,
-                role=spec["role"],
-                parameters={
-                    "resource_profile": "local-first-hybrid",
-                    "budget_mix": _budget_split(),
-                    "max_shadow_challengers": 5,
-                    "max_paper_challengers": 2,
-                },
-                mutation_bounds=MutationBounds(
-                    horizons_seconds=[120, 600, 1800, 14400],
-                    feature_subsets=["baseline", "microstructure", "cross_science", "regime"],
-                    model_classes=["logit", "gbdt", "tft", "transformer", "rules"],
-                    execution_thresholds={"min_edge": [0.01, 0.10], "stake_fraction": [0.01, 0.10]},
-                    hyperparameter_ranges={"learning_rate": [0.001, 0.1], "lookback_hours": [6, 168]},
-                ),
-                scientific_domains=_scientific_researchers(),
-                budget_bucket=spec["budget_bucket"],
-                resource_profile="local-first-hybrid",
-                budget_weight_pct=spec["budget_weight_pct"],
-            )
-            experiment = ExperimentSpec(
-                experiment_id=experiment_id,
-                lineage_id=lineage_id,
-                family_id=family_id,
-                hypothesis_id=hypothesis_id,
-                genome_id=genome_id,
-                goldfish_workspace=str(self.bridge.workspace_path(family_id)),
-                pipeline_stages=["dataset", "features", "train", "walkforward", "stress", "package"],
-                backend_mode="goldfish_sidecar",
-                resource_profile="local-first-hybrid",
-            )
-            lineage = LineageRecord(
-                lineage_id=lineage_id,
-                family_id=family_id,
-                label=f"{spec['label']} Champion",
-                role=spec["role"],
-                current_stage=PromotionStage.IDEA.value,
-                target_portfolios=list(spec["target_portfolios"]),
-                target_venues=list(spec["target_venues"]),
-                hypothesis_id=hypothesis_id,
-                genome_id=genome_id,
-                experiment_id=experiment_id,
-                budget_bucket=spec["budget_bucket"],
-                budget_weight_pct=spec["budget_weight_pct"],
-                connector_ids=list(spec["connectors"]),
-                goldfish_workspace=str(self.bridge.workspace_path(family_id)),
-                iteration_status="seeded_champion",
-            )
-            family = FactoryFamily(
-                family_id=family_id,
-                label=spec["label"],
-                thesis=spec["thesis"],
-                target_portfolios=list(spec["target_portfolios"]),
-                target_venues=list(spec["target_venues"]),
-                primary_connector_ids=list(spec["connectors"]),
-                champion_lineage_id=lineage_id,
-                shadow_challenger_ids=[],
-                paper_challenger_ids=[],
-                budget_split=_budget_split(),
-                queue_stage=PromotionStage.IDEA.value,
-                explainer=spec["explainer"],
-            )
-            self.registry.save_family(family)
-            self.registry.save_research_pack(
-                hypothesis=hypothesis,
-                genome=genome,
-                experiment=experiment,
-                lineage=lineage,
+            self._seed_family_from_spec(
+                spec,
+                family_origin="seeded_family",
             )
         self.registry.write_journal(
             FactoryJournal(
@@ -746,6 +916,15 @@ class FactoryOrchestrator:
     ) -> None:
         if runtime_mode_value != "full":
             return
+        if str(family.incubation_status or "") == "incubating" and str(family.queue_stage or "") in {
+            PromotionStage.IDEA.value,
+            PromotionStage.SPEC.value,
+            PromotionStage.DATA_CHECK.value,
+            PromotionStage.GOLDFISH_RUN.value,
+            PromotionStage.WALKFORWARD.value,
+            PromotionStage.STRESS.value,
+        }:
+            return
         active = [lineage for lineage in lineages_by_family.get(family.family_id, []) if lineage.active]
         champion = next((lineage for lineage in active if lineage.lineage_id == family.champion_lineage_id), None)
         if champion is None and active:
@@ -857,11 +1036,180 @@ class FactoryOrchestrator:
         }
         pressure = 1 if issue_codes.intersection(model_build_pressure) else 0
         maintenance_tokens = {str(item).strip().lower() for item in maintenance_actions if str(item).strip()}
-        if maintenance_tokens.intersection({"review_requested_replace", "replace", "review_requested_rework", "rework"}):
+        if maintenance_tokens.intersection(
+            {"review_requested_replace", "replace", "review_requested_rework", "rework", "prepare_isolated_lane"}
+        ):
             pressure = max(pressure, 2)
         elif maintenance_tokens.intersection({"review_requested_retrain", "retrain"}):
             pressure = max(pressure, 1)
         return pressure
+
+    def _family_autopilot_plan(
+        self,
+        family_id: str,
+        family_rows: Sequence[Dict[str, Any]],
+        *,
+        family_summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        issue_codes: set[str] = set()
+        maintenance_actions: set[str] = set()
+        health_statuses: List[str] = []
+        leader: Dict[str, Any] = {}
+        if family_rows:
+            leader = sorted(
+                [dict(row) for row in family_rows],
+                key=lambda row: (
+                    0 if row.get("runtime_lane_kind") == "primary_incumbent" else 1,
+                    0 if row.get("active", True) else 1,
+                    row.get("curated_family_rank") if row.get("curated_family_rank") is not None else 999,
+                    -float(row.get("live_paper_trade_count", 0) or 0),
+                    -float(row.get("live_paper_roi_pct", 0.0) or 0.0),
+                ),
+            )[0]
+        for row in family_rows:
+            execution_validation = dict(row.get("execution_validation") or {})
+            issue_codes.update(
+                str(item).strip().lower()
+                for item in list(row.get("execution_issue_codes") or []) + list(execution_validation.get("issue_codes") or [])
+                if str(item).strip()
+            )
+            maintenance_action = str(row.get("maintenance_request_action") or "").strip().lower()
+            if maintenance_action:
+                maintenance_actions.add(maintenance_action)
+            review_action = str(row.get("last_agent_review_action") or "").strip().lower()
+            if str(row.get("last_agent_review_status") or "") == "completed" and review_action:
+                maintenance_actions.add(f"review_requested_{review_action}")
+            if bool(row.get("agent_review_due")):
+                maintenance_actions.add("review_due")
+            iteration_status = str(row.get("iteration_status") or "").strip().lower()
+            if iteration_status:
+                maintenance_actions.add(iteration_status)
+            health_text = str(row.get("execution_health_status") or execution_validation.get("health_status") or "").strip().lower()
+            if health_text:
+                health_statuses.append(health_text)
+
+        live_trade_count = int(leader.get("live_paper_trade_count", 0) or 0)
+        live_roi_pct = float(leader.get("live_paper_roi_pct", 0.0) or 0.0)
+        wins = int(leader.get("live_paper_wins", 0) or 0)
+        losses = int(leader.get("live_paper_losses", 0) or 0)
+        total_outcomes = wins + losses
+        live_win_rate = (wins / total_outcomes) if total_outcomes > 0 else 0.0
+        if live_trade_count >= 8 and live_roi_pct < 0.0:
+            issue_codes.add("negative_paper_roi")
+        if live_trade_count >= 12 and total_outcomes >= 12 and live_win_rate < 0.2:
+            issue_codes.add("poor_win_rate")
+
+        isolated_needed = False
+        if family_summary is not None:
+            has_isolated_candidate = bool(
+                family_summary.get("isolated_challenger_lineage_id") or family_summary.get("prepared_isolated_lane_lineage_id")
+            )
+            isolated_needed = has_isolated_candidate and not bool(family_summary.get("isolated_evidence_ready"))
+        if isolated_needed:
+            maintenance_actions.add("isolate_evidence")
+
+        actions: List[str] = []
+        if maintenance_actions.intersection({"human_action_required"}):
+            actions.append("human_action_required")
+        if issue_codes.intersection({"negative_paper_roi", "poor_win_rate"}) or maintenance_actions.intersection(
+            {"replace", "review_requested_replace", "retire"}
+        ):
+            actions.append("replace")
+        if issue_codes.intersection({"untrainable_model", "training_stalled", "zero_simulated_fills", "no_trade_syndrome"}) or maintenance_actions.intersection(
+            {"retrain", "review_requested_retrain"}
+        ):
+            actions.append("retrain")
+        if issue_codes.intersection({"stalled_model", "trade_stalled", "slippage_pressure", "severe_slippage", "excessive_rejections"}) or maintenance_actions.intersection(
+            {"rework", "review_requested_rework", "isolated_lane_active", "isolated_evidence_stalled", "isolate_evidence_start_failed"}
+        ):
+            actions.append("rework")
+        if maintenance_actions.intersection({"prepare_isolated_lane", "isolate_evidence", "isolate_evidence_stalled", "isolate_evidence_start_failed"}):
+            actions.append("isolate_evidence")
+        if not actions and maintenance_actions.intersection({"review_due"}):
+            actions.append("review")
+
+        deduped_actions = list(dict.fromkeys(actions))
+        weak_family = bool(deduped_actions) or bool(
+            issue_codes.intersection(
+                {
+                    "negative_paper_roi",
+                    "poor_win_rate",
+                    "no_trade_syndrome",
+                    "zero_simulated_fills",
+                    "untrainable_model",
+                    "training_stalled",
+                    "stalled_model",
+                    "trade_stalled",
+                    "slippage_pressure",
+                    "severe_slippage",
+                    "excessive_rejections",
+                }
+            )
+        )
+
+        reason_tokens: List[str] = []
+        if issue_codes:
+            reason_tokens.append(f"issue codes: {', '.join(sorted(issue_codes)[:4])}")
+        if maintenance_actions:
+            reason_tokens.append(f"maintenance: {', '.join(sorted(maintenance_actions)[:4])}")
+        if isolated_needed:
+            reason_tokens.append("isolated evidence still not distinct")
+        if not reason_tokens and weak_family:
+            reason_tokens.append("family still needs active maintenance follow-through")
+
+        worst_health = "healthy"
+        if any(status == "critical" for status in health_statuses):
+            worst_health = "critical"
+        elif any(status == "warning" for status in health_statuses):
+            worst_health = "warning"
+        elif any(status in {"validation_blocked", "paper_validating", "research_only"} for status in health_statuses):
+            worst_health = "validation_blocked"
+
+        return {
+            "family_id": family_id,
+            "weak_family": weak_family,
+            "autopilot_status": (
+                "autopilot_active"
+                if deduped_actions
+                else ("monitoring" if weak_family else "healthy")
+            ),
+            "autopilot_actions": deduped_actions,
+            "autopilot_reason": "; ".join(reason_tokens),
+            "autopilot_issue_codes": sorted(issue_codes),
+            "autopilot_maintenance_actions": sorted(maintenance_actions),
+            "autopilot_trade_count": live_trade_count,
+            "autopilot_live_roi_pct": round(live_roi_pct, 4),
+            "autopilot_live_win_rate": round(live_win_rate, 4),
+            "autopilot_health_status": worst_health,
+            "autopilot_target_lineage_id": str(
+                family_summary.get("primary_incumbent_lineage_id") if family_summary is not None else leader.get("lineage_id") or ""
+            ),
+            "autopilot_target_stage": str(
+                family_summary.get("queue_stage") if family_summary is not None else leader.get("current_stage") or ""
+            ),
+        }
+
+    def _family_autopilot_maintenance_request(self, plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        actions = {str(item).strip().lower() for item in (plan.get("autopilot_actions") or []) if str(item).strip()}
+        if not actions or "human_action_required" in actions:
+            return None
+        action = ""
+        if "replace" in actions:
+            action = "replace"
+        elif "retrain" in actions:
+            action = "retrain"
+        elif "rework" in actions or "isolate_evidence" in actions or "review" in actions:
+            action = "rework"
+        if not action:
+            return None
+        return {
+            "source": "family_autopilot",
+            "action": action,
+            "reason": str(plan.get("autopilot_reason") or "family autopilot maintenance"),
+            "requires_human": False,
+            "requires_new_challenger": action == "replace",
+            "recommended_actions": list(plan.get("autopilot_actions") or []),
+        }
 
     def _review_uses_slow_thresholds(self, family: FactoryFamily, lineage: LineageRecord) -> bool:
         labels = {
@@ -983,6 +1331,21 @@ class FactoryOrchestrator:
             return None
         paper_days = int(latest_bundle.paper_days or 0)
         evidence_trades = int(max(latest_bundle.trade_count or 0, latest_bundle.settled_count or 0))
+        labels = [family.family_id, lineage.current_stage, *(family.target_portfolios or [])]
+        first_assessment = assessment_progress(
+            paper_days=paper_days,
+            trade_count=evidence_trades,
+            labels=labels,
+            current_stage=lineage.current_stage,
+            phase="first",
+        )
+        full_assessment = assessment_progress(
+            paper_days=paper_days,
+            trade_count=evidence_trades,
+            labels=labels,
+            current_stage=lineage.current_stage,
+            phase="full",
+        )
         use_slow = self._review_uses_slow_thresholds(family, lineage)
         min_days = int(
             getattr(
@@ -999,10 +1362,9 @@ class FactoryOrchestrator:
             )
         )
         if paper_days < min_days or evidence_trades < min_trades:
-            return None
+            if not bool(first_assessment.get("complete")):
+                return None
         last_review_at = _parse_iso_dt(lineage.last_agent_review_at)
-        if last_review_at is None:
-            return "initial_maturity_review"
         issue_codes = {str(item) for item in (execution_evidence.get("issue_codes") or [])}
         urgent_issue_codes = {
             "negative_paper_roi",
@@ -1022,6 +1384,12 @@ class FactoryOrchestrator:
         }
         if issue_codes.intersection(urgent_issue_codes):
             return "performance_review"
+        if last_review_at is None:
+            if bool(full_assessment.get("complete")):
+                return "initial_maturity_review"
+            return "first_assessment_review"
+        if not bool(full_assessment.get("complete")):
+            return None
         now = datetime.now(timezone.utc)
         interval_days = max(1, int(getattr(config, "FACTORY_AGENT_REVIEW_INTERVAL_DAYS", 7) or 7))
         if (now - last_review_at) >= timedelta(days=interval_days):
@@ -1048,6 +1416,7 @@ class FactoryOrchestrator:
         review_reason = self._scheduled_review_reason(family, lineage, latest_bundle, execution_evidence)
         if not review_reason:
             return
+        operator_action_context = self._latest_operator_action_context(lineage)
         critique = self.agent_runtime.critique_post_evaluation(
             family=family,
             lineage=lineage,
@@ -1062,6 +1431,7 @@ class FactoryOrchestrator:
                     "interval_days": int(getattr(config, "FACTORY_AGENT_REVIEW_INTERVAL_DAYS", 7) or 7),
                     "incremental_trades": int(getattr(config, "FACTORY_AGENT_REVIEW_INCREMENTAL_TRADES", 25) or 25),
                 },
+                "operator_action_context": operator_action_context,
             },
             force=True,
         )
@@ -1205,6 +1575,7 @@ class FactoryOrchestrator:
             return
         issue_signature = self._debug_issue_signature(execution_evidence)
         heuristic_human = self._human_resolution_from_evidence(execution_evidence)
+        operator_action_context = self._latest_operator_action_context(lineage)
         debug_result = self.agent_runtime.diagnose_bug(
             family=family,
             lineage=lineage,
@@ -1215,6 +1586,7 @@ class FactoryOrchestrator:
                 "trigger_reason": debug_reason,
                 "issue_signature": issue_signature,
                 "heuristic_human_resolution": heuristic_human,
+                "operator_action_context": operator_action_context,
             },
         )
         now = datetime.now(timezone.utc)
@@ -1231,6 +1603,9 @@ class FactoryOrchestrator:
             lineage.last_debug_human_action = heuristic_human.get("human_action")
             lineage.last_debug_bug_category = heuristic_human.get("bug_category")
             lineage.last_debug_summary = heuristic_human.get("summary")
+            lineage.last_debug_safe_auto_actions = []
+            lineage.last_debug_should_pause_lineage = False
+            lineage.last_debug_severity = None
             self.registry.save_lineage(lineage)
             return
         payload = dict(debug_result.result_payload or {})
@@ -1240,6 +1615,13 @@ class FactoryOrchestrator:
         lineage.last_debug_human_action = str(payload.get("human_action") or heuristic_human.get("human_action") or "") or None
         lineage.last_debug_bug_category = str(payload.get("bug_category") or heuristic_human.get("bug_category") or "") or None
         lineage.last_debug_summary = str(payload.get("summary") or heuristic_human.get("summary") or "") or None
+        lineage.last_debug_safe_auto_actions = [
+            str(item).strip()
+            for item in (payload.get("safe_auto_actions") or [])
+            if str(item).strip()
+        ]
+        lineage.last_debug_should_pause_lineage = bool(payload.get("should_pause_lineage"))
+        lineage.last_debug_severity = str(payload.get("severity") or "").strip() or None
         self.registry.save_lineage(lineage)
         experiment = self.registry.load_experiment(lineage.lineage_id)
         if experiment is not None:
@@ -1254,6 +1636,9 @@ class FactoryOrchestrator:
                 "requires_human": lineage.last_debug_requires_human,
                 "human_action": lineage.last_debug_human_action,
                 "bug_category": lineage.last_debug_bug_category,
+                "safe_auto_actions": list(lineage.last_debug_safe_auto_actions or []),
+                "should_pause_lineage": bool(lineage.last_debug_should_pause_lineage),
+                "severity": lineage.last_debug_severity,
                 "reviewed_at": lineage.last_debug_review_at,
             }
             self.registry.save_experiment(lineage.lineage_id, experiment)
@@ -1262,6 +1647,112 @@ class FactoryOrchestrator:
             recent_actions,
             f"[cycle {self._cycle_count}] Debug agent ran for {lineage.lineage_id} ({debug_reason}) via {debug_result.provider} {debug_result.model}.{debug_tail}",
         )
+
+    def _maintenance_review_signature(
+        self,
+        maintenance_request: Dict[str, Any],
+        execution_evidence: Dict[str, Any],
+    ) -> str:
+        issue_codes = sorted({str(item) for item in (execution_evidence.get("issue_codes") or []) if str(item).strip()})
+        return "|".join(
+            [
+                str(maintenance_request.get("action") or "").strip().lower(),
+                str(maintenance_request.get("source") or "").strip().lower(),
+                ",".join(issue_codes),
+                str(bool(maintenance_request.get("requires_new_challenger"))).lower(),
+            ]
+        )
+
+    def _maybe_run_maintenance_resolution_agent(
+        self,
+        family: FactoryFamily,
+        lineage: LineageRecord,
+        latest_by_stage: Dict[str, EvaluationBundle],
+        *,
+        recent_actions: List[str],
+        maintenance_request_override: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        latest_bundle = (
+            latest_by_stage.get(EvaluationStage.PAPER.value)
+            or latest_by_stage.get(EvaluationStage.STRESS.value)
+            or latest_by_stage.get(EvaluationStage.WALKFORWARD.value)
+        )
+        execution_evidence = self._execution_validation_snapshot(lineage)
+        maintenance_request = dict(maintenance_request_override or self._maintenance_request(lineage, execution_evidence) or {})
+        if not maintenance_request or bool(maintenance_request.get("requires_human")):
+            return False
+        action = str(maintenance_request.get("action") or "").strip().lower()
+        if action not in {"retrain", "rework", "replace", "retire"}:
+            return False
+        signature = self._maintenance_review_signature(maintenance_request, execution_evidence)
+        if str(lineage.last_maintenance_review_signature or "").strip() == signature:
+            last_at = _parse_iso_dt(lineage.last_maintenance_review_at)
+            if last_at is not None:
+                interval_hours = max(1, int(getattr(config, "FACTORY_MAINTENANCE_AGENT_REVIEW_INTERVAL_HOURS", 12) or 12))
+                if datetime.now(timezone.utc) - last_at < timedelta(hours=interval_hours):
+                    return False
+        result = self.agent_runtime.resolve_maintenance_item(
+            family=family,
+            lineage=lineage,
+            genome=self.registry.load_genome(lineage.lineage_id),
+            latest_bundle=latest_bundle,
+            learning_memory=self.registry.learning_memories(family_id=lineage.family_id, limit=12),
+            execution_evidence=execution_evidence,
+            maintenance_request=maintenance_request,
+            review_context={
+                "trigger_reason": str(maintenance_request.get("reason") or action or "maintenance_request"),
+                "maintenance_signature": signature,
+            },
+        )
+        now = datetime.now(timezone.utc)
+        lineage.last_maintenance_review_at = now.isoformat()
+        lineage.last_maintenance_review_reason = str(maintenance_request.get("reason") or action or "maintenance_request")
+        lineage.last_maintenance_review_signature = signature
+        lineage.next_maintenance_review_at = (
+            now + timedelta(hours=max(1, int(getattr(config, "FACTORY_MAINTENANCE_AGENT_REVIEW_INTERVAL_HOURS", 12) or 12)))
+        ).isoformat()
+        if result is None:
+            lineage.last_maintenance_review_status = "skipped_agent_disabled"
+            lineage.last_maintenance_review_artifact_path = None
+            lineage.last_maintenance_review_action = action
+            lineage.last_maintenance_review_summary = "Maintenance review skipped because real agents are disabled for this family."
+            self.registry.save_lineage(lineage)
+            return False
+        lineage.last_maintenance_review_status = "completed" if result.success else "failed"
+        lineage.last_maintenance_review_artifact_path = result.artifact_path
+        payload = dict(result.result_payload or {})
+        lineage.last_maintenance_review_action = str(payload.get("maintenance_action") or action or "hold")
+        lineage.last_maintenance_review_summary = str(payload.get("summary") or payload.get("maintenance_reason") or maintenance_request.get("reason") or "") or None
+        if result.success:
+            self._apply_review_maintenance(
+                family=family,
+                lineage=lineage,
+                latest_bundle=latest_bundle,
+                critique_payload=payload,
+                recent_actions=recent_actions,
+            )
+        self.registry.save_lineage(lineage)
+        experiment = self.registry.load_experiment(lineage.lineage_id)
+        if experiment is not None:
+            experiment.expected_outputs = dict(experiment.expected_outputs or {})
+            experiment.expected_outputs["maintenance_resolution_review"] = {
+                "artifact_path": result.artifact_path,
+                "provider": result.provider,
+                "model": result.model,
+                "success": result.success,
+                "fallback_used": result.fallback_used,
+                "review_reason": lineage.last_maintenance_review_reason,
+                "maintenance_action": lineage.last_maintenance_review_action,
+                "maintenance_summary": lineage.last_maintenance_review_summary,
+                "maintenance_signature": signature,
+                "reviewed_at": lineage.last_maintenance_review_at,
+            }
+            self.registry.save_experiment(lineage.lineage_id, experiment)
+        _append_recent_action(
+            recent_actions,
+            f"[cycle {self._cycle_count}] Maintenance review ran for {lineage.lineage_id} via {result.provider} {result.model} -> {lineage.last_maintenance_review_action}.",
+        )
+        return True
 
     def _lineage_variant(self, lineage: LineageRecord) -> Dict[str, float]:
         genome = self.registry.load_genome(lineage.lineage_id)
@@ -1394,6 +1885,10 @@ class FactoryOrchestrator:
             LineageRole.SHADOW_CHALLENGER.value: 30,
             LineageRole.MOONSHOT.value: 40,
         }.get(lineage.role, 50)
+        if lineage.iteration_status == "prepare_isolated_lane":
+            base = min(base, 18)
+        elif lineage.iteration_status == "isolated_lane_active":
+            base = min(base, 16)
         if not lineage.active:
             base += 50
         return base
@@ -1426,6 +1921,7 @@ class FactoryOrchestrator:
         family: FactoryFamily,
         ranked_rows: List[Dict[str, Any]],
         *,
+        prepared_challenger_id: str | None = None,
         recent_actions: List[str],
     ) -> None:
         active_ranked = [row for row in ranked_rows if row.get("active", True)]
@@ -1438,16 +1934,32 @@ class FactoryOrchestrator:
                 f"[cycle {self._cycle_count}] Champion rotated for {family.family_id}: {family.champion_lineage_id} -> {new_champion_id}.",
             )
         family.champion_lineage_id = new_champion_id
-        paper_candidates = [
-            row["lineage_id"]
-            for row in active_ranked[1:]
-            if row.get("current_stage") in {
-                PromotionStage.PAPER.value,
-                PromotionStage.CANARY_READY.value,
-                PromotionStage.LIVE_READY.value,
-                PromotionStage.APPROVED_LIVE.value,
-            }
-        ][:2]
+        paper_candidates: List[str] = []
+        if prepared_challenger_id and prepared_challenger_id != family.champion_lineage_id:
+            prepared_row = next(
+                (
+                    row
+                    for row in active_ranked[1:]
+                    if str(row.get("lineage_id") or "") == prepared_challenger_id
+                ),
+                None,
+            )
+            if prepared_row is not None:
+                paper_candidates.append(str(prepared_row["lineage_id"]))
+        paper_candidates.extend(
+            [
+                row["lineage_id"]
+                for row in active_ranked[1:]
+                if row.get("current_stage") in {
+                    PromotionStage.PAPER.value,
+                    PromotionStage.CANARY_READY.value,
+                    PromotionStage.LIVE_READY.value,
+                    PromotionStage.APPROVED_LIVE.value,
+                }
+                and row["lineage_id"] not in paper_candidates
+            ]
+        )
+        paper_candidates = paper_candidates[:2]
         shadow_candidates = [
             row["lineage_id"]
             for row in active_ranked[1:]
@@ -1469,10 +1981,16 @@ class FactoryOrchestrator:
                 lineage.iteration_status = "champion"
             elif lineage.lineage_id in family.paper_challenger_ids:
                 lineage.role = LineageRole.PAPER_CHALLENGER.value
-                if lineage.iteration_status == "new_candidate":
+                if lineage.iteration_status in {"new_candidate", "shadow_candidate"}:
                     lineage.iteration_status = "paper_candidate"
+                if lineage.lineage_id == prepared_challenger_id:
+                    lineage.iteration_status = "prepare_isolated_lane"
             else:
                 lineage.role = LineageRole.SHADOW_CHALLENGER.value
+                if lineage.lineage_id == prepared_challenger_id:
+                    lineage.iteration_status = "prepare_isolated_lane"
+                elif lineage.iteration_status in {"prepare_isolated_lane", "isolated_lane_active"}:
+                    lineage.iteration_status = "shadow_candidate"
             self.registry.save_lineage(lineage)
             genome = self.registry.load_genome(lineage.lineage_id)
             if genome is not None and genome.role != lineage.role:
@@ -1663,6 +2181,171 @@ class FactoryOrchestrator:
         self.registry.save_learning_memory(memory)
         lineage.last_memory_id = memory.memory_id
 
+    def _isolated_challenger_first_assessment_failure_reason(self, row: Dict[str, Any]) -> str | None:
+        if str(row.get("runtime_lane_kind") or "").strip() != "isolated_challenger":
+            return None
+        if str(row.get("iteration_status") or "").strip() != "isolated_lane_active":
+            return None
+        if not bool(row.get("first_assessment_complete")):
+            return None
+        health_status = str(row.get("execution_health_status") or "").strip().lower()
+        issue_codes = {
+            str(item)
+            for item in (row.get("execution_issue_codes") or [])
+            if str(item).strip()
+        }
+        if health_status == "critical":
+            return "isolated_lane_first_assessment_critical_health"
+        severe_issue_codes = {
+            "runtime_error",
+            "heartbeat_stale",
+            "trade_stalled",
+            "training_stalled",
+            "stalled_model",
+            "no_trade_syndrome",
+            "zero_simulated_fills",
+            "excessive_rejections",
+            "severe_slippage",
+            "negative_paper_roi",
+            "negative_realized_pnl",
+            "poor_win_rate",
+            "drawdown_halt_active",
+        }
+        if issue_codes.intersection(severe_issue_codes):
+            return "isolated_lane_first_assessment_execution_failure"
+        min_roi_pct = float(
+            getattr(config, "FACTORY_ISOLATED_CHALLENGER_FIRST_ASSESSMENT_MIN_ROI_PCT", 0.0)
+            or 0.0
+        )
+        live_roi_pct = float(row.get("live_paper_roi_pct", 0.0) or 0.0)
+        if live_roi_pct <= min_roi_pct:
+            return "isolated_lane_first_assessment_negative_roi"
+        return None
+
+    def _isolated_lane_stale_without_fresh_evidence(self, row: Dict[str, Any]) -> bool:
+        if str(row.get("runtime_lane_kind") or "").strip() != "isolated_challenger":
+            return False
+        activation_status = str(row.get("activation_status") or "").strip().lower()
+        if activation_status not in {"ready_to_launch", "started", "running"}:
+            return False
+        issue_codes = {
+            str(item).strip()
+            for item in (row.get("execution_issue_codes") or [])
+            if str(item).strip()
+        }
+        if issue_codes.intersection({"trade_stalled", "training_stalled", "stalled_model"}):
+            return True
+        execution_validation = dict(row.get("execution_validation") or {})
+        runtime_age_hours = float(execution_validation.get("runtime_age_hours", 0.0) or 0.0)
+        stale_hours = float(getattr(config, "FACTORY_RUNTIME_ALIAS_STALE_HOURS", 4.0) or 4.0)
+        has_distinct_progress = (
+            int(row.get("live_paper_trade_count", 0) or 0) > 0
+            or abs(float(row.get("live_paper_realized_pnl", 0.0) or 0.0)) > 0.0
+            or bool(execution_validation.get("has_execution_signal"))
+        )
+        return runtime_age_hours >= stale_hours and not has_distinct_progress
+
+    def _persistent_stall_retirement_reason(
+        self,
+        lineage: LineageRecord,
+        row: Dict[str, Any],
+    ) -> str | None:
+        issue_codes = {
+            str(item).strip().lower()
+            for item in (row.get("execution_issue_codes") or [])
+            if str(item).strip()
+        }
+        if not issue_codes:
+            return None
+        if int(lineage.tweak_count or 0) < int(lineage.max_tweaks or 2):
+            return None
+        execution_validation = dict(row.get("execution_validation") or {})
+        runtime_age_hours = float(execution_validation.get("runtime_age_hours", 0.0) or 0.0)
+        stalled_hours = float(getattr(config, "FACTORY_STALLED_MODEL_HOURS", 8) or 8)
+        if runtime_age_hours < stalled_hours:
+            return None
+        if "untrainable_model" in issue_codes:
+            return "untrainable_model_persisted_after_tweaks"
+        if "training_stalled" in issue_codes:
+            return "training_stalled_after_tweaks"
+        if issue_codes.intersection({"stalled_model", "trade_stalled"}):
+            return "stalled_model_after_tweaks"
+        if issue_codes.intersection({"no_trade_syndrome", "zero_simulated_fills"}):
+            return "no_trade_syndrome_after_tweaks"
+        return None
+
+    def _trainability_contract_request(
+        self,
+        lineage: LineageRecord,
+        execution_validation: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        issue_codes = {
+            str(item).strip().lower()
+            for item in (execution_validation.get("issue_codes") or [])
+            if str(item).strip()
+        }
+        if not issue_codes.intersection({"untrainable_model", "training_stalled"}):
+            return None
+        runtime_age_hours = float(execution_validation.get("runtime_age_hours", 0.0) or 0.0)
+        grace_hours = float(getattr(config, "FACTORY_TRAINABILITY_GRACE_HOURS", 6.0) or 6.0)
+        trainability_status = str(execution_validation.get("trainability_status") or "").strip().lower()
+        required_model_count = int(execution_validation.get("required_model_count", 0) or 0)
+        trainable_model_count = int(execution_validation.get("trainable_model_count", 0) or 0)
+        trained_model_count = int(execution_validation.get("trained_model_count", 0) or 0)
+        blocked_models = [str(item).strip() for item in (execution_validation.get("blocked_models") or []) if str(item).strip()]
+        severe_breach = (
+            "training_stalled" in issue_codes
+            or trainability_status == "blocked"
+            or (required_model_count > 0 and trainable_model_count <= 0)
+        )
+        if not severe_breach and runtime_age_hours < grace_hours:
+            return None
+        action = "replace" if severe_breach or int(lineage.tweak_count or 0) > 0 else "retrain"
+        if lineage.role == LineageRole.CHAMPION.value and action == "replace":
+            action = "replace"
+        return {
+            "source": "trainability_contract",
+            "action": action,
+            "reason": (
+                "Trainability contract breached: required learners are blocked or not progressing fast enough "
+                "to justify keeping this lineage in the active paper loop."
+            ),
+            "requires_human": False,
+            "requires_new_challenger": action == "replace",
+            "issue_codes": sorted(issue_codes.intersection({"untrainable_model", "training_stalled"})),
+            "trainability_status": trainability_status,
+            "required_model_count": required_model_count,
+            "trainable_model_count": trainable_model_count,
+            "trained_model_count": trained_model_count,
+            "blocked_models": blocked_models[:6],
+            "runtime_age_hours": runtime_age_hours,
+        }
+
+    def _mark_isolated_challenger_first_assessment_passed(
+        self,
+        lineage: LineageRecord,
+        row: Dict[str, Any],
+        *,
+        recent_actions: List[str],
+    ) -> None:
+        if str(row.get("runtime_lane_kind") or "").strip() != "isolated_challenger":
+            return
+        if not bool(row.get("first_assessment_complete")):
+            return
+        if str(lineage.iteration_status or "").strip() != "isolated_lane_active":
+            return
+        if self._isolated_challenger_first_assessment_failure_reason(row):
+            return
+        lineage.iteration_status = "isolated_lane_first_assessment_passed"
+        self.registry.save_lineage(lineage)
+        _append_recent_action(
+            recent_actions,
+            (
+                f"[cycle {self._cycle_count}] Isolated challenger {lineage.lineage_id} passed first paper "
+                f"assessment on its alias lane."
+            ),
+        )
+
     def _retire_or_update_lineages(
         self,
         family: FactoryFamily,
@@ -1680,6 +2363,42 @@ class FactoryOrchestrator:
         for row in active_ranked[1:]:
             lineage = self.registry.load_lineage(str(row["lineage_id"]))
             if lineage is None or not lineage.active:
+                continue
+            isolated_first_assessment_failure = self._isolated_challenger_first_assessment_failure_reason(row)
+            if isolated_first_assessment_failure:
+                lineage.active = False
+                lineage.retired_at = utc_now_iso()
+                lineage.iteration_status = "retired"
+                lineage.retirement_reason = isolated_first_assessment_failure
+                lineage.blockers = list(dict.fromkeys(list(lineage.blockers) + [lineage.retirement_reason]))
+                self._record_learning_memory(lineage, row, reason=isolated_first_assessment_failure)
+                retired_ids.add(lineage.lineage_id)
+                self.registry.save_lineage(lineage)
+                _append_recent_action(
+                    recent_actions,
+                    (
+                        f"[cycle {self._cycle_count}] Retired isolated challenger {lineage.lineage_id} after failed "
+                        f"first paper assessment: {isolated_first_assessment_failure}."
+                    ),
+                )
+                continue
+            persistent_stall_retirement = self._persistent_stall_retirement_reason(lineage, row)
+            if persistent_stall_retirement:
+                lineage.active = False
+                lineage.retired_at = utc_now_iso()
+                lineage.iteration_status = "retired"
+                lineage.retirement_reason = persistent_stall_retirement
+                lineage.blockers = list(dict.fromkeys(list(lineage.blockers) + [lineage.retirement_reason]))
+                self._record_learning_memory(lineage, row, reason=persistent_stall_retirement)
+                retired_ids.add(lineage.lineage_id)
+                self.registry.save_lineage(lineage)
+                _append_recent_action(
+                    recent_actions,
+                    (
+                        f"[cycle {self._cycle_count}] Retired stalled lineage {lineage.lineage_id} from "
+                        f"{family.family_id}: {persistent_stall_retirement}."
+                    ),
+                )
                 continue
             execution_signal_ready = bool(row.get("execution_has_signal"))
             if not execution_signal_ready:
@@ -1722,6 +2441,11 @@ class FactoryOrchestrator:
                 lineage.loss_streak = 0
                 if lineage.iteration_status == "tweaked":
                     lineage.iteration_status = "stabilized_after_tweak"
+                self._mark_isolated_challenger_first_assessment_passed(
+                    lineage,
+                    row,
+                    recent_actions=recent_actions,
+                )
             if underperforming and int(lineage.tweak_count or 0) >= int(lineage.max_tweaks or 2):
                 lineage.active = False
                 lineage.retired_at = utc_now_iso()
@@ -1867,25 +2591,353 @@ class FactoryOrchestrator:
                 return row
         return {}
 
-    def _operator_signals(self, lineage_summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _apply_execution_bridge_feedback(
+        self,
+        *,
+        lineage_summaries: List[Dict[str, Any]],
+        family_summaries: List[Dict[str, Any]],
+        bridge_payload: Dict[str, Any],
+        recent_actions: List[str],
+    ) -> None:
+        targets_by_lineage: Dict[str, Dict[str, Any]] = {}
+        for target in list(bridge_payload.get("targets") or []):
+            target_row = dict(target)
+            for row in list(target_row.get("lineages") or []):
+                lineage_id = str(row.get("lineage_id") or "").strip()
+                if lineage_id:
+                    targets_by_lineage[lineage_id] = target_row
+        summaries_by_id = {
+            str(item.get("lineage_id") or ""): item
+            for item in lineage_summaries
+            if str(item.get("lineage_id") or "").strip()
+        }
+        family_by_id = {
+            str(item.get("family_id") or ""): item
+            for item in family_summaries
+            if str(item.get("family_id") or "").strip()
+        }
+        for lineage_id, target in targets_by_lineage.items():
+            summary = summaries_by_id.get(lineage_id)
+            if summary is None:
+                continue
+            activation_status = str(target.get("activation_status") or "").strip()
+            if activation_status:
+                summary["activation_status"] = activation_status
+            summary["alias_runner_running"] = bool(target.get("running"))
+            summary["bridge_target_portfolio"] = str(target.get("portfolio_id") or "")
+            if str(summary.get("runtime_lane_kind") or "") == "isolated_challenger":
+                runtime_target_portfolio = str(summary.get("runtime_target_portfolio") or target.get("portfolio_id") or "").strip()
+                canonical_target_portfolio = str(summary.get("canonical_target_portfolio") or target.get("canonical_portfolio_id") or "").strip()
+                if runtime_target_portfolio and runtime_target_portfolio != canonical_target_portfolio:
+                    alias_evidence = build_portfolio_execution_evidence(runtime_target_portfolio)
+                    summary["alias_evidence_issue_codes"] = list(alias_evidence.get("issue_codes") or [])
+                    summary["live_paper_target_portfolio_id"] = runtime_target_portfolio
+                    summary["live_paper_running"] = bool(alias_evidence.get("running"))
+                    account = dict(alias_evidence.get("account") or {})
+                    summary["live_paper_roi_pct"] = float(account.get("roi_pct", 0.0) or 0.0)
+                    summary["live_paper_realized_pnl"] = float(account.get("realized_pnl", 0.0) or 0.0)
+                    summary["live_paper_trade_count"] = int(account.get("trade_count", 0) or 0)
+                    summary["live_paper_wins"] = int(account.get("wins", 0) or 0)
+                    summary["live_paper_losses"] = int(account.get("losses", 0) or 0)
+                    summary["live_paper_drawdown_pct"] = float(account.get("drawdown_pct", 0.0) or 0.0)
+                    summary["execution_health_status"] = str(alias_evidence.get("health_status") or summary.get("execution_health_status") or "")
+                    summary["execution_issue_codes"] = list(alias_evidence.get("issue_codes") or summary.get("execution_issue_codes") or [])
+                    summary["execution_validation"] = dict(alias_evidence)
+                    summary["alias_runner_running"] = bool(alias_evidence.get("running"))
+                    summary["first_assessment"] = assessment_progress(
+                        paper_days=int(summary.get("paper_days", 0) or 0),
+                        trade_count=int(summary.get("live_paper_trade_count", 0) or 0),
+                        labels=[
+                            summary.get("family_id"),
+                            summary.get("current_stage"),
+                            runtime_target_portfolio,
+                        ],
+                        realized_roi_pct=float(summary.get("live_paper_roi_pct", 0.0) or 0.0),
+                        current_stage=str(summary.get("current_stage") or ""),
+                        phase="first",
+                    )
+                    summary["first_assessment_complete"] = bool(summary["first_assessment"].get("complete"))
+                    summary["assessment"] = assessment_progress(
+                        paper_days=int(summary.get("paper_days", 0) or 0),
+                        trade_count=int(summary.get("live_paper_trade_count", 0) or 0),
+                        labels=[
+                            summary.get("family_id"),
+                            summary.get("current_stage"),
+                            runtime_target_portfolio,
+                        ],
+                        realized_roi_pct=float(summary.get("live_paper_roi_pct", 0.0) or 0.0),
+                        current_stage=str(summary.get("current_stage") or ""),
+                        phase="full",
+                    )
+                    lineage = self.registry.load_lineage(lineage_id)
+                    if lineage is not None:
+                        if bool(alias_evidence.get("running")) and lineage.iteration_status == "prepare_isolated_lane":
+                            lineage.iteration_status = "isolated_lane_active"
+                            self.registry.save_lineage(lineage)
+                            summary["iteration_status"] = lineage.iteration_status
+                            _append_recent_action(
+                                recent_actions,
+                                f"[cycle {self._cycle_count}] Isolated lane runner is active for {lineage.lineage_id} on {runtime_target_portfolio}.",
+                            )
+                        failure_reason = self._isolated_challenger_first_assessment_failure_reason(summary)
+                        if failure_reason and lineage.active:
+                            lineage.active = False
+                            lineage.retired_at = utc_now_iso()
+                            lineage.iteration_status = "retired"
+                            lineage.retirement_reason = failure_reason
+                            lineage.blockers = list(dict.fromkeys(list(lineage.blockers or []) + [failure_reason]))
+                            self._record_learning_memory(lineage, summary, reason=failure_reason)
+                            self.registry.save_lineage(lineage)
+                            summary["active"] = False
+                            summary["iteration_status"] = "retired"
+                            summary["retired_at"] = lineage.retired_at
+                            summary["retirement_reason"] = failure_reason
+                            family_row = family_by_id.get(str(summary.get("family_id") or ""))
+                            if family_row is not None:
+                                family_row["isolated_evidence_ready"] = False
+                                family_row["active_lineage_count"] = max(0, int(family_row.get("active_lineage_count", 0) or 0) - 1)
+                                family_row["retired_lineage_count"] = int(family_row.get("retired_lineage_count", 0) or 0) + 1
+                            _append_recent_action(
+                                recent_actions,
+                                (
+                                    f"[cycle {self._cycle_count}] Retired isolated challenger {lineage.lineage_id} after failed "
+                                    f"alias first assessment: {failure_reason}."
+                                ),
+                            )
+                            continue
+                        if (
+                            bool(summary.get("first_assessment_complete"))
+                            and str(lineage.iteration_status or "").strip() == "isolated_lane_active"
+                            and not self._isolated_challenger_first_assessment_failure_reason(summary)
+                        ):
+                            lineage.iteration_status = "isolated_lane_first_assessment_passed"
+                            self.registry.save_lineage(lineage)
+                            summary["iteration_status"] = lineage.iteration_status
+                            _append_recent_action(
+                                recent_actions,
+                                (
+                                    f"[cycle {self._cycle_count}] Isolated challenger {lineage.lineage_id} passed first paper "
+                                    f"assessment on alias lane {runtime_target_portfolio}."
+                                ),
+                            )
+                        issue_codes = {str(item) for item in (alias_evidence.get('issue_codes') or []) if str(item).strip()}
+                        if bool(alias_evidence.get("running")) and issue_codes.intersection({"trade_stalled", "training_stalled", "stalled_model"}):
+                            next_status = "review_requested_replace" if int(lineage.tweak_count or 0) >= int(lineage.max_tweaks or 2) else "review_requested_rework"
+                            if lineage.iteration_status not in {next_status, "review_requested_replace"}:
+                                lineage.iteration_status = next_status
+                                self.registry.save_lineage(lineage)
+                                summary["iteration_status"] = lineage.iteration_status
+                        if activation_status == "start_failed":
+                            summary["isolate_evidence_start_failed"] = True
+        for family_id, family in family_by_id.items():
+            challenger_id = str(family.get("isolated_challenger_lineage_id") or "")
+            challenger_summary = summaries_by_id.get(challenger_id, {})
+            family["activation_status"] = str(challenger_summary.get("activation_status") or "")
+            family["alias_runner_running"] = bool(challenger_summary.get("alias_runner_running"))
+            if challenger_summary:
+                runtime_target = str(challenger_summary.get("runtime_target_portfolio") or "").strip()
+                canonical_target = str(challenger_summary.get("canonical_target_portfolio") or "").strip()
+                family["isolated_evidence_ready"] = bool(
+                    runtime_target
+                    and runtime_target != canonical_target
+                    and bool(challenger_summary.get("active", True))
+                    and not self._isolated_lane_stale_without_fresh_evidence(challenger_summary)
+                    and (
+                        bool(challenger_summary.get("alias_runner_running"))
+                        or int(challenger_summary.get("live_paper_trade_count", 0) or 0) > 0
+                        or abs(float(challenger_summary.get("live_paper_realized_pnl", 0.0) or 0.0)) > 0.0
+                    )
+                )
+
+    def _operator_signals(
+        self,
+        lineage_summaries: List[Dict[str, Any]],
+        family_summaries: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        def _maintenance_review_recent(payload: Dict[str, Any]) -> bool:
+            reviewed_at = _parse_iso_dt(payload.get("last_maintenance_review_at"))
+            if reviewed_at is None:
+                return False
+            cooldown_hours = max(
+                0,
+                int(getattr(config, "FACTORY_MAINTENANCE_QUEUE_REVIEW_COOLDOWN_HOURS", 12) or 12),
+            )
+            return reviewed_at >= datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)
+
+        def _should_suppress_recent_review(item: Dict[str, Any], lineage_payload: Dict[str, Any]) -> bool:
+            if not lineage_payload or not _maintenance_review_recent(lineage_payload):
+                return False
+            status = str(lineage_payload.get("last_maintenance_review_status") or "").strip().lower()
+            if status not in {"completed", "success", "succeeded"}:
+                return False
+            action = str(item.get("action") or "").strip().lower()
+            reviewed_action = str(lineage_payload.get("last_maintenance_review_action") or "").strip().lower()
+            if action == "review_due":
+                return True
+            if reviewed_action and action == reviewed_action:
+                return True
+            return False
+
+        def _compact_maintenance_queue(
+            queue: List[Dict[str, Any]],
+            *,
+            rows_by_lineage_map: Dict[str, Dict[str, Any]],
+        ) -> List[Dict[str, Any]]:
+            family_autopilot_actions = {
+                str(item.get("family_id") or "").strip()
+                for item in queue
+                if str(item.get("action") or "").strip() == "family_autopilot"
+            }
+            filtered: List[Dict[str, Any]] = []
+            for raw in queue:
+                item = dict(raw)
+                family_id = str(item.get("family_id") or "").strip()
+                lineage_id = str(item.get("lineage_id") or "").strip()
+                lineage_payload = dict(rows_by_lineage_map.get(lineage_id) or {})
+                if lineage_payload and not bool(lineage_payload.get("active", True)):
+                    continue
+                if lineage_payload and _should_suppress_recent_review(item, lineage_payload):
+                    continue
+                action = str(item.get("action") or "").strip().lower()
+                if (
+                    family_id in family_autopilot_actions
+                    and action in {"replace", "retrain", "rework", "retire", "review_due"}
+                    and str(item.get("source") or "").strip() != "family_autopilot"
+                    and not bool(item.get("requires_human"))
+                ):
+                    continue
+                filtered.append(item)
+
+            deduped_by_lineage: Dict[str, Dict[str, Any]] = {}
+            family_scoped: List[Dict[str, Any]] = []
+            for item in filtered:
+                lineage_id = str(item.get("lineage_id") or "").strip()
+                if not lineage_id:
+                    family_scoped.append(item)
+                    continue
+                current = deduped_by_lineage.get(lineage_id)
+                candidate_key = (
+                    int(item.get("priority", 9) if item.get("priority") is not None else 9),
+                    0 if item.get("requires_human") else 1,
+                    0 if str(item.get("source") or "") == "family_autopilot" else 1,
+                )
+                if current is None:
+                    deduped_by_lineage[lineage_id] = item
+                    continue
+                current_key = (
+                    int(current.get("priority", 9) if current.get("priority") is not None else 9),
+                    0 if current.get("requires_human") else 1,
+                    0 if str(current.get("source") or "") == "family_autopilot" else 1,
+                )
+                if candidate_key < current_key:
+                    deduped_by_lineage[lineage_id] = item
+
+            per_family_counts: Dict[str, int] = defaultdict(int)
+            per_family_cap = max(1, int(getattr(config, "FACTORY_MAINTENANCE_QUEUE_MAX_PER_FAMILY", 3) or 3))
+            compacted: List[Dict[str, Any]] = []
+            ordered = sorted(
+                list(deduped_by_lineage.values()) + family_scoped,
+                key=lambda item: (
+                    int(item.get("priority", 9) if item.get("priority") is not None else 9),
+                    0 if item.get("execution_health_status") == "critical" else 1,
+                    item.get("family_id") or "",
+                    item.get("lineage_id") or "",
+                ),
+            )
+            for item in ordered:
+                family_id = str(item.get("family_id") or "").strip()
+                if family_id:
+                    if per_family_counts[family_id] >= per_family_cap and str(item.get("action") or "") != "family_autopilot":
+                        continue
+                    if str(item.get("action") or "") != "family_autopilot":
+                        per_family_counts[family_id] += 1
+                compacted.append(item)
+            return compacted
+
+        def _target_portfolio_id(payload: Dict[str, Any]) -> str:
+            return str(
+                payload.get("runtime_target_portfolio")
+                or payload.get("live_paper_target_portfolio_id")
+                or payload.get("curated_target_portfolio_id")
+                or ""
+            ).strip()
+
+        def _has_independent_live_evidence(payload: Dict[str, Any]) -> bool:
+            if str(payload.get("evidence_source_type") or "") != "current_live_paper":
+                return False
+            if str(payload.get("runtime_lane_kind") or "").strip() != "isolated_challenger":
+                return True
+            target = _target_portfolio_id(payload)
+            if not target:
+                return False
+            if self._isolated_lane_stale_without_fresh_evidence(payload):
+                return False
+            lane_rows = lane_rows_by_family.get(str(payload.get("family_id") or ""), {})
+            incumbent_target = _target_portfolio_id(dict(lane_rows.get("primary_incumbent") or {}))
+            if incumbent_target and target == incumbent_target:
+                return False
+            canonical_target = str(payload.get("canonical_target_portfolio") or "").strip()
+            runtime_target = str(payload.get("runtime_target_portfolio") or "").strip()
+            if runtime_target and canonical_target and runtime_target == canonical_target:
+                return False
+            return True
+
+        def _replacement_pressure(payload: Dict[str, Any]) -> tuple[bool, str | None]:
+            maintenance_action = str(payload.get("maintenance_request_action") or "").strip().lower()
+            iteration_status = str(payload.get("iteration_status") or "").strip().lower()
+            if maintenance_action in {"replace", "retire"}:
+                return True, maintenance_action
+            if iteration_status in {"review_requested_replace", "review_recommended_retire"}:
+                return True, iteration_status
+            return False, maintenance_action or iteration_status or None
+
         positive_models: List[Dict[str, Any]] = []
         research_positive_models: List[Dict[str, Any]] = []
+        paper_qualification_queue: List[Dict[str, Any]] = []
+        first_assessment_candidates: List[Dict[str, Any]] = []
         potential_winners: List[Dict[str, Any]] = []
         escalation_candidates: List[Dict[str, Any]] = []
+        winner_candidates: List[Dict[str, Any]] = []
         human_action_required: List[Dict[str, Any]] = []
         maintenance_queue: List[Dict[str, Any]] = []
-        min_paper_days = int(getattr(config, "FACTORY_PAPER_GATE_MIN_DAYS", 30))
-        min_fast_trades = int(getattr(config, "FACTORY_PAPER_GATE_MIN_FAST_TRADES", 50))
-        min_slow_settled = int(getattr(config, "FACTORY_PAPER_GATE_MIN_SLOW_SETTLED", 10))
+        lane_rows_by_family: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        rows_by_family: Dict[str, List[Dict[str, Any]]] = {}
+        rows_by_lineage: Dict[str, Dict[str, Any]] = {}
         for row in lineage_summaries:
-            slow_strategy = "slow" in str(row.get("family_id") or "") or "polymarket" in str(row.get("family_id") or "")
+            family_id = str(row.get("family_id") or "")
+            lineage_id = str(row.get("lineage_id") or "")
+            if family_id:
+                rows_by_family.setdefault(family_id, []).append(dict(row))
+            if lineage_id:
+                rows_by_lineage[lineage_id] = dict(row)
+            if not bool(row.get("active", True)):
+                continue
+            runtime_lane_kind = str(row.get("runtime_lane_kind") or "").strip()
+            if family_id and runtime_lane_kind in {"primary_incumbent", "isolated_challenger"}:
+                lane_rows_by_family.setdefault(family_id, {})[runtime_lane_kind] = dict(row)
             live_roi = float(row.get("live_paper_roi_pct", 0.0) or 0.0)
             live_trade_count = int(row.get("live_paper_trade_count", 0) or 0)
+            live_paper_days = int(row.get("live_paper_days", row.get("paper_days", 0)) or 0)
             research_roi = float(row.get("research_monthly_roi_pct", row.get("monthly_roi_pct", 0.0)) or 0.0)
             research_trade_count = int(row.get("research_trade_count", row.get("trade_count", 0)) or 0)
             health_status = str(row.get("execution_health_status") or "")
-            required_trades = min_slow_settled if slow_strategy else min_fast_trades
-            assessment_complete = int(row.get("paper_days", 0) or 0) >= min_paper_days and live_trade_count >= required_trades
+            full_assessment = assessment_progress(
+                paper_days=live_paper_days,
+                trade_count=live_trade_count,
+                labels=[row.get("family_id"), row.get("current_stage"), row.get("live_paper_target_portfolio_id")],
+                realized_roi_pct=live_roi,
+                current_stage=str(row.get("current_stage") or ""),
+                phase="full",
+            )
+            first_assessment = assessment_progress(
+                paper_days=live_paper_days,
+                trade_count=live_trade_count,
+                labels=[row.get("family_id"), row.get("current_stage"), row.get("live_paper_target_portfolio_id")],
+                realized_roi_pct=live_roi,
+                current_stage=str(row.get("current_stage") or ""),
+                phase="first",
+            )
+            assessment_complete = bool(full_assessment.get("complete"))
             curated_target_portfolio_id = str(row.get("curated_target_portfolio_id") or "")
             live_target_portfolio_id = str(row.get("live_paper_target_portfolio_id") or "")
             evidence_source_type = "current_live_paper" if live_target_portfolio_id else "no_live_paper_evidence"
@@ -1897,15 +2949,45 @@ class FactoryOrchestrator:
                         "current_stage": str(row.get("current_stage") or ""),
                         "roi_pct": round(live_roi, 4),
                         "trade_count": live_trade_count,
-                        "paper_days": int(row.get("paper_days", 0) or 0),
+                        "paper_days": live_paper_days,
                         "execution_health_status": health_status,
                         "curated_family_rank": row.get("curated_family_rank"),
                         "curated_target_portfolio_id": live_target_portfolio_id or None,
                         "evidence_source_type": evidence_source_type,
+                        "first_assessment_complete": bool(first_assessment.get("complete")),
+                        "first_assessment_status": first_assessment.get("status"),
                         "assessment_complete": assessment_complete,
+                        "independent_live_evidence": False,
+                        "replacement_pressure": False,
+                        "replacement_pressure_reason": None,
+                        "runtime_lane_kind": str(row.get("runtime_lane_kind") or ""),
+                        "runtime_target_portfolio": row.get("runtime_target_portfolio"),
+                        "canonical_target_portfolio": row.get("canonical_target_portfolio"),
+                        "maintenance_request_action": str(row.get("maintenance_request_action") or ""),
+                        "iteration_status": str(row.get("iteration_status") or ""),
                         "manifest_id": row.get("manifest_id"),
                         "research_roi_pct": round(research_roi, 4),
                         "research_trade_count": research_trade_count,
+                    }
+                )
+            if (
+                evidence_source_type == "current_live_paper"
+                and bool(first_assessment.get("complete"))
+                and not assessment_complete
+            ):
+                first_assessment_candidates.append(
+                    {
+                        "family_id": str(row.get("family_id") or ""),
+                        "lineage_id": str(row.get("lineage_id") or ""),
+                        "current_stage": str(row.get("current_stage") or ""),
+                        "roi_pct": round(live_roi, 4),
+                        "trade_count": live_trade_count,
+                        "paper_days": live_paper_days,
+                        "execution_health_status": health_status,
+                        "first_assessment_status": first_assessment.get("status"),
+                        "assessment_complete": False,
+                        "curated_family_rank": row.get("curated_family_rank"),
+                        "curated_target_portfolio_id": live_target_portfolio_id or None,
                     }
                 )
             if research_roi > 0.0:
@@ -1941,33 +3023,22 @@ class FactoryOrchestrator:
                 and evidence_source_type == "current_live_paper"
             )
             if is_potential_winner:
-                potential_winners.append(
+                winner_candidates.append(
                     {
                         "family_id": str(row.get("family_id") or ""),
                         "lineage_id": str(row.get("lineage_id") or ""),
                         "current_stage": str(row.get("current_stage") or ""),
                         "roi_pct": round(live_roi, 4),
                         "trade_count": live_trade_count,
-                        "paper_days": int(row.get("paper_days", 0) or 0),
-                        "curated_family_rank": row.get("curated_family_rank"),
-                        "manifest_id": row.get("manifest_id"),
-                        "assessment_complete": True,
-                    }
-                )
-                escalation_candidates.append(
-                    {
-                        "family_id": str(row.get("family_id") or ""),
-                        "lineage_id": str(row.get("lineage_id") or ""),
-                        "current_stage": str(row.get("current_stage") or ""),
-                        "target_action": "operator_review_for_real_trading",
-                        "reason": "live_ready leader with positive live paper ROI and healthy execution",
-                        "roi_pct": round(live_roi, 4),
-                        "trade_count": live_trade_count,
-                        "paper_days": int(row.get("paper_days", 0) or 0),
+                        "paper_days": live_paper_days,
                         "curated_family_rank": row.get("curated_family_rank"),
                         "curated_target_portfolio_id": live_target_portfolio_id or None,
                         "evidence_source_type": evidence_source_type,
+                        "runtime_lane_kind": str(row.get("runtime_lane_kind") or ""),
+                        "runtime_target_portfolio": row.get("runtime_target_portfolio"),
+                        "canonical_target_portfolio": row.get("canonical_target_portfolio"),
                         "manifest_id": row.get("manifest_id"),
+                        "assessment_complete": True,
                     }
                 )
             if bool(row.get("last_debug_requires_human")):
@@ -1983,6 +3054,64 @@ class FactoryOrchestrator:
                         "issue_codes": list(row.get("execution_issue_codes") or []),
                         "artifact_path": row.get("last_debug_review_artifact_path"),
                         "reviewed_at": row.get("last_debug_review_at"),
+                    }
+                )
+            activation_status = str(row.get("activation_status") or "").strip().lower()
+            if activation_status == "start_failed":
+                maintenance_queue.append(
+                    {
+                        "family_id": str(row.get("family_id") or ""),
+                        "lineage_id": str(row.get("lineage_id") or ""),
+                        "current_stage": str(row.get("current_stage") or ""),
+                        "action": "isolate_evidence_start_failed",
+                        "reason": "Isolated challenger alias runner failed to start and needs follow-through.",
+                        "source": "execution_bridge",
+                        "priority": 2,
+                        "execution_health_status": health_status,
+                        "paper_days": int(row.get("paper_days", 0) or 0),
+                        "trade_count": live_trade_count,
+                        "roi_pct": round(live_roi, 4),
+                        "iteration_status": str(row.get("iteration_status") or ""),
+                        "requires_human": bool(row.get("last_debug_requires_human")),
+                    }
+                )
+            elif self._isolated_lane_stale_without_fresh_evidence(row):
+                maintenance_queue.append(
+                    {
+                        "family_id": str(row.get("family_id") or ""),
+                        "lineage_id": str(row.get("lineage_id") or ""),
+                        "current_stage": str(row.get("current_stage") or ""),
+                        "action": "isolate_evidence_stalled",
+                        "reason": "Isolated challenger lane is consuming paper capacity without publishing fresh distinct evidence.",
+                        "source": "execution_bridge",
+                        "priority": 3,
+                        "execution_health_status": health_status,
+                        "paper_days": int(row.get("paper_days", 0) or 0),
+                        "trade_count": live_trade_count,
+                        "roi_pct": round(live_roi, 4),
+                        "iteration_status": str(row.get("iteration_status") or ""),
+                        "requires_human": bool(row.get("last_debug_requires_human")),
+                    }
+                )
+            elif (
+                str(row.get("runtime_lane_kind") or "").strip() == "isolated_challenger"
+                and str(row.get("iteration_status") or "").strip() == "isolated_lane_active"
+            ):
+                maintenance_queue.append(
+                    {
+                        "family_id": str(row.get("family_id") or ""),
+                        "lineage_id": str(row.get("lineage_id") or ""),
+                        "current_stage": str(row.get("current_stage") or ""),
+                        "action": "isolated_lane_active",
+                        "reason": "Isolated challenger lane is active and now needs distinct live paper evidence.",
+                        "source": "execution_bridge",
+                        "priority": 7,
+                        "execution_health_status": health_status,
+                        "paper_days": int(row.get("paper_days", 0) or 0),
+                        "trade_count": live_trade_count,
+                        "roi_pct": round(live_roi, 4),
+                        "iteration_status": str(row.get("iteration_status") or ""),
+                        "requires_human": False,
                     }
                 )
             maintenance_action = str(row.get("maintenance_request_action") or "").strip().lower()
@@ -2028,8 +3157,233 @@ class FactoryOrchestrator:
                         "requires_human": False,
                     }
                 )
+        runtime_candidate_stages = {"shadow", "paper", "canary_ready", "live_ready"}
+        for family_id, family_rows in rows_by_family.items():
+            prefer_challenger, lane_reason = decide_runtime_lane_policy(family_rows)
+            if not prefer_challenger:
+                continue
+            best_challenger = None
+            eligible_challengers = [
+                row
+                for row in family_rows
+                if str(row.get("role") or "").strip().lower() in {"paper_challenger", "shadow_challenger", "moonshot"}
+                and str(row.get("current_stage") or "").strip() in runtime_candidate_stages
+            ]
+            if eligible_challengers:
+                best_challenger = sorted(
+                    eligible_challengers,
+                    key=lambda item: self._runtime_family_lane_selection_key(item, prefer_challenger=True),
+                )[0]
+                if lane_reason in {"paper_qualification_needed", "incumbent_trade_stalled"}:
+                    paper_qualification_queue.append(
+                        {
+                            "family_id": family_id,
+                            "lineage_id": str(best_challenger.get("lineage_id") or ""),
+                            "current_stage": str(best_challenger.get("current_stage") or ""),
+                            "reason": (
+                                "Stalled incumbent should yield a paper lane to a qualified challenger."
+                                if lane_reason == "incumbent_trade_stalled"
+                                else "Positive research evidence deserves a first live paper read on the real feed."
+                            ),
+                            "source": "lane_policy",
+                            "priority": 2 if lane_reason == "incumbent_trade_stalled" else 3,
+                            "lane_reason": lane_reason,
+                            "execution_health_status": str(best_challenger.get("execution_health_status") or ""),
+                            "research_roi_pct": round(float(best_challenger.get("monthly_roi_pct", 0.0) or 0.0), 4),
+                            "research_trade_count": int(best_challenger.get("trade_count", 0) or 0),
+                            "live_trade_count": int(best_challenger.get("live_paper_trade_count", 0) or 0),
+                            "paper_days": int(best_challenger.get("paper_days", 0) or 0),
+                            "iteration_status": str(best_challenger.get("iteration_status") or ""),
+                        }
+                    )
+            if eligible_challengers:
+                continue
+            fallback_challengers = [
+                row
+                for row in family_rows
+                if str(row.get("role") or "").strip().lower() in {"paper_challenger", "shadow_challenger", "moonshot"}
+            ]
+            if not fallback_challengers:
+                continue
+            best_challenger = sorted(
+                fallback_challengers,
+                key=lambda item: self._runtime_family_lane_selection_key(item, prefer_challenger=True),
+            )[0]
+            maintenance_queue.append(
+                {
+                    "family_id": family_id,
+                    "lineage_id": str(best_challenger.get("lineage_id") or ""),
+                    "current_stage": str(best_challenger.get("current_stage") or ""),
+                    "action": "prepare_isolated_lane",
+                    "reason": (
+                        "Family policy prefers an isolated challenger lane, but no challenger has reached a runnable "
+                        "shadow/paper stage yet."
+                    ),
+                    "source": "lane_policy",
+                    "priority": 4,
+                    "execution_health_status": str(best_challenger.get("execution_health_status") or ""),
+                    "paper_days": int(best_challenger.get("paper_days", 0) or 0),
+                    "trade_count": int(best_challenger.get("trade_count", 0) or 0),
+                    "roi_pct": round(float(best_challenger.get("monthly_roi_pct", 0.0) or 0.0), 4),
+                    "iteration_status": str(best_challenger.get("iteration_status") or ""),
+                    "requires_human": False,
+                    "lane_reason": lane_reason,
+                }
+            )
+        for family_id, lane_rows in lane_rows_by_family.items():
+            incumbent = dict(lane_rows.get("primary_incumbent") or {})
+            challenger = dict(lane_rows.get("isolated_challenger") or {})
+            if not incumbent or not challenger:
+                continue
+            incumbent_target = str(
+                incumbent.get("runtime_target_portfolio")
+                or incumbent.get("live_paper_target_portfolio_id")
+                or incumbent.get("curated_target_portfolio_id")
+                or ""
+            ).strip()
+            challenger_target = str(
+                challenger.get("runtime_target_portfolio")
+                or challenger.get("live_paper_target_portfolio_id")
+                or challenger.get("curated_target_portfolio_id")
+                or ""
+            ).strip()
+            if not challenger_target:
+                maintenance_queue.append(
+                    {
+                        "family_id": family_id,
+                        "lineage_id": str(challenger.get("lineage_id") or ""),
+                        "current_stage": str(challenger.get("current_stage") or ""),
+                        "action": "isolate_evidence",
+                        "reason": "Selected isolated challenger still has no dedicated paper evidence target.",
+                        "source": "lane_policy",
+                        "priority": 5,
+                        "execution_health_status": str(challenger.get("execution_health_status") or ""),
+                        "paper_days": int(challenger.get("paper_days", 0) or 0),
+                        "trade_count": int(challenger.get("live_paper_trade_count", 0) or 0),
+                        "roi_pct": round(float(challenger.get("live_paper_roi_pct", 0.0) or 0.0), 4),
+                        "iteration_status": str(challenger.get("iteration_status") or ""),
+                        "requires_human": False,
+                    }
+                )
+            elif incumbent_target and challenger_target == incumbent_target:
+                maintenance_queue.append(
+                    {
+                        "family_id": family_id,
+                        "lineage_id": str(challenger.get("lineage_id") or ""),
+                        "current_stage": str(challenger.get("current_stage") or ""),
+                        "action": "isolate_evidence",
+                        "reason": "Selected isolated challenger is still sharing the incumbent paper evidence target.",
+                        "source": "lane_policy",
+                        "priority": 5,
+                        "execution_health_status": str(challenger.get("execution_health_status") or ""),
+                        "paper_days": int(challenger.get("paper_days", 0) or 0),
+                        "trade_count": int(challenger.get("live_paper_trade_count", 0) or 0),
+                        "roi_pct": round(float(challenger.get("live_paper_roi_pct", 0.0) or 0.0), 4),
+                        "iteration_status": str(challenger.get("iteration_status") or ""),
+                        "requires_human": False,
+                    }
+                )
+        weak_families: List[Dict[str, Any]] = []
+        family_summary_by_id = {
+            str(item.get("family_id") or ""): dict(item)
+            for item in (family_summaries or [])
+            if str(item.get("family_id") or "").strip()
+        }
+        for family_id, family_rows in rows_by_family.items():
+            plan = self._family_autopilot_plan(
+                family_id,
+                family_rows,
+                family_summary=family_summary_by_id.get(family_id),
+            )
+            if not plan.get("weak_family"):
+                continue
+            weak_families.append(
+                {
+                    "family_id": family_id,
+                    "autopilot_status": plan.get("autopilot_status"),
+                    "autopilot_actions": list(plan.get("autopilot_actions") or []),
+                    "autopilot_reason": str(plan.get("autopilot_reason") or ""),
+                    "autopilot_issue_codes": list(plan.get("autopilot_issue_codes") or []),
+                    "autopilot_trade_count": int(plan.get("autopilot_trade_count", 0) or 0),
+                    "autopilot_live_roi_pct": float(plan.get("autopilot_live_roi_pct", 0.0) or 0.0),
+                    "autopilot_live_win_rate": float(plan.get("autopilot_live_win_rate", 0.0) or 0.0),
+                    "autopilot_health_status": str(plan.get("autopilot_health_status") or ""),
+                }
+            )
+            if not plan.get("autopilot_actions"):
+                continue
+            maintenance_queue.append(
+                {
+                    "family_id": family_id,
+                    "lineage_id": str(plan.get("autopilot_target_lineage_id") or ""),
+                    "current_stage": str(plan.get("autopilot_target_stage") or ""),
+                    "action": "family_autopilot",
+                    "reason": str(plan.get("autopilot_reason") or "family needs autonomous maintenance"),
+                    "source": "family_autopilot",
+                    "priority": (
+                        1
+                        if "human_action_required" in (plan.get("autopilot_actions") or [])
+                        else 3
+                        if "replace" in (plan.get("autopilot_actions") or [])
+                        else 4
+                    ),
+                    "execution_health_status": str(plan.get("autopilot_health_status") or ""),
+                    "paper_days": 0,
+                    "trade_count": int(plan.get("autopilot_trade_count", 0) or 0),
+                    "roi_pct": round(float(plan.get("autopilot_live_roi_pct", 0.0) or 0.0), 4),
+                    "iteration_status": ",".join(list(plan.get("autopilot_actions") or [])),
+                    "requires_human": "human_action_required" in (plan.get("autopilot_actions") or []),
+                    "scope": "family",
+                    "recommended_actions": list(plan.get("autopilot_actions") or []),
+                    "live_win_rate": float(plan.get("autopilot_live_win_rate", 0.0) or 0.0),
+                }
+            )
+        for candidate in winner_candidates:
+            if not _has_independent_live_evidence(candidate):
+                continue
+            potential_winners.append(
+                {
+                    "family_id": candidate["family_id"],
+                    "lineage_id": candidate["lineage_id"],
+                    "current_stage": candidate["current_stage"],
+                    "roi_pct": candidate["roi_pct"],
+                    "trade_count": candidate["trade_count"],
+                    "paper_days": candidate["paper_days"],
+                    "curated_family_rank": candidate["curated_family_rank"],
+                    "manifest_id": candidate["manifest_id"],
+                    "assessment_complete": True,
+                }
+            )
+            escalation_candidates.append(
+                {
+                    "family_id": candidate["family_id"],
+                    "lineage_id": candidate["lineage_id"],
+                    "current_stage": candidate["current_stage"],
+                    "target_action": "operator_review_for_real_trading",
+                    "reason": "live_ready leader with positive live paper ROI and healthy execution",
+                    "roi_pct": candidate["roi_pct"],
+                    "trade_count": candidate["trade_count"],
+                    "paper_days": candidate["paper_days"],
+                    "curated_family_rank": candidate["curated_family_rank"],
+                    "curated_target_portfolio_id": candidate["curated_target_portfolio_id"],
+                    "evidence_source_type": candidate["evidence_source_type"],
+                    "manifest_id": candidate["manifest_id"],
+                }
+            )
+        for item in positive_models:
+            independent = _has_independent_live_evidence(item)
+            replacement_pressure, replacement_reason = _replacement_pressure(item)
+            item["independent_live_evidence"] = independent
+            item["shared_evidence_risk"] = not independent
+            item["replacement_pressure"] = replacement_pressure
+            item["replacement_pressure_reason"] = replacement_reason
         positive_models.sort(
-            key=lambda item: (-float(item.get("roi_pct", 0.0) or 0.0), -int(item.get("trade_count", 0) or 0))
+            key=lambda item: (
+                0 if item.get("independent_live_evidence") else 1,
+                0 if not item.get("replacement_pressure") else 1,
+                -float(item.get("roi_pct", 0.0) or 0.0),
+                -int(item.get("trade_count", 0) or 0),
+            )
         )
         research_positive_models.sort(
             key=lambda item: (-float(item.get("roi_pct", 0.0) or 0.0), -int(item.get("trade_count", 0) or 0))
@@ -2047,6 +3401,19 @@ class FactoryOrchestrator:
                 item.get("lineage_id") or "",
             )
         )
+        for item in maintenance_queue:
+            lineage_payload = rows_by_lineage.get(str(item.get("lineage_id") or ""))
+            if not lineage_payload:
+                continue
+            item["last_maintenance_review_at"] = lineage_payload.get("last_maintenance_review_at")
+            item["last_maintenance_review_status"] = lineage_payload.get("last_maintenance_review_status")
+            item["last_maintenance_review_action"] = lineage_payload.get("last_maintenance_review_action")
+            item["last_maintenance_review_summary"] = lineage_payload.get("last_maintenance_review_summary")
+            item["last_maintenance_review_artifact_path"] = lineage_payload.get("last_maintenance_review_artifact_path")
+        maintenance_queue = _compact_maintenance_queue(
+            maintenance_queue,
+            rows_by_lineage_map=rows_by_lineage,
+        )
         maintenance_queue.sort(
             key=lambda item: (
                 int(item.get("priority", 9)) if item.get("priority") is not None else 9,
@@ -2055,14 +3422,334 @@ class FactoryOrchestrator:
                 item.get("lineage_id") or "",
             )
         )
+        weak_families.sort(
+            key=lambda item: (
+                0 if item.get("autopilot_health_status") == "critical" else 1,
+                -len(list(item.get("autopilot_actions") or [])),
+                -float(item.get("autopilot_live_roi_pct", 0.0) or 0.0),
+                item.get("family_id") or "",
+            )
+        )
+        paper_qualification_queue.sort(
+            key=lambda item: (
+                int(item.get("priority", 9) if item.get("priority") is not None else 9),
+                0 if item.get("execution_health_status") in {"healthy", "warning"} else 1,
+                -float(item.get("research_roi_pct", 0.0) or 0.0),
+                -int(item.get("research_trade_count", 0) or 0),
+                item.get("family_id") or "",
+                item.get("lineage_id") or "",
+            )
+        )
         return {
             "positive_models": positive_models[:12],
             "research_positive_models": research_positive_models[:12],
+            "paper_qualification_queue": paper_qualification_queue[:12],
+            "first_assessment_candidates": first_assessment_candidates[:12],
             "potential_winners": potential_winners[:8],
             "escalation_candidates": escalation_candidates[:8],
             "human_action_required": human_action_required[:8],
+            "weak_families": weak_families[:8],
             "maintenance_queue": maintenance_queue[:16],
         }
+
+    def _runtime_family_lane_selection_key(
+        self,
+        row: Dict[str, Any],
+        *,
+        prefer_challenger: bool,
+    ) -> tuple[Any, ...]:
+        return runtime_lane_selection_key(row, prefer_challenger=prefer_challenger)
+
+    def _runtime_family_lanes(
+        self,
+        family: FactoryFamily,
+        ranked: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        active = [dict(item) for item in ranked if item.get("active", True)]
+        champion = next(
+            (item for item in active if str(item.get("lineage_id") or "") == family.champion_lineage_id),
+            active[0] if active else None,
+        )
+        prefer_challenger, lane_reason = decide_runtime_lane_policy(active)
+        challengers = [
+            item
+            for item in active
+            if str(item.get("lineage_id") or "") != str((champion or {}).get("lineage_id") or "")
+        ]
+        challengers = sorted(
+            challengers,
+            key=lambda item: self._runtime_family_lane_selection_key(item, prefer_challenger=True),
+        )
+        isolated = challengers[0] if challengers else None
+        return {
+            "primary_incumbent": champion,
+            "isolated_challenger": isolated,
+            "prefer_challenger_lane": prefer_challenger,
+            "runtime_lane_reason": lane_reason,
+        }
+
+    def _prepared_isolated_lane_candidate(
+        self,
+        family: FactoryFamily,
+        ranked: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        runtime_lanes = self._runtime_family_lanes(family, ranked)
+        if not bool(runtime_lanes.get("prefer_challenger_lane")):
+            return {}
+        isolated = dict(runtime_lanes.get("isolated_challenger") or {})
+        if not isolated:
+            return {}
+        if str(isolated.get("current_stage") or "").strip() in {
+            PromotionStage.SHADOW.value,
+            PromotionStage.PAPER.value,
+            PromotionStage.CANARY_READY.value,
+            PromotionStage.LIVE_READY.value,
+        }:
+            return {}
+        isolated["runtime_lane_reason"] = str(runtime_lanes.get("runtime_lane_reason") or "")
+        return isolated
+
+    def _apply_isolated_lane_preparation(
+        self,
+        family: FactoryFamily,
+        ranked_rows: Sequence[Dict[str, Any]],
+        *,
+        recent_actions: List[str],
+    ) -> str | None:
+        candidate = self._prepared_isolated_lane_candidate(family, ranked_rows)
+        lineage_id = str(candidate.get("lineage_id") or "").strip()
+        if not lineage_id:
+            return None
+        lineage = self.registry.load_lineage(lineage_id)
+        if lineage is None or not lineage.active:
+            return None
+        blockers = list(lineage.blockers or [])
+        if "prepare_isolated_lane" not in blockers:
+            blockers.append("prepare_isolated_lane")
+        lineage.blockers = list(dict.fromkeys(blockers))
+        previous_status = str(lineage.iteration_status or "")
+        lineage.iteration_status = "prepare_isolated_lane"
+        self.registry.save_lineage(lineage)
+        if previous_status != "prepare_isolated_lane":
+            reason = str(candidate.get("runtime_lane_reason") or "lane_policy")
+            _append_recent_action(
+                recent_actions,
+                (
+                    f"[cycle {self._cycle_count}] Prepared isolated lane candidate {lineage.lineage_id} for "
+                    f"{family.family_id} ({reason}) while it advances toward runnable shadow/paper stages."
+                ),
+            )
+        return lineage.lineage_id
+
+    def _isolated_lane_activation_eligible(self, lineage: LineageRecord) -> bool:
+        if not lineage.active or bool(lineage.last_debug_requires_human):
+            return False
+        latest_by_stage = self.registry.latest_evaluation_by_stage(lineage.lineage_id)
+        walkforward = latest_by_stage.get(EvaluationStage.WALKFORWARD.value)
+        stress = latest_by_stage.get(EvaluationStage.STRESS.value)
+        if walkforward is None or stress is None:
+            return False
+        if list(walkforward.hard_vetoes or []) or list(stress.hard_vetoes or []):
+            return False
+        execution_validation = self._execution_validation_snapshot(lineage)
+        issue_codes = {str(item) for item in (execution_validation.get("issue_codes") or []) if str(item).strip()}
+        if issue_codes.intersection({"untrainable_model", "training_stalled"}):
+            return False
+        return True
+
+    def _activate_prepared_isolated_lane(
+        self,
+        family: FactoryFamily,
+        prepared_lineage_id: str | None,
+        *,
+        recent_actions: List[str],
+    ) -> str | None:
+        lineage_id = str(prepared_lineage_id or "").strip()
+        if not lineage_id:
+            return None
+        lineage = self.registry.load_lineage(lineage_id)
+        if lineage is None or not self._isolated_lane_activation_eligible(lineage):
+            return None
+        if lineage.current_stage not in {PromotionStage.WALKFORWARD.value, PromotionStage.STRESS.value}:
+            return lineage.lineage_id if lineage.current_stage in {
+                PromotionStage.SHADOW.value,
+                PromotionStage.PAPER.value,
+                PromotionStage.CANARY_READY.value,
+                PromotionStage.LIVE_READY.value,
+            } else None
+        transitioned = self.registry.cas_transition(
+            lineage.lineage_id,
+            expected_stage=lineage.current_stage,
+            next_stage=PromotionStage.SHADOW.value,
+            blockers=[item for item in (lineage.blockers or []) if str(item) != "prepare_isolated_lane"],
+            decision={
+                "source": "isolated_lane_activation",
+                "reason": "prepared isolated challenger satisfied pre-paper evidence and is now shadow-runnable",
+                "next_stage": PromotionStage.SHADOW.value,
+            },
+        )
+        if transitioned:
+            _append_recent_action(
+                recent_actions,
+                f"[cycle {self._cycle_count}] Activated prepared isolated challenger {lineage.lineage_id} to shadow for {family.family_id}.",
+            )
+            return lineage.lineage_id
+        refreshed = self.registry.load_lineage(lineage.lineage_id)
+        if refreshed is not None and refreshed.current_stage == PromotionStage.SHADOW.value:
+            return refreshed.lineage_id
+        return None
+
+    def _mark_incubating_family_graduated(
+        self,
+        family: FactoryFamily,
+        *,
+        reason: str,
+        recent_actions: List[str],
+    ) -> None:
+        family.incubation_status = "graduated"
+        family.incubation_decided_at = utc_now_iso()
+        family.incubation_decision_reason = reason
+        notes = list(family.incubation_notes or [])
+        if "graduated_to_runtime_family" not in notes:
+            notes.append("graduated_to_runtime_family")
+        if reason not in notes:
+            notes.append(reason)
+        family.incubation_notes = notes
+        _append_recent_action(
+            recent_actions,
+            f"[cycle {self._cycle_count}] Graduated incubating family {family.family_id}: {reason}.",
+        )
+
+    def _retire_incubating_family(
+        self,
+        family: FactoryFamily,
+        ranked_rows: Sequence[Dict[str, Any]],
+        *,
+        reason: str,
+        recent_actions: List[str],
+        lineage_summary_by_id: Dict[str, Dict[str, Any]],
+    ) -> None:
+        retired_ids = set(family.retired_lineage_ids)
+        for row in ranked_rows:
+            lineage_id = str(row.get("lineage_id") or "").strip()
+            if not lineage_id:
+                continue
+            lineage = self.registry.load_lineage(lineage_id)
+            if lineage is None or not lineage.active:
+                continue
+            lineage.active = False
+            lineage.retired_at = utc_now_iso()
+            lineage.iteration_status = "retired"
+            lineage.retirement_reason = reason
+            lineage.blockers = list(dict.fromkeys(list(lineage.blockers or []) + [reason]))
+            self.registry.save_lineage(lineage)
+            retired_ids.add(lineage.lineage_id)
+            summary = lineage_summary_by_id.get(lineage.lineage_id)
+            if summary is not None:
+                summary["active"] = False
+                summary["retired_at"] = lineage.retired_at
+                summary["retirement_reason"] = reason
+            self._record_learning_memory(lineage, row, reason=reason)
+            self.registry.save_lineage(lineage)
+        family.incubation_status = "retired"
+        family.incubation_decided_at = utc_now_iso()
+        family.incubation_decision_reason = reason
+        family.retired_lineage_ids = sorted(retired_ids)
+        family.shadow_challenger_ids = [lineage_id for lineage_id in family.shadow_challenger_ids if lineage_id not in retired_ids]
+        family.paper_challenger_ids = [lineage_id for lineage_id in family.paper_challenger_ids if lineage_id not in retired_ids]
+        notes = list(family.incubation_notes or [])
+        if "retired_from_incubation" not in notes:
+            notes.append("retired_from_incubation")
+        if reason not in notes:
+            notes.append(reason)
+        family.incubation_notes = notes
+        _append_recent_action(
+            recent_actions,
+            f"[cycle {self._cycle_count}] Retired incubating family {family.family_id}: {reason}.",
+        )
+
+    def _apply_incubating_family_lifecycle(
+        self,
+        family: FactoryFamily,
+        champion: Dict[str, Any],
+        ranked_rows: Sequence[Dict[str, Any]],
+        *,
+        recent_actions: List[str],
+        lineage_summary_by_id: Dict[str, Dict[str, Any]],
+    ) -> str | None:
+        if str(family.incubation_status or "") != "incubating":
+            return None
+        if family.incubation_decision_reason:
+            return None
+        queue_stage = str(family.queue_stage or champion.get("current_stage") or "")
+        if queue_stage in {
+            PromotionStage.CANARY_READY.value,
+            PromotionStage.LIVE_READY.value,
+            PromotionStage.APPROVED_LIVE.value,
+        }:
+            self._mark_incubating_family_graduated(
+                family,
+                reason="graduated_after_advanced_stage",
+                recent_actions=recent_actions,
+            )
+            return "graduated"
+        if queue_stage != PromotionStage.PAPER.value or not bool(champion.get("first_assessment_complete")):
+            return None
+        min_roi_pct = float(getattr(config, "FACTORY_NEW_FAMILY_FIRST_ASSESSMENT_MIN_ROI_PCT", 0.0))
+        live_roi_pct = float(champion.get("live_paper_roi_pct", 0.0) or 0.0)
+        health_status = str(champion.get("execution_health_status") or "").strip().lower()
+        if live_roi_pct > min_roi_pct and health_status not in {"critical"}:
+            self._mark_incubating_family_graduated(
+                family,
+                reason="graduated_after_positive_first_assessment",
+                recent_actions=recent_actions,
+            )
+            return "graduated"
+        self._retire_incubating_family(
+            family,
+            ranked_rows,
+            reason="incubation_first_assessment_failed",
+            recent_actions=recent_actions,
+            lineage_summary_by_id=lineage_summary_by_id,
+        )
+        return "retired"
+
+    def _seed_post_graduation_challengers(
+        self,
+        family: FactoryFamily,
+        lineages_by_family: Dict[str, List[LineageRecord]],
+        *,
+        runtime_mode_value: str,
+        recent_actions: List[str],
+    ) -> None:
+        if runtime_mode_value != "full":
+            return
+        existing = [lineage for lineage in lineages_by_family.get(family.family_id, []) if lineage.active]
+        if any(lineage.role in {LineageRole.SHADOW_CHALLENGER.value, LineageRole.PAPER_CHALLENGER.value, LineageRole.MOONSHOT.value} for lineage in existing):
+            return
+        before_ids = {lineage.lineage_id for lineage in existing}
+        self._seed_challengers(
+            family,
+            lineages_by_family,
+            runtime_mode_value=runtime_mode_value,
+            recent_actions=recent_actions,
+        )
+        refreshed = [
+            lineage
+            for lineage in self.registry.lineages()
+            if lineage.family_id == family.family_id and lineage.active
+        ]
+        lineages_by_family[family.family_id] = refreshed
+        after_ids = {lineage.lineage_id for lineage in refreshed}
+        new_ids = sorted(after_ids - before_ids)
+        if new_ids:
+            _append_recent_action(
+                recent_actions,
+                (
+                    f"[cycle {self._cycle_count}] Newly graduated family {family.family_id} entered challenger rotation "
+                    f"with {len(new_ids)} fresh challenger(s)."
+                ),
+            )
 
     def _operator_action_key(self, *, signal_type: str, lineage_id: str, requested_action: str) -> str:
         digest = hashlib.sha1(f"{signal_type}|{lineage_id}|{requested_action}".encode("utf-8")).hexdigest()[:12]
@@ -2116,12 +3803,41 @@ class FactoryOrchestrator:
         )[:24]
         return operator_signals
 
+    def _latest_operator_action_context(self, lineage: LineageRecord) -> Optional[Dict[str, Any]]:
+        action = self.registry.latest_operator_action(lineage.lineage_id, status="resolved")
+        if action is None:
+            return None
+        lineage.last_operator_action_id = action.action_id
+        lineage.last_operator_action_at = action.resolved_at or action.updated_at or action.created_at
+        lineage.last_operator_signal_type = action.signal_type
+        lineage.last_operator_decision = action.decision
+        lineage.last_operator_note = action.note
+        lineage.last_operator_instruction = action.instruction
+        return {
+            "action_id": action.action_id,
+            "signal_type": action.signal_type,
+            "requested_action": action.requested_action,
+            "decision": action.decision,
+            "summary": action.summary,
+            "note": action.note,
+            "instruction": action.instruction,
+            "resolved_at": action.resolved_at,
+            "resolved_by": action.resolved_by,
+            "context": dict(action.context or {}),
+        }
+
     def _run_experiment(self, lineage: LineageRecord) -> Dict[str, Any]:
         genome = self.registry.load_genome(lineage.lineage_id)
         experiment = self.registry.load_experiment(lineage.lineage_id)
         if genome is None or experiment is None:
             return {"mode": "missing_inputs", "bundles": [], "artifact_summary": None}
         experiment.inputs = dict(experiment.inputs or {})
+        operator_action_context = self._latest_operator_action_context(lineage)
+        if operator_action_context:
+            experiment.inputs["operator_action_context"] = operator_action_context
+            self.registry.save_lineage(lineage)
+        else:
+            experiment.inputs.pop("operator_action_context", None)
         execution_validation = self._execution_validation_snapshot(lineage)
         experiment.inputs["execution_retrain_context"] = execution_validation
         maintenance_request = self._maintenance_request(lineage, execution_validation)
@@ -2147,6 +3863,52 @@ class FactoryOrchestrator:
         lineage: LineageRecord,
         execution_validation: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
+        def _debug_auto_action() -> Optional[Dict[str, Any]]:
+            if str(lineage.last_debug_review_status or "") != "completed":
+                return None
+            safe_actions = [str(item).strip().lower() for item in (lineage.last_debug_safe_auto_actions or []) if str(item).strip()]
+            safe_text = " | ".join(safe_actions)
+            bug_category = str(lineage.last_debug_bug_category or "").strip().lower()
+            summary = str(lineage.last_debug_summary or lineage.last_debug_review_reason or "debug review").strip()
+            severity = str(lineage.last_debug_severity or "").strip().lower()
+            should_pause = bool(lineage.last_debug_should_pause_lineage)
+
+            action = ""
+            if any(token in safe_text for token in ["retire", "decommission", "disable lineage"]):
+                action = "retire"
+            elif any(token in safe_text for token in ["replace", "launch new challenger", "fresh challengers", "new challenger"]):
+                action = "replace"
+            elif any(token in safe_text for token in ["retrain", "refresh incumbent", "rebuild model", "refresh artifacts"]):
+                action = "retrain"
+            elif any(token in safe_text for token in ["rework", "fix feature", "fix schema", "debug runner", "patch runtime", "pause lineage"]):
+                action = "rework"
+            elif bug_category in {
+                "feature_schema",
+                "data_pipeline",
+                "runtime_bug",
+                "execution_bug",
+                "model_input_drift",
+                "data_quality",
+            }:
+                action = "rework"
+            elif bug_category in {"training_quality", "stalled_model", "model_quality"}:
+                action = "replace" if severity == "critical" else "retrain"
+            elif should_pause:
+                action = "rework"
+
+            if not action:
+                return None
+            return {
+                "source": "debug_agent",
+                "action": action,
+                "reason": summary,
+                "requires_human": False,
+                "requires_new_challenger": action == "replace",
+                "should_pause_lineage": should_pause,
+                "bug_category": lineage.last_debug_bug_category,
+                "safe_auto_actions": list(lineage.last_debug_safe_auto_actions or []),
+            }
+
         if bool(lineage.last_debug_requires_human):
             return {
                 "source": "debug_agent",
@@ -2159,6 +3921,23 @@ class FactoryOrchestrator:
                 ),
                 "requires_human": True,
                 "bug_category": lineage.last_debug_bug_category,
+            }
+        debug_auto_request = _debug_auto_action()
+        if debug_auto_request is not None:
+            return debug_auto_request
+        maintenance_review_action = str(lineage.last_maintenance_review_action or "").strip().lower()
+        if str(lineage.last_maintenance_review_status or "") == "completed" and maintenance_review_action in {
+            "retrain",
+            "rework",
+            "replace",
+            "retire",
+        }:
+            return {
+                "source": "maintenance_review",
+                "action": maintenance_review_action,
+                "reason": str(lineage.last_maintenance_review_summary or lineage.last_maintenance_review_reason or "maintenance review"),
+                "requires_human": False,
+                "requires_new_challenger": maintenance_review_action == "replace",
             }
         review_action = str(lineage.last_agent_review_action or "").strip().lower()
         if str(lineage.last_agent_review_status or "") == "completed" and review_action in {
@@ -2174,6 +3953,22 @@ class FactoryOrchestrator:
                 "requires_human": False,
                 "requires_new_challenger": review_action == "replace",
             }
+        persistent_stall_retirement = self._persistent_stall_retirement_reason(
+            lineage,
+            {"execution_validation": execution_validation, "execution_issue_codes": list(execution_validation.get("issue_codes") or [])},
+        )
+        if persistent_stall_retirement:
+            return {
+                "source": "execution_policy",
+                "action": "retire",
+                "reason": "Execution evidence says the model stayed stalled or untrainable after exhausting its tweak budget.",
+                "requires_human": False,
+                "issue_codes": sorted({str(item) for item in (execution_validation.get("issue_codes") or []) if str(item).strip()}),
+                "retirement_reason": persistent_stall_retirement,
+            }
+        trainability_contract_request = self._trainability_contract_request(lineage, execution_validation)
+        if trainability_contract_request is not None:
+            return trainability_contract_request
         issue_codes = {str(item) for item in (execution_validation.get("issue_codes") or []) if str(item).strip()}
         if issue_codes.intersection({"untrainable_model", "training_stalled"}):
             return {
@@ -2190,6 +3985,16 @@ class FactoryOrchestrator:
                 "reason": "Execution evidence says the model has stalled and needs a maintenance rework cycle now.",
                 "requires_human": False,
                 "issue_codes": sorted(issue_codes.intersection({"stalled_model", "trade_stalled"})),
+            }
+        if issue_codes.intersection({"negative_paper_roi", "poor_win_rate", "zero_simulated_fills", "no_trade_syndrome"}):
+            action = "replace" if issue_codes.intersection({"negative_paper_roi", "poor_win_rate"}) else "retrain"
+            return {
+                "source": "execution_policy",
+                "action": action,
+                "reason": "Execution evidence says the incumbent is weak enough that maintenance pressure should escalate now.",
+                "requires_human": False,
+                "requires_new_challenger": action == "replace",
+                "issue_codes": sorted(issue_codes.intersection({"negative_paper_roi", "poor_win_rate", "zero_simulated_fills", "no_trade_syndrome"})),
             }
         return None
 
@@ -2698,6 +4503,7 @@ class FactoryOrchestrator:
         if runtime_mode.is_hard_stop:
             return self._hard_stop_state()
         self._cycle_count += 1
+        manual_idea_watch_result = maybe_run_manual_idea_watch(self.project_root)
         idea_scout_result = maybe_run_idea_scout(self.project_root)
         families = self.registry.families()
         family_by_id = {family.family_id: family for family in families}
@@ -2720,11 +4526,28 @@ class FactoryOrchestrator:
         lineage_summary_by_id: Dict[str, Dict[str, Any]] = {}
         queue_entries: List[ExperimentQueueEntry] = []
         recent_actions = [_format_recent_action(f"[cycle {self._cycle_count}] Connector snapshots refreshed and factory evidence re-evaluated.")]
+        if manual_idea_watch_result.get("ran") and int(manual_idea_watch_result.get("new_count", 0) or 0) > 0:
+            _append_recent_action(
+                recent_actions,
+                f"[cycle {self._cycle_count}] Manual idea watcher ingested {int(manual_idea_watch_result.get('new_count', 0) or 0)} new ideas from {manual_idea_watch_result.get('path') or 'ideas.md'}.",
+            )
         if idea_scout_result.get("ran") and int(idea_scout_result.get("new_count", 0) or 0) > 0:
             _append_recent_action(
                 recent_actions,
                 f"[cycle {self._cycle_count}] Low-value idea scout added {int(idea_scout_result.get('new_count', 0) or 0)} new online ideas.",
             )
+        self._seed_new_families(
+            lineages_by_family=lineages_by_family,
+            runtime_mode_value=runtime_mode.value,
+            recent_actions=recent_actions,
+        )
+        families = self.registry.families()
+        family_by_id = {family.family_id: family for family in families}
+        workspace_status = self._workspace_status(families)
+        curated_family_rankings = {
+            family.family_id: self._curated_family_ranking_summary(family.family_id)
+            for family in families
+        }
         if runtime_mode.is_cost_saver:
             _append_recent_action(
                 recent_actions,
@@ -2737,6 +4560,8 @@ class FactoryOrchestrator:
                 runtime_mode_value=runtime_mode.value,
                 recent_actions=recent_actions,
             )
+        maintenance_reviews_run = 0
+        maintenance_review_cap = max(0, int(getattr(config, "FACTORY_MAINTENANCE_AGENT_MAX_ITEMS_PER_CYCLE", 3) or 3))
         for lineage in self.registry.lineages():
             latest_by_stage = (
                 self._save_evidence(lineage)
@@ -2763,6 +4588,17 @@ class FactoryOrchestrator:
                     latest_by_stage,
                     recent_actions=recent_actions,
                 )
+                if maintenance_reviews_run < maintenance_review_cap:
+                    if self._maybe_run_maintenance_resolution_agent(
+                        family,
+                        lineage,
+                        latest_by_stage,
+                        recent_actions=recent_actions,
+                    ):
+                        maintenance_reviews_run += 1
+                    refreshed_lineage = self.registry.load_lineage(lineage.lineage_id)
+                    if refreshed_lineage is not None:
+                        lineage = refreshed_lineage
                 self._maybe_run_post_eval_critique(family, lineage, latest_by_stage)
             data_ready = all(connector_ready.get(connector_id, False) for connector_id in lineage.connector_ids)
             workspace_ready = bool(workspace_status.get(lineage.family_id, {}).get("ready"))
@@ -2856,6 +4692,15 @@ class FactoryOrchestrator:
                 "last_debug_human_action": refreshed.last_debug_human_action,
                 "last_debug_bug_category": refreshed.last_debug_bug_category,
                 "last_debug_summary": refreshed.last_debug_summary,
+                "last_debug_safe_auto_actions": list(refreshed.last_debug_safe_auto_actions or []),
+                "last_debug_should_pause_lineage": bool(refreshed.last_debug_should_pause_lineage),
+                "last_debug_severity": refreshed.last_debug_severity,
+                "last_operator_action_id": refreshed.last_operator_action_id,
+                "last_operator_action_at": refreshed.last_operator_action_at,
+                "last_operator_signal_type": refreshed.last_operator_signal_type,
+                "last_operator_decision": refreshed.last_operator_decision,
+                "last_operator_note": refreshed.last_operator_note,
+                "last_operator_instruction": refreshed.last_operator_instruction,
                 "retired_at": refreshed.retired_at,
                 "retirement_reason": refreshed.retirement_reason,
                 "last_memory_id": refreshed.last_memory_id,
@@ -2933,6 +4778,7 @@ class FactoryOrchestrator:
                 "execution_health_status": execution_validation.get("health_status"),
                 "execution_issue_codes": list(execution_validation.get("issue_codes") or []),
                 "execution_recommendation_context": list(execution_validation.get("recommendation_context") or []),
+                "live_paper_days": _observed_live_paper_days(execution_validation.get("runtime_age_hours")),
                 "live_paper_target_portfolio_id": str(
                     live_target.get("resolved_target")
                     or live_target.get("requested_target")
@@ -2945,9 +4791,17 @@ class FactoryOrchestrator:
                 "live_paper_wins": int(live_account.get("wins", 0) or 0),
                 "live_paper_losses": int(live_account.get("losses", 0) or 0),
                 "live_paper_drawdown_pct": float(live_account.get("drawdown_pct", 0.0) or 0.0),
+                "activation_status": None,
+                "alias_runner_running": False,
+                "prepared_isolated_lane": False,
                 "maintenance_request_action": maintenance_request.get("action") if maintenance_request else None,
                 "maintenance_request_reason": maintenance_request.get("reason") if maintenance_request else None,
                 "maintenance_request_source": maintenance_request.get("source") if maintenance_request else None,
+                "last_maintenance_review_at": refreshed.last_maintenance_review_at,
+                "last_maintenance_review_status": refreshed.last_maintenance_review_status,
+                "last_maintenance_review_action": refreshed.last_maintenance_review_action,
+                "last_maintenance_review_summary": refreshed.last_maintenance_review_summary,
+                "last_maintenance_review_artifact_path": refreshed.last_maintenance_review_artifact_path,
                 "curated_family_rank": curated_summary.get("family_rank"),
                 "curated_ranking_score": float(curated_summary.get("ranking_score", 0.0) or 0.0),
                 "curated_target_portfolio_id": curated_summary.get("target_portfolio_id"),
@@ -2957,12 +4811,32 @@ class FactoryOrchestrator:
                 "curated_paper_closed_trade_count": int(curated_summary.get("paper_closed_trade_count", 0) or 0),
             }
             summary_family = family_by_id.get(refreshed.family_id)
+            observed_live_days = int(lineage_summary.get("live_paper_days", 0) or 0)
+            first_assessment = assessment_progress(
+                paper_days=observed_live_days,
+                trade_count=int(live_account.get("trade_count", 0) or 0),
+                labels=[refreshed.family_id, refreshed.current_stage, live_target.get("resolved_target") or ""],
+                realized_roi_pct=float(live_account.get("roi_pct", 0.0) or 0.0),
+                current_stage=refreshed.current_stage,
+                phase="first",
+            )
+            full_assessment = assessment_progress(
+                paper_days=observed_live_days,
+                trade_count=int(live_account.get("trade_count", 0) or 0),
+                labels=[refreshed.family_id, refreshed.current_stage, live_target.get("resolved_target") or ""],
+                realized_roi_pct=float(live_account.get("roi_pct", 0.0) or 0.0),
+                current_stage=refreshed.current_stage,
+                phase="full",
+            )
             lineage_summary["agent_review_due_reason"] = (
                 self._scheduled_review_reason(summary_family, refreshed, latest_bundle, execution_validation)
                 if summary_family is not None
                 else None
             )
             lineage_summary["agent_review_due"] = bool(lineage_summary["agent_review_due_reason"])
+            lineage_summary["first_assessment"] = first_assessment
+            lineage_summary["first_assessment_complete"] = bool(first_assessment.get("complete"))
+            lineage_summary["assessment"] = full_assessment
             lineage_summaries.append(lineage_summary)
             lineage_summary_by_id[refreshed.lineage_id] = lineage_summary
             family_rankings[refreshed.family_id].append(lineage_summary)
@@ -2994,6 +4868,7 @@ class FactoryOrchestrator:
                     -float(item.get("fitness_score", 0.0) or 0.0),
                 ),
             )
+            prepared_challenger_id: str | None = None
             if runtime_mode.is_full and ranked:
                 self._retire_or_update_lineages(family, ranked, recent_actions=recent_actions)
                 refreshed_ranked: List[Dict[str, Any]] = []
@@ -3020,6 +4895,9 @@ class FactoryOrchestrator:
                         summary["last_debug_human_action"] = lineage.last_debug_human_action
                         summary["last_debug_bug_category"] = lineage.last_debug_bug_category
                         summary["last_debug_summary"] = lineage.last_debug_summary
+                        summary["last_debug_safe_auto_actions"] = list(lineage.last_debug_safe_auto_actions or [])
+                        summary["last_debug_should_pause_lineage"] = bool(lineage.last_debug_should_pause_lineage)
+                        summary["last_debug_severity"] = lineage.last_debug_severity
                     refreshed_ranked.append(dict(summary or row))
                 ranked = sorted(
                     refreshed_ranked,
@@ -3029,7 +4907,22 @@ class FactoryOrchestrator:
                         -float(item.get("fitness_score", 0.0) or 0.0),
                     ),
                 )
-                self._reclassify_family(family, ranked, recent_actions=recent_actions)
+                prepared_challenger_id = self._apply_isolated_lane_preparation(
+                    family,
+                    ranked,
+                    recent_actions=recent_actions,
+                )
+                prepared_challenger_id = self._activate_prepared_isolated_lane(
+                    family,
+                    prepared_challenger_id,
+                    recent_actions=recent_actions,
+                ) or prepared_challenger_id
+                self._reclassify_family(
+                    family,
+                    ranked,
+                    prepared_challenger_id=prepared_challenger_id,
+                    recent_actions=recent_actions,
+                )
                 refreshed_ranked = []
                 for row in ranked:
                     lineage = self.registry.load_lineage(str(row["lineage_id"]))
@@ -3052,6 +4945,9 @@ class FactoryOrchestrator:
                         summary["last_debug_human_action"] = lineage.last_debug_human_action
                         summary["last_debug_bug_category"] = lineage.last_debug_bug_category
                         summary["last_debug_summary"] = lineage.last_debug_summary
+                        summary["last_debug_safe_auto_actions"] = list(lineage.last_debug_safe_auto_actions or [])
+                        summary["last_debug_should_pause_lineage"] = bool(lineage.last_debug_should_pause_lineage)
+                        summary["last_debug_severity"] = lineage.last_debug_severity
                     refreshed_ranked.append(dict(summary or row))
                 ranked = sorted(
                     refreshed_ranked,
@@ -3062,7 +4958,54 @@ class FactoryOrchestrator:
                     ),
                 )
             champion = next((item for item in ranked if item.get("active", True)), None) or {"lineage_id": family.champion_lineage_id, "current_stage": family.queue_stage}
+            runtime_lanes = self._runtime_family_lanes(family, ranked)
+            primary_incumbent = dict(runtime_lanes.get("primary_incumbent") or {})
+            isolated_challenger = dict(runtime_lanes.get("isolated_challenger") or {})
+            lane_reason = str(runtime_lanes.get("runtime_lane_reason") or "")
+            selected_ids = {
+                str(primary_incumbent.get("lineage_id") or ""),
+                str(isolated_challenger.get("lineage_id") or ""),
+            } - {""}
+            for row in ranked:
+                summary = lineage_summary_by_id.get(str(row.get("lineage_id") or ""))
+                if summary is None:
+                    continue
+                lineage_id = str(summary.get("lineage_id") or "")
+                summary["prepared_isolated_lane"] = bool(prepared_challenger_id and lineage_id == prepared_challenger_id)
+                if lineage_id == str(primary_incumbent.get("lineage_id") or ""):
+                    summary["runtime_lane_selected"] = True
+                    summary["runtime_lane_kind"] = "primary_incumbent"
+                    summary["runtime_lane_reason"] = lane_reason
+                    summary["runtime_target_portfolio"] = primary_incumbent.get("runtime_target_portfolio")
+                    summary["canonical_target_portfolio"] = primary_incumbent.get("canonical_target_portfolio")
+                elif lineage_id == str(isolated_challenger.get("lineage_id") or ""):
+                    summary["runtime_lane_selected"] = True
+                    summary["runtime_lane_kind"] = "isolated_challenger"
+                    summary["runtime_lane_reason"] = lane_reason
+                    summary["runtime_target_portfolio"] = isolated_challenger.get("runtime_target_portfolio")
+                    summary["canonical_target_portfolio"] = isolated_challenger.get("canonical_target_portfolio")
+                else:
+                    summary["runtime_lane_selected"] = False
+                    summary["runtime_lane_kind"] = None
+                    summary["runtime_lane_reason"] = None
+                    summary["runtime_target_portfolio"] = None
+                    summary["canonical_target_portfolio"] = None
+                summary["suppressed_runtime_sibling"] = bool(selected_ids) and lineage_id not in selected_ids
             family.queue_stage = str(champion.get("current_stage") or family.queue_stage)
+            incubation_transition = self._apply_incubating_family_lifecycle(
+                family,
+                champion,
+                ranked,
+                recent_actions=recent_actions,
+                lineage_summary_by_id=lineage_summary_by_id,
+            )
+            if incubation_transition == "graduated":
+                self._seed_post_graduation_challengers(
+                    family,
+                    lineages_by_family,
+                    runtime_mode_value=runtime_mode.value,
+                    recent_actions=recent_actions,
+                )
             family.last_cycle_at = utc_now_iso()
             self.registry.save_family(family)
             family_summaries.append(
@@ -3070,6 +5013,13 @@ class FactoryOrchestrator:
                     "family_id": family.family_id,
                     "label": family.label,
                     "explainer": family.explainer,
+                    "origin": family.origin,
+                    "source_idea_id": family.source_idea_id,
+                    "incubation_status": family.incubation_status,
+                    "incubation_cycle_created": family.incubation_cycle_created,
+                    "incubation_notes": list(family.incubation_notes or []),
+                    "incubation_decided_at": family.incubation_decided_at,
+                    "incubation_decision_reason": family.incubation_decision_reason,
                     "queue_stage": family.queue_stage,
                     "champion": champion,
                     "lineage_count": len(ranked),
@@ -3080,8 +5030,102 @@ class FactoryOrchestrator:
                     "target_portfolios": list(family.target_portfolios),
                     "budget_split": dict(family.budget_split),
                     "curated_rankings": list((curated_family_rankings.get(family.family_id, {}).get("top_lineages")) or []),
+                    "primary_incumbent_lineage_id": primary_incumbent.get("lineage_id"),
+                    "isolated_challenger_lineage_id": isolated_challenger.get("lineage_id"),
+                    "prepared_isolated_lane_lineage_id": prepared_challenger_id,
+                    "runtime_lane_reason": lane_reason or None,
+                    "runtime_target_portfolio": isolated_challenger.get("runtime_target_portfolio")
+                    or primary_incumbent.get("runtime_target_portfolio"),
+                    "canonical_target_portfolio": isolated_challenger.get("canonical_target_portfolio")
+                    or primary_incumbent.get("canonical_target_portfolio"),
+                    "activation_status": None,
+                    "alias_runner_running": False,
+                    "weak_family": False,
+                    "autopilot_status": "healthy",
+                    "autopilot_actions": [],
+                    "autopilot_reason": "",
+                    "autopilot_issue_codes": [],
+                    "autopilot_live_roi_pct": 0.0,
+                    "autopilot_live_win_rate": 0.0,
+                    "autopilot_trade_count": 0,
+                    "isolated_evidence_ready": bool(
+                        isolated_challenger
+                        and str(
+                            isolated_challenger.get("runtime_target_portfolio")
+                            or isolated_challenger.get("live_paper_target_portfolio_id")
+                            or isolated_challenger.get("curated_target_portfolio_id")
+                            or ""
+                        ).strip()
+                        and str(
+                            isolated_challenger.get("runtime_target_portfolio")
+                            or isolated_challenger.get("live_paper_target_portfolio_id")
+                            or isolated_challenger.get("curated_target_portfolio_id")
+                            or ""
+                        ).strip()
+                        != str(
+                            primary_incumbent.get("runtime_target_portfolio")
+                            or primary_incumbent.get("live_paper_target_portfolio_id")
+                            or primary_incumbent.get("curated_target_portfolio_id")
+                            or ""
+                        ).strip()
+                    ),
                 }
             )
+        execution_bridge_payload = self.execution_bridge.sync({"lineages": lineage_summaries})
+        self._apply_execution_bridge_feedback(
+            lineage_summaries=lineage_summaries,
+            family_summaries=family_summaries,
+            bridge_payload=execution_bridge_payload,
+            recent_actions=recent_actions,
+        )
+        rows_by_family: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for item in lineage_summaries:
+            family_id = str(item.get("family_id") or "").strip()
+            if family_id:
+                rows_by_family[family_id].append(dict(item))
+        for family_summary in family_summaries:
+            family_id = str(family_summary.get("family_id") or "").strip()
+            if not family_id:
+                continue
+            autopilot = self._family_autopilot_plan(
+                family_id,
+                rows_by_family.get(family_id, []),
+                family_summary=family_summary,
+            )
+            family_summary["weak_family"] = bool(autopilot.get("weak_family"))
+            family_summary["autopilot_status"] = autopilot.get("autopilot_status")
+            family_summary["autopilot_actions"] = list(autopilot.get("autopilot_actions") or [])
+            family_summary["autopilot_reason"] = autopilot.get("autopilot_reason")
+            family_summary["autopilot_issue_codes"] = list(autopilot.get("autopilot_issue_codes") or [])
+            family_summary["autopilot_live_roi_pct"] = float(autopilot.get("autopilot_live_roi_pct", 0.0) or 0.0)
+            family_summary["autopilot_live_win_rate"] = float(autopilot.get("autopilot_live_win_rate", 0.0) or 0.0)
+            family_summary["autopilot_trade_count"] = int(autopilot.get("autopilot_trade_count", 0) or 0)
+            if maintenance_reviews_run < maintenance_review_cap:
+                maintenance_request = self._family_autopilot_maintenance_request(autopilot)
+                target_lineage_id = str(autopilot.get("autopilot_target_lineage_id") or "").strip()
+                target_family = family_by_id.get(family_id)
+                if maintenance_request and target_lineage_id and target_family is not None:
+                    target_lineage = self.registry.load_lineage(target_lineage_id)
+                    if target_lineage is not None and bool(target_lineage.active):
+                        latest_by_stage = self.registry.latest_evaluation_by_stage(target_lineage.lineage_id)
+                        if self._maybe_run_maintenance_resolution_agent(
+                            target_family,
+                            target_lineage,
+                            latest_by_stage,
+                            recent_actions=recent_actions,
+                            maintenance_request_override=maintenance_request,
+                        ):
+                            maintenance_reviews_run += 1
+                            refreshed_target = self.registry.load_lineage(target_lineage.lineage_id)
+                            if refreshed_target is not None:
+                                summary_row = lineage_summary_by_id.get(refreshed_target.lineage_id)
+                                if summary_row is not None:
+                                    summary_row["iteration_status"] = refreshed_target.iteration_status
+                                    summary_row["last_maintenance_review_at"] = refreshed_target.last_maintenance_review_at
+                                    summary_row["last_maintenance_review_status"] = refreshed_target.last_maintenance_review_status
+                                    summary_row["last_maintenance_review_action"] = refreshed_target.last_maintenance_review_action
+                                    summary_row["last_maintenance_review_summary"] = refreshed_target.last_maintenance_review_summary
+                                    summary_row["last_maintenance_review_artifact_path"] = refreshed_target.last_maintenance_review_artifact_path
         queue_entries = self._refresh_queue_entries(queue_entries)
         if runtime_mode.factory_influence_allowed:
             active_lineage_ids = {
@@ -3133,7 +5177,7 @@ class FactoryOrchestrator:
         )
         self.registry.write_journal(journal)
         learning_memory = [memory.to_dict() for memory in self.registry.learning_memories(limit=20)]
-        operator_signals = self._sync_operator_actions(self._operator_signals(lineage_summaries))
+        operator_signals = self._sync_operator_actions(self._operator_signals(lineage_summaries, family_summaries))
         state = {
             "portfolio_id": getattr(config, "RESEARCH_FACTORY_PORTFOLIO_ID", "research_factory"),
             "running": True,
@@ -3157,6 +5201,7 @@ class FactoryOrchestrator:
             },
             "families": family_summaries,
             "lineages": lineage_summaries,
+            "execution_bridge": execution_bridge_payload,
             "manifests": {
                 "pending": [manifest.to_dict() for manifest in self.registry.manifests() if not manifest.is_live_loadable()],
                 "live_loadable": live_loadable_manifests,
@@ -3218,9 +5263,21 @@ class FactoryOrchestrator:
                 "paper_pnl": round(total_paper_pnl, 4),
                 "positive_model_count": len(operator_signals["positive_models"]),
                 "research_positive_model_count": len(operator_signals.get("research_positive_models") or []),
+                "paper_qualification_count": len(operator_signals.get("paper_qualification_queue") or []),
                 "operator_escalation_count": len(operator_signals["escalation_candidates"]),
                 "human_action_required_count": len(operator_signals.get("human_action_required") or []),
                 "maintenance_queue_count": len(operator_signals.get("maintenance_queue") or []),
+                "weak_family_count": sum(1 for item in family_summaries if bool(item.get("weak_family"))),
+                "prepared_isolated_lane_count": sum(1 for item in lineage_summaries if item.get("prepared_isolated_lane")),
+                "isolated_evidence_ready_family_count": sum(
+                    1 for item in family_summaries if bool(item.get("isolated_evidence_ready"))
+                ),
+                "incubating_family_count": sum(
+                    1 for item in family_summaries if str(item.get("incubation_status") or "") == "incubating"
+                ),
+                "generated_family_count": sum(
+                    1 for item in family_summaries if str(item.get("origin") or "") != "seeded_family"
+                ),
                 "operator_action_inbox_count": len(operator_signals.get("action_inbox") or []),
                 "ready_for_canary": sum(1 for item in lineage_summaries if item.get("current_stage") == PromotionStage.CANARY_READY.value),
                 "live_loadable_manifest_count": len(live_loadable_manifests),

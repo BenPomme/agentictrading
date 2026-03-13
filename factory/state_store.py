@@ -59,6 +59,9 @@ class PortfolioStateStore:
         self.events_path = self.base_dir / "events.jsonl"
         self.heartbeat_path = self.base_dir / "heartbeat.json"
         self.state_path = self.base_dir / "state.json"
+        self.readiness_path = self.base_dir / "readiness.json"
+        self.config_snapshot_path = self.base_dir / "config_snapshot.json"
+        self.runtime_health_path = self.base_dir / "runtime_health.json"
         self.pid_path = self.base_dir / "runner.pid"
 
     def _read_json(self, path: Path, default: Any = None) -> Any:
@@ -118,6 +121,80 @@ class PortfolioStateStore:
 
     def read_state(self) -> Dict[str, Any]:
         return self._read_json(self.state_path, default={}) or {}
+
+    def read_readiness(self) -> Dict[str, Any]:
+        return self._read_json(self.readiness_path, default={}) or {}
+
+    def read_config_snapshot(self) -> Dict[str, Any]:
+        return self._read_json(self.config_snapshot_path, default={}) or {}
+
+    def read_runtime_health(self) -> Dict[str, Any]:
+        payload = self._read_json(self.runtime_health_path, default={}) or {}
+        if payload:
+            return payload
+        heartbeat = self.read_heartbeat()
+        state = self.read_state()
+        readiness = self.read_readiness()
+        account = self.read_account()
+        pid = self.read_pid()
+        running = bool(state.get("running")) or str(heartbeat.get("status") or "").lower() == "running"
+        status = str(state.get("status") or heartbeat.get("status") or ("running" if running else "idle") or "idle")
+        blockers = list(readiness.get("blockers_v2") or readiness.get("blockers") or [])
+        error = str(state.get("error") or "") or None
+        heartbeat_ts = str(heartbeat.get("ts") or (account.last_updated if account is not None else "")).strip() or None
+        account_payload = (
+            {
+                "portfolio_id": account.portfolio_id,
+                "currency": account.currency,
+                "current_balance": account.current_balance,
+                "realized_pnl": account.realized_pnl,
+                "roi_pct": account.roi_pct,
+                "drawdown_pct": account.drawdown_pct,
+                "wins": account.wins,
+                "losses": account.losses,
+                "trade_count": account.trade_count,
+                "last_updated": account.last_updated,
+            }
+            if account is not None
+            else {}
+        )
+        return {
+            "schema_version": 0,
+            "portfolio_id": self.portfolio_id,
+            "canonical_portfolio_id": self.portfolio_id,
+            "runtime_portfolio_id": self.portfolio_id,
+            "process": {
+                "pid": pid,
+                "running": bool(pid),
+                "status": "running" if bool(pid) else "idle",
+                "started_at": None,
+            },
+            "publication": {
+                "status": "publishing" if running else "idle",
+                "first_publish_at": heartbeat_ts,
+                "last_publish_at": heartbeat_ts,
+            },
+            "health": {
+                "status": "critical" if error else ("warning" if blockers else "healthy"),
+                "issue_codes": [],
+                "error": error,
+                "blockers": blockers,
+            },
+            "readiness": {
+                "status": str(readiness.get("status") or ""),
+                "score_pct": readiness.get("score_pct"),
+                "blockers": blockers,
+            },
+            "account": account_payload,
+            "heartbeat": heartbeat,
+            "status": status,
+            "running": running,
+            "pid": pid,
+            "last_publish_at": heartbeat_ts,
+            "raw_state": state,
+            "readiness_payload": readiness,
+            "config_snapshot": self.read_config_snapshot(),
+        }
 
     def read_pid(self) -> int | None:
         if not self.pid_path.exists():

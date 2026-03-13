@@ -12,6 +12,7 @@ from typing import Dict, Optional
 
 import config
 
+from factory.execution_targets import parse_runtime_portfolio_alias
 from factory.state_store import PortfolioStateStore
 
 
@@ -21,6 +22,7 @@ class RuntimePortfolioSpec:
     label: str
     enabled: bool
     control_mode: str = "local_managed"
+    canonical_portfolio_id: Optional[str] = None
 
 
 _KNOWN_PORTFOLIOS: Dict[str, RuntimePortfolioSpec] = {
@@ -30,17 +32,17 @@ _KNOWN_PORTFOLIOS: Dict[str, RuntimePortfolioSpec] = {
     "cascade_alpha": RuntimePortfolioSpec(
         "cascade_alpha",
         "Cascade Alpha",
-        os.getenv("CASCADE_ALPHA_ENABLED", "false").lower() == "true",
+        os.getenv("CASCADE_ALPHA_ENABLED", "true").lower() == "true",
     ),
     "contrarian_legacy": RuntimePortfolioSpec(
         "contrarian_legacy",
         "Contrarian Legacy",
-        os.getenv("CONTRARIAN_LEGACY_ENABLED", "false").lower() == "true",
+        os.getenv("CONTRARIAN_LEGACY_ENABLED", "true").lower() == "true",
     ),
     "polymarket_quantum_fold": RuntimePortfolioSpec(
         "polymarket_quantum_fold",
         "Polymarket Quantum-Fold",
-        os.getenv("POLYMARKET_QF_ENABLED", "false").lower() == "true",
+        os.getenv("POLYMARKET_QF_ENABLED", "true").lower() == "true",
     ),
 }
 
@@ -67,12 +69,28 @@ def _load_from_execution_repo(module_name: str):
 
 
 def get_runtime_portfolio_spec(portfolio_id: str) -> RuntimePortfolioSpec:
+    parsed_alias = parse_runtime_portfolio_alias(portfolio_id)
+    canonical_portfolio_id = parsed_alias["canonical_portfolio_id"] if parsed_alias else portfolio_id
     registry = _load_from_execution_repo("monitoring.portfolio_registry")
     if registry is not None and hasattr(registry, "get_portfolio_spec"):
-        return getattr(registry, "get_portfolio_spec")(portfolio_id)
-    if portfolio_id not in _KNOWN_PORTFOLIOS:
+        spec = getattr(registry, "get_portfolio_spec")(canonical_portfolio_id)
+        return RuntimePortfolioSpec(
+            portfolio_id=portfolio_id,
+            label=str(getattr(spec, "label", canonical_portfolio_id)),
+            enabled=bool(getattr(spec, "enabled", True)),
+            control_mode=str(getattr(spec, "control_mode", "local_managed")),
+            canonical_portfolio_id=canonical_portfolio_id,
+        )
+    if canonical_portfolio_id not in _KNOWN_PORTFOLIOS:
         raise KeyError(f"Unknown portfolio: {portfolio_id}")
-    return _KNOWN_PORTFOLIOS[portfolio_id]
+    spec = _KNOWN_PORTFOLIOS[canonical_portfolio_id]
+    return RuntimePortfolioSpec(
+        portfolio_id=portfolio_id,
+        label=spec.label,
+        enabled=spec.enabled,
+        control_mode=spec.control_mode,
+        canonical_portfolio_id=canonical_portfolio_id,
+    )
 
 
 class RuntimeProcessManager:
@@ -91,12 +109,23 @@ class RuntimeProcessManager:
 
     def status(self, portfolio_id: str) -> Dict[str, object]:
         store = PortfolioStateStore(portfolio_id)
+        runtime_health = store.read_runtime_health()
         pid = store.read_pid()
-        heartbeat = store.read_heartbeat()
+        heartbeat = dict(runtime_health.get("heartbeat") or store.read_heartbeat())
+        process = dict(runtime_health.get("process") or {})
+        publication = dict(runtime_health.get("publication") or {})
+        health = dict(runtime_health.get("health") or {})
         return {
-            "running": self._pid_running(pid),
-            "pid": pid,
+            "running": bool(process.get("running")) if process else self._pid_running(pid),
+            "pid": process.get("pid") if process.get("pid") is not None else pid,
             "heartbeat": heartbeat,
+            "runtime_health": runtime_health,
+            "runtime_status": str(process.get("status") or runtime_health.get("runtime_status") or ""),
+            "publish_status": str(publication.get("status") or ""),
+            "health_status": str(health.get("status") or ""),
+            "issue_codes": list(health.get("issue_codes") or []),
+            "contract_source": "runtime_health" if runtime_health else "legacy",
+            "last_publish_ts": publication.get("last_publish_at") or runtime_health.get("last_publish_at"),
         }
 
     def start(self, portfolio_id: str) -> Dict[str, object]:
@@ -111,8 +140,12 @@ class RuntimeProcessManager:
         state_dir = self._execution_root / "data" / "portfolios" / portfolio_id
         state_dir.mkdir(parents=True, exist_ok=True)
         log_handle = (state_dir / "runner.log").open("a", encoding="utf-8")
+        canonical_portfolio_id = str(spec.canonical_portfolio_id or portfolio_id)
+        cmd = ["nohup", "python3", "scripts/run_portfolio.py", "--portfolio", canonical_portfolio_id]
+        if canonical_portfolio_id != portfolio_id:
+            cmd.extend(["--runtime-portfolio-id", portfolio_id])
         proc = subprocess.Popen(
-            ["nohup", "python3", "scripts/run_portfolio.py", "--portfolio", portfolio_id],
+            cmd,
             cwd=str(self._execution_root),
             stdout=log_handle,
             stderr=subprocess.STDOUT,

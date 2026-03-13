@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Tuple
 
 import config
 
-from factory.execution_targets import resolve_target_portfolio
+from factory.execution_targets import parse_runtime_portfolio_alias, resolve_target_portfolio
 from factory.state_store import AccountSnapshot, PortfolioStateStore
 
 HEARTBEAT_STALE_WARNING_SECONDS = 120.0
@@ -64,6 +65,70 @@ def _age_hours(value: Any) -> float | None:
     if ts is None:
         return None
     return round(max(0.0, (datetime.now(timezone.utc) - ts).total_seconds()) / 3600.0, 3)
+
+
+def _portfolio_state_root(root: str | None = None) -> Path:
+    explicit = str(getattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", "") or "").strip()
+    if explicit:
+        return Path(explicit)
+    execution_root = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
+    if execution_root:
+        return Path(execution_root) / "data" / "portfolios"
+    return Path("data/portfolios")
+
+
+def _portfolio_alias_candidates(base_root: Path, canonical_portfolio_id: str) -> List[str]:
+    if not base_root.exists():
+        return []
+    alias_prefix = f"factory_lane__{canonical_portfolio_id}__"
+    aliases: List[str] = []
+    for path in base_root.iterdir():
+        if not path.is_dir():
+            continue
+        if path.name.startswith(alias_prefix):
+            aliases.append(path.name)
+    return sorted(aliases)
+
+
+def _choose_evidence_store(requested_portfolio_id: str, root: str | None = None) -> Tuple[str, str, str]:
+    base_root = Path(root) if root else _portfolio_state_root(root=root)
+    parsed_alias = parse_runtime_portfolio_alias(str(requested_portfolio_id))
+    resolved_target = resolve_target_portfolio(str(requested_portfolio_id))
+
+    if parsed_alias:
+        runtime_target = str(requested_portfolio_id)
+        store_target = runtime_target
+        selected_source = "requested_alias"
+    else:
+        candidates: List[str] = [resolved_target]
+        candidates.extend(_portfolio_alias_candidates(base_root, resolved_target))
+
+        def _score(candidate: str) -> tuple[int, float, int]:
+            candidate_store = PortfolioStateStore(candidate, root=str(base_root))
+            if not candidate_store.base_dir.exists():
+                return (0, float("inf"), 0)
+            runtime_health = candidate_store.read_runtime_health()
+            heartbeat_ts = (
+                dict(runtime_health.get("heartbeat") or {}).get("ts")
+                or runtime_health.get("last_publish_at")
+                or dict(runtime_health.get("publication") or {}).get("last_publish_at")
+                or _parse_iso_ts((runtime_health.get("heartbeat") or {}).get("ts"))
+            )
+            if isinstance(heartbeat_ts, datetime):
+                heartbeat_ts = heartbeat_ts.isoformat()
+            heartbeat_age = _heartbeat_age_seconds(heartbeat_ts) if heartbeat_ts is not None else None
+            age_score = heartbeat_age if heartbeat_age is not None else float("inf")
+            running = bool(runtime_health.get("running") or dict(runtime_health.get("process") or {}).get("running"))
+            account = dict(runtime_health.get("account") or {})
+            trade_count = int(account.get("trade_count", 0) or 0)
+            return (1 if running else 0, -age_score if age_score != float("inf") else -1e12, trade_count)
+
+        ranked = sorted(((candidate, _score(candidate)) for candidate in candidates), key=lambda item: item[1], reverse=True)
+        runtime_target = str(ranked[0][0])
+        store_target = str(ranked[0][0])
+        selected_source = "canonical_with_alias_preference"
+
+    return runtime_target, store_target, selected_source
 
 
 def _readiness_state(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -255,26 +320,67 @@ def build_portfolio_execution_evidence(
     trade_limit: int = 20,
     event_limit: int = 20,
 ) -> Dict[str, Any]:
+    requested_target_id = str(requested_target or portfolio_id)
+    runtime_alias = parse_runtime_portfolio_alias(str(portfolio_id))
     resolved_target = resolve_target_portfolio(str(portfolio_id))
-    store = PortfolioStateStore(resolved_target, root=root)
-    heartbeat = store.read_heartbeat()
-    state = store.read_state()
-    account = store.read_account()
+    runtime_target_id, store_portfolio_id, evidence_source = _choose_evidence_store(str(portfolio_id), root=root)
+    canonical_target_id = str(runtime_alias["canonical_portfolio_id"]) if runtime_alias else resolved_target
+    store = PortfolioStateStore(store_portfolio_id, root=root)
+    runtime_health = store.read_runtime_health()
+    evidence_store_exists = bool(store.base_dir.exists())
+    heartbeat = dict(runtime_health.get("heartbeat") or store.read_heartbeat())
+    state = dict(runtime_health.get("raw_state") or store.read_state())
+    account = AccountSnapshot.from_dict(dict(runtime_health.get("account") or {})) or store.read_account()
     trades = store.read_trades(limit=trade_limit)
     events = store.read_events(limit=event_limit)
     trade_stats = _recent_trade_stats(trades)
     event_summary = _event_summary(events)
     quality = _quality_metrics(state, trades)
     training = _training_state(state)
+    if runtime_health:
+        trade_stats = dict(runtime_health.get("recent_trade_stats") or trade_stats)
+        event_summary = dict(runtime_health.get("event_summary") or event_summary)
+        runtime_training = dict(runtime_health.get("training_state") or {})
+        if runtime_training:
+            state = dict(state)
+            state["training_progress"] = dict(runtime_training.get("training_progress") or state.get("training_progress") or {})
+            state["trainability"] = dict(runtime_training.get("trainability") or state.get("trainability") or {})
+            state["research_summary"] = dict(runtime_training.get("research_summary") or state.get("research_summary") or {})
+            state["model_league"] = dict(runtime_training.get("model_league") or state.get("model_league") or {})
+            state["prediction_summary"] = dict(runtime_training.get("prediction_summary") or state.get("prediction_summary") or {})
+            state["online_learner"] = dict(runtime_training.get("online_learner") or state.get("online_learner") or {})
+            state["contrarian_learner"] = dict(runtime_training.get("contrarian_learner") or state.get("contrarian_learner") or {})
+            training = _training_state(state)
     blockers = _blockers_from_state(state)
     error = _error_from_state(state)
+    contract_health = dict(runtime_health.get("health") or {})
+    if not blockers:
+        blockers = [str(item) for item in (contract_health.get("blockers") or []) if str(item).strip()]
+    if not error:
+        error = str(contract_health.get("error") or "").strip()
     heartbeat_age = None
-    heartbeat_ts = heartbeat.get("ts") or (account.last_updated if isinstance(account, AccountSnapshot) else None)
+    heartbeat_ts = (
+        heartbeat.get("ts")
+        or runtime_health.get("last_publish_at")
+        or dict(runtime_health.get("publication") or {}).get("last_publish_at")
+        or (account.last_updated if isinstance(account, AccountSnapshot) else None)
+    )
     if heartbeat_ts:
         heartbeat_age = _heartbeat_age_seconds(heartbeat_ts)
-    status = str(state.get("status") or heartbeat.get("status") or ("running" if state.get("running") else "idle") or "idle")
-    running = bool(state.get("running")) or str(heartbeat.get("status") or "").lower() == "running"
+    process = dict(runtime_health.get("process") or {})
+    publication = dict(runtime_health.get("publication") or {})
+    status = str(
+        runtime_health.get("status")
+        or state.get("status")
+        or heartbeat.get("status")
+        or ("running" if state.get("running") else "idle")
+        or "idle"
+    )
+    running = bool(runtime_health.get("running")) or bool(process.get("running")) or bool(state.get("running")) or str(heartbeat.get("status") or "").lower() == "running"
     runtime_started_at = (
+        _parse_iso_ts(process.get("started_at"))
+        or _parse_iso_ts(runtime_health.get("started_at"))
+        or
         _parse_iso_ts(state.get("fresh_book_started_at"))
         or _parse_iso_ts(dict(state.get("build_info") or {}).get("started_at"))
         or _parse_iso_ts(state.get("started_at"))
@@ -284,7 +390,7 @@ def build_portfolio_execution_evidence(
         if runtime_started_at is not None
         else None
     )
-    last_trade_activity = _trade_last_activity_ts(trades)
+    last_trade_activity = _trade_last_activity_ts(trades) or _parse_iso_ts(trade_stats.get("last_trade_activity_at"))
     last_trade_activity_at = last_trade_activity.isoformat() if last_trade_activity is not None else None
     last_trade_activity_age_hours = (
         round(max(0.0, (datetime.now(timezone.utc) - last_trade_activity).total_seconds()) / 3600.0, 3)
@@ -428,8 +534,15 @@ def build_portfolio_execution_evidence(
             health_status = "warning"
 
     return {
-        "requested_target": str(requested_target or portfolio_id),
+        "requested_target": requested_target_id,
         "resolved_target": resolved_target,
+        "store_target": store_portfolio_id,
+        "canonical_target": canonical_target_id,
+        "runtime_target": str(runtime_target_id),
+        "evidence_source": evidence_source,
+        "evidence_store_exists": evidence_store_exists,
+        "is_runtime_alias": bool(runtime_alias),
+        "contract_source": "runtime_health" if runtime_health else "legacy",
         "status": status,
         "running": running,
         "heartbeat_ts": heartbeat_ts,

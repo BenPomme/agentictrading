@@ -1,0 +1,24 @@
+{
+  "error": "IO Error: Could not set lock on file \"/Users/benjaminpommeraud/Documents/Coding/Arbitrage/data/research/research.duckdb\": Conflicting lock is held in /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python (PID 44278) by user benjaminpommeraud. However, you would be able to open this database in read-only mode, e.g. by using the -readonly parameter in the CLI. See also https://duckdb.org/docs/stable/connect/concurrency",
+  "family_id": "binance_funding_contrarian",
+  "generated_at": "2026-03-13T08:27:34.263578+00:00",
+  "reason": "funding_refresh_exception",
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260313T082723262207Z/execution_refresh_request.json",
+  "status": "failed",
+  "symbols": [
+    "API3USDT",
+    "BCHUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT"
+  ],
+  "duration_ms": 11078,
+  "output_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260313T082723262207Z/execution_refresh_raw.json",
+  "script_path": "/Users/benjaminpommeraud/Documents/Coding/Arbitrage/scripts/factory_refresh_models.py",
+  "returncode": 1,
+  "stdout": "",
+  "stderr": "2026-03-13 09:27:23  INFO      train_contrarian_models \u2014 Discovered top-8 symbols by row count: API3USDT(7676), BCHUSDT(6790), BTCUSDT(6790), ETHUSDT(6790), XRPUSDT(6774), LTCUSDT(6739), LINKUSDT(6715), ADAUSDT(6708)\n2026-03-13 09:27:23  INFO      funding.ml.contrarian_features \u2014 Loaded pooled contrarian features from curated research store: 17957 rows, 35 columns\n2026-03-13 09:27:23  INFO      funding.ml.regime_features \u2014 Building regime features: primary=API3USDT, all=['API3USDT', 'BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT']\n2026-03-13 09:27:24  INFO      train_contrarian_models \u2014 Building contrarian features for symbols: ['API3USDT', 'BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT']\n2026-03-13 09:27:24  INFO      funding.ml.contrarian_features \u2014 Loaded pooled contrarian features from curated research store: 17957 rows, 35 columns\n2026-03-13 09:27:24  INFO      train_contrarian_models \u2014 ModelSelector.compare() \u2014 17957 rows, n_trials=3, tft_epochs=5\n2026-03-13 09:27:24  INFO      funding.ml.model_selector \u2014 ModelSelector.compare \u2014 rows: 17957, columns: 35, n_trials: 3, tft_epochs: 5\n2026-03-13 09:27:24  INFO      funding.ml.model_selector \u2014 Training ContrarianXGBoost (n_trials=3)...\n2026-03-13 09:27:24  INFO      funding.ml.contrarian_xgb \u2014 Walk-forward split \u2014 train: 16723 rows, test: 1234 rows, features: 29\n2026-03-13 09:27:24  INFO      funding.ml.contrarian_xgb \u2014 Class balance \u2014 neg: 8179, pos: 8544, scale_pos_weight: 0.957\n2026-03-13 09:27:32  INFO      funding.ml.contrarian_xgb \u2014 Classifier Optuna best AUC = 0.5212\n2026-03-13 09:27:33  INFO      funding.ml.contrarian_xgb \u2014 Regressor Optuna best MAE = 0.028445\n2026-03-13 09:27:34  INFO      funding.ml.contrarian_xgb \u2014 Threshold calibration: chosen=0.618 (in-range=True, fallback=0.618)\n2026-03-13 09:27:34  INFO      funding.ml.contrarian_xgb \u2014 Metrics \u2014 acc: 0.612, auc: 0.566, precision: 0.559, recall: 0.198, f1: 0.292, sharpe: 7.247, threshold: 0.618, trades/wk: 3.0\n2026-03-13 09:27:34  INFO      funding.ml.model_selector \u2014 ContrarianXGBoost trained \u2014 auc: 0.566, sharpe: 7.247, profit_factor: 1.878\n2026-03-13 09:27:34  INFO      funding.ml.model_selector \u2014 TFT unavailable \u2014 selecting 'xgboost' by default.\n2026-03-13 09:27:34  INFO      funding.ml.model_selector \u2014 Saved model comparison to /Users/benjaminpommeraud/Documents/Coding/Arbitrage/data/funding_models/contrarian_comparison.json\n2026-03-13 09:27:34  INFO      funding.ml.model_selector \u2014 Model comparison complete \u2014 xgb_sharpe: 7.247, tft_sharpe: -999.000, xgb_auc: 0.566, tft_auc: 0.000, selected: xgboost\n2026-03-13 09:27:34  INFO      train_contrarian_models \u2014 Building regime features for symbols: ['API3USDT', 'BCHUSDT', 'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'LINKUSDT', 'ADAUSDT']"
+}

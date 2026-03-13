@@ -1,0 +1,18 @@
+{
+  "error": "IO Error: Could not set lock on file \"/Users/benjaminpommeraud/Documents/Coding/Arbitrage/data/research/research.duckdb\": Conflicting lock is held in /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python (PID 84557) by user benjaminpommeraud. See also https://duckdb.org/docs/stable/connect/concurrency",
+  "family_id": "binance_funding_contrarian",
+  "generated_at": "2026-03-13T08:47:44.771437+00:00",
+  "reason": "funding_refresh_exception",
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260313T084738745471Z/execution_refresh_request.json",
+  "status": "failed",
+  "symbols": [
+    "API3USDT",
+    "BCHUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT"
+  ]
+}

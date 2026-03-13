@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-03-12T17:45:55.766136+00:00",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:1",
+  "family_mode": "funding_contrarian",
+  "trigger_health_status": "warning",
+  "trigger_issue_codes": [
+    "readiness_blocked",
+    "excessive_rejections",
+    "no_trade_syndrome",
+    "zero_simulated_fills",
+    "negative_realized_pnl",
+    "negative_paper_roi"
+  ],
+  "recommendation_context": [
+    "review filters and execution thresholds because the runner is failing to convert opportunities",
+    "improve model quality and data coverage before promoting this family",
+    "tighten entry logic and retrain for better trade selection quality"
+  ],
+  "maintenance_request": {
+    "source": "agent_review",
+    "action": "replace",
+    "reason": "Paper evidence for `binance_funding_contrarian:challenger:1` is blocked and uncompetitive. Reproducible evidence: 58 settled trades over 29 paper days, monthly ROI `-1.3246%`, net PnL `-203.79`, failure rate `1.0`, slippage headroom `-4.0379%`, regime robustness `0.275`, zero baseline-beaten windows, and hard vetoes on `failure_rate_above_15pct`, `negative_slippage_stress`, and `regime_robustness_below_minimum`. Additional artifact evidence shows the latest refresh failed, the run fell back to `naive_contrarian_backtest`, and produced `dataset_rows=0`, so some of the latest weakness is entangled with execution/data failure rather than clean alpha-only evidence. Inference: the family shows repeated structural weakness plus recurring execution/gating fragility, so this lineage should be replaced in active rotation, but not retired outright yet.",
+    "requires_human": false,
+    "requires_new_challenger": true
+  },
+  "retrain_triggered": true,
+  "retrain_action": "agent_requested_replace",
+  "target_objective": "reduce missed settlement windows while improving strict-gate pass rate on funding dislocations",
+  "requested_model_class": "gbdt",
+  "resolved_model_engine": "naive_contrarian_backtest",
+  "source_mode": "log_fallback",
+  "source_paths": [],
+  "dataset_rows": 0,
+  "current_parameters": {
+    "selected_model_class": "gbdt",
+    "selected_feature_subset": "regime",
+    "selected_horizon_seconds": 600,
+    "selected_min_edge": 0.05,
+    "selected_stake_fraction": 0.015,
+    "selected_learning_rate": 0.04,
+    "selected_lookback_hours": 96.0
+  }
+}

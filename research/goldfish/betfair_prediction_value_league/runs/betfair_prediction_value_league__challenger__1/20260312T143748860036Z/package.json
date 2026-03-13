@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-03-12T14:37:48.860920+00:00",
+  "lineage_id": "betfair_prediction_value_league:challenger:1",
+  "family_id": "betfair_prediction_value_league",
+  "artifact_summary": {
+    "run_id": "20260312T143748860036Z",
+    "mode": "prediction_walkforward",
+    "package_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__1/20260312T143748860036Z/package.json",
+    "run_root": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__1/20260312T143748860036Z",
+    "requested_model_class": "gbdt",
+    "resolved_model_engine": "insufficient_examples",
+    "feature_subset": "microstructure",
+    "example_count": 0,
+    "train_window": 80,
+    "test_window": 12
+  },
+  "files": {
+    "dataset": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__1/20260312T143748860036Z/dataset.json",
+    "features": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__1/20260312T143748860036Z/features.json",
+    "train": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__1/20260312T143748860036Z/train.json",
+    "walkforward": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__1/20260312T143748860036Z/walkforward.json",
+    "stress": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__1/20260312T143748860036Z/stress.json",
+    "model": null
+  }
+}

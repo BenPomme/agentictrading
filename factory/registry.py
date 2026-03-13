@@ -371,6 +371,26 @@ class FactoryRegistry:
             return None
         return _coerce_payload(OperatorAction, payload)
 
+    def latest_operator_action(
+        self,
+        lineage_id: str,
+        *,
+        status: Optional[str] = None,
+    ) -> Optional[OperatorAction]:
+        actions = self.operator_actions(status=status, lineage_id=lineage_id)
+        if not actions:
+            return None
+        actions.sort(
+            key=lambda row: str(
+                row.resolved_at
+                or row.updated_at
+                or row.created_at
+                or ""
+            ),
+            reverse=True,
+        )
+        return actions[0]
+
     def open_operator_action(
         self,
         *,

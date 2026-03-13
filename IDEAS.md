@@ -91,3 +91,29 @@ Clara Bennett
 
 "You are a senior volatility trader at IMC Trading who systematically sells options before earnings announcements to profit from the predictable IV crush that occurs after every single earnings report — regardless of whether the stock
 Voir plus
+
+10: new idea: Polymarket Prices lag Binance
+
+500 resolved 5-minute BTC markets. 1,090,031 snapshots. Every price tick. Every BTC movement. Cross-referenced against Binance.
+
+Result: Polymarket prices do lag Binance.
+
+247 stale-price moments detected. 70.9% win rate. Average edge: 12.4 cents.
+
+DeepSeek said 11.3 cents. Our backtest says 12.4 cents. Nearly identical.
+
+When BTC moves >0.12% and Polymarket hasn't adjusted: 100% win rate in our sample.
+
+Sweet spot: buying stale sides priced above $0.70. Win rate jumps to 90%.
+
+What the thread doesn't tell you:
+
+The edge is 9 cents per dollar risked. To make $2M you need $22 million of volume through the book. That means mass-firing $10–50 orders hundreds of times per day with subsecond execution.
+
+The window exists. The math checks out.  
+
+If you want to run your own backtests, polybacktest has subsecond historical data going back a month.
+
+
+11: new idea: war in iran
+Should we find a way to trade oil because of the war

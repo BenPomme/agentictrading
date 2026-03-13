@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 import config
 from factory.agent_runtime import recent_agent_runs
+from factory.assessment import assessment_progress, compact_number
 from factory.contracts import PromotionStage, utc_now_iso
+from factory.execution_evidence import build_portfolio_execution_evidence
+from factory.execution_targets import resolve_target_portfolio
 from factory.idea_intake import all_ideas, annotate_idea_statuses, split_active_and_archived_ideas
 from factory.registry import FactoryRegistry
 
@@ -58,6 +62,128 @@ def _read_jsonl(path: Path, limit: int = 20) -> List[Dict[str, Any]]:
     return rows[-limit:]
 
 
+def _compact_number(value: Any) -> float:
+    return compact_number(value)
+
+
+def _parse_iso_dt(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _lineage_paper_runtime_status(row: Dict[str, Any]) -> str:
+    if not bool(row.get("active", True)):
+        return "retired"
+    if bool(row.get("suppressed_runtime_sibling")):
+        return "suppressed"
+    lane_kind = str(row.get("runtime_lane_kind") or "").strip()
+    activation_status = str(row.get("activation_status") or "").strip().lower()
+    has_runtime_target = bool(
+        str(
+            row.get("runtime_target_portfolio")
+            or row.get("live_paper_target_portfolio_id")
+            or ""
+        ).strip()
+    )
+    if activation_status == "start_failed":
+        return "paper_start_failed"
+    if lane_kind in {"primary_incumbent", "isolated_challenger"}:
+        if (
+            has_runtime_target
+            and (
+                bool(row.get("alias_runner_running"))
+                or activation_status == "running"
+                or bool(row.get("execution_has_signal"))
+            )
+        ):
+            return "paper_running"
+        if activation_status in {"ready_to_launch", "started", "launching"}:
+            return "paper_starting"
+        if has_runtime_target or bool(row.get("runtime_lane_selected")):
+            return "paper_assigned"
+        return "paper_candidate"
+    if str(row.get("current_stage") or "").strip() in {
+        PromotionStage.PAPER.value,
+        PromotionStage.SHADOW.value,
+        PromotionStage.CANARY_READY.value,
+        PromotionStage.LIVE_READY.value,
+        PromotionStage.APPROVED_LIVE.value,
+    }:
+        return "paper_candidate"
+    return "research_only"
+
+
+def _lineage_expected_to_trade(row: Dict[str, Any]) -> bool:
+    return _lineage_paper_runtime_status(row) in {
+        "paper_running",
+        "paper_starting",
+        "paper_assigned",
+        "paper_candidate",
+        "paper_start_failed",
+    }
+
+
+def _paper_runtime_summary(factory_state: Dict[str, Any]) -> Dict[str, Any]:
+    lineages = list(factory_state.get("lineages") or [])
+    statuses = [_lineage_paper_runtime_status(dict(row)) for row in lineages]
+    summary = {
+        "expected_count": sum(
+            1
+            for status in statuses
+            if status in {"paper_running", "paper_starting", "paper_assigned", "paper_candidate", "paper_start_failed"}
+        ),
+        "running_count": sum(1 for status in statuses if status == "paper_running"),
+        "starting_count": sum(1 for status in statuses if status == "paper_starting"),
+        "assigned_count": sum(1 for status in statuses if status == "paper_assigned"),
+        "candidate_count": sum(1 for status in statuses if status == "paper_candidate"),
+        "failed_count": sum(1 for status in statuses if status == "paper_start_failed"),
+        "suppressed_count": sum(1 for status in statuses if status == "suppressed"),
+        "research_only_count": sum(1 for status in statuses if status == "research_only"),
+        "retired_count": sum(1 for status in statuses if status == "retired"),
+    }
+    return summary
+
+
+def _clean_operator_text(value: Any, *, max_len: int = 220) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[: max_len - 1] + "…" if len(text) > max_len else text
+
+
+def _compact_agent_run_error(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "OpenAI Codex v" in text or "mcp startup:" in text:
+        if "invalid_json_schema" in text:
+            match = re.search(r'"message":\s*"([^"]+)"', text)
+            if match:
+                return _clean_operator_text(f"structured_output_error: {match.group(1)}", max_len=240)
+            return "structured_output_error"
+        env_match = re.search(r"Environment variable ([A-Z0-9_]+) .* is not set", text)
+        if env_match:
+            return f"missing_env: {env_match.group(1)}"
+        auth_match = re.findall(r"The ([a-zA-Z0-9_-]+) MCP server is not logged in", text)
+        if auth_match:
+            return _clean_operator_text(f"mcp_auth_missing: {', '.join(sorted(set(auth_match)))}", max_len=240)
+        failed = re.findall(r"mcp:\s*([a-zA-Z0-9_-]+)\s+failed", text)
+        if failed:
+            return _clean_operator_text(f"mcp_startup_failed: {', '.join(sorted(set(failed)))}", max_len=240)
+        return "codex_exec_failed"
+    return _clean_operator_text(text, max_len=240)
+
+
 def _read_markdown_sections(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {"content": "", "recent_actions": []}
@@ -94,16 +220,256 @@ def _age_seconds(value: Any) -> float | None:
     return round(max(0.0, (now - ts).total_seconds()), 1)
 
 
-def _compact_number(value: Any) -> float:
-    try:
-        return round(float(value or 0.0), 4)
-    except Exception:
-        return 0.0
+def _build_connector_feed_health(connectors: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    rows = list(connectors or [])
+    if not rows:
+        return {
+            "status": "info",
+            "headline": "No data feeds configured",
+            "summary": "Connector health will appear here once feeds are wired into factory state.",
+            "total_count": 0,
+            "healthy_count": 0,
+            "warning_count": 0,
+            "critical_count": 0,
+            "latest_data_ts": None,
+            "latest_age_seconds": None,
+            "connectors": [],
+        }
+
+    stale_after_seconds = 6 * 60 * 60
+    healthy_count = 0
+    warning_count = 0
+    critical_count = 0
+    latest_data_ts: str | None = None
+    latest_age_seconds: float | None = None
+    connector_rows: List[Dict[str, Any]] = []
+
+    for connector in rows:
+        ready = bool(connector.get("ready"))
+        latest_ts = connector.get("latest_data_ts")
+        latest_age = _age_seconds(latest_ts)
+        status = "healthy"
+        if not ready:
+            status = "critical"
+            critical_count += 1
+        elif latest_age is None or latest_age > stale_after_seconds:
+            status = "warning"
+            warning_count += 1
+        else:
+            healthy_count += 1
+
+        if latest_age is not None and (latest_age_seconds is None or latest_age < latest_age_seconds):
+            latest_data_ts = str(latest_ts)
+            latest_age_seconds = latest_age
+
+        connector_rows.append(
+            {
+                "connector_id": str(connector.get("connector_id") or ""),
+                "venue": str(connector.get("venue") or ""),
+                "status": status,
+                "ready": ready,
+                "latest_data_ts": latest_ts,
+                "latest_age_seconds": latest_age,
+                "record_count": int(connector.get("record_count") or 0),
+                "issue_count": len(list(connector.get("issues") or [])),
+            }
+        )
+
+    total_count = len(rows)
+    if healthy_count == total_count:
+        status = "healthy"
+    elif critical_count:
+        status = "critical"
+    else:
+        status = "degraded"
+
+    summary_parts = [f"{healthy_count}/{total_count} healthy"]
+    if warning_count:
+        summary_parts.append(f"{warning_count} stale")
+    if critical_count:
+        summary_parts.append(f"{critical_count} down")
+    if latest_age_seconds is not None:
+        summary_parts.append(f"latest {int(latest_age_seconds)}s ago")
+
+    return {
+        "status": status,
+        "headline": f"{healthy_count}/{total_count} feeds healthy",
+        "summary": " · ".join(summary_parts),
+        "total_count": total_count,
+        "healthy_count": healthy_count,
+        "warning_count": warning_count,
+        "critical_count": critical_count,
+        "latest_data_ts": latest_data_ts,
+        "latest_age_seconds": latest_age_seconds,
+        "connectors": connector_rows,
+    }
 
 
-def _assessment_uses_slow_thresholds(*labels: str) -> bool:
-    normalized = [str(item or "").strip().lower() for item in labels if str(item or "").strip()]
-    return any(token.startswith("betfair") or token.startswith("polymarket") for token in normalized)
+_VENUE_FEED_PORTFOLIOS: Dict[str, List[str]] = {
+    "binance": ["hedge_validation", "hedge_research", "contrarian_legacy", "cascade_alpha"],
+    "betfair": ["betfair_core"],
+    "polymarket": ["polymarket_quantum_fold"],
+}
+
+
+def _feed_candidate_portfolios(factory_state: Dict[str, Any], connectors: Iterable[Dict[str, Any]]) -> Dict[str, List[str]]:
+    venue_map: Dict[str, List[str]] = {}
+    for connector in connectors or []:
+        venue = str(connector.get("venue") or "").strip().lower()
+        if venue:
+            venue_map.setdefault(venue, []).extend(_VENUE_FEED_PORTFOLIOS.get(venue, []))
+    for lineage in list(factory_state.get("lineages") or []):
+        venues = [str(item).strip().lower() for item in (lineage.get("target_venues") or []) if str(item).strip()]
+        portfolio_candidates = [
+            resolve_target_portfolio(str(lineage.get("runtime_target_portfolio") or "").strip()),
+            resolve_target_portfolio(str(lineage.get("live_paper_target_portfolio_id") or "").strip()),
+            resolve_target_portfolio(str(lineage.get("curated_target_portfolio_id") or "").strip()),
+        ]
+        portfolio_candidates.extend(
+            resolve_target_portfolio(str(item).strip())
+            for item in (lineage.get("target_portfolios") or [])
+            if str(item).strip()
+        )
+        for venue in venues:
+            venue_map.setdefault(venue, []).extend(_VENUE_FEED_PORTFOLIOS.get(venue, []))
+            venue_map[venue].extend([item for item in portfolio_candidates if item])
+    if not venue_map:
+        venue_map = {venue: list(portfolios) for venue, portfolios in _VENUE_FEED_PORTFOLIOS.items()}
+    return {
+        venue: list(dict.fromkeys([item for item in portfolio_ids if item]))
+        for venue, portfolio_ids in venue_map.items()
+    }
+
+
+def _portfolio_feed_signal(portfolio_id: str) -> Dict[str, Any] | None:
+    root = _execution_root()
+    if not root.exists():
+        return None
+    evidence = build_portfolio_execution_evidence(portfolio_id, root=str(root))
+    if not evidence.get("evidence_store_exists"):
+        return None
+
+    latest_ts = (
+        evidence.get("heartbeat_ts")
+        or evidence.get("last_trade_activity_at")
+        or evidence.get("runtime_started_at")
+        or evidence.get("training_state", {}).get("last_training_activity_at")
+    )
+    latest_age = _age_seconds(latest_ts)
+    issue_codes = list(evidence.get("issue_codes") or [])
+    health_status = str(evidence.get("health_status") or "critical").strip().lower()
+    evidence_store_exists = bool(evidence.get("evidence_store_exists"))
+
+    status = "healthy"
+    if any(code in {"runtime_error", "heartbeat_stale"} for code in issue_codes):
+        status = "critical"
+    elif issue_codes:
+        status = "warning"
+    elif health_status == "critical":
+        status = "critical"
+    elif health_status == "warning":
+        status = "warning"
+    elif latest_age is None or latest_age >= 300:
+        status = "critical"
+    elif latest_age >= 120:
+        status = "warning"
+
+    return {
+        "portfolio_id": portfolio_id,
+        "evidence_store_exists": evidence_store_exists,
+        "status": status,
+        "latest_data_ts": latest_ts,
+        "latest_age_seconds": latest_age,
+        "running": bool(evidence.get("running")),
+        "ready": evidence_store_exists and status != "critical",
+        "issue_count": len(issue_codes),
+        "runtime_target": str(evidence.get("runtime_target") or evidence.get("store_target") or portfolio_id),
+        "evidence_source": str(evidence.get("evidence_source") or "requested_portfolio"),
+        "is_alias_store": portfolio_id != str(evidence.get("store_target") or portfolio_id),
+    }
+
+
+def _build_feed_health(factory_state: Dict[str, Any], connectors: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    connector_rows = list(connectors or [])
+    venue_candidates = _feed_candidate_portfolios(factory_state, connector_rows)
+    venue_rows: List[Dict[str, Any]] = []
+
+    for venue, portfolio_ids in venue_candidates.items():
+        signals = [item for item in (_portfolio_feed_signal(portfolio_id) for portfolio_id in portfolio_ids) if item]
+        if not signals:
+            venue_rows.append(
+                {
+                    "connector_id": f"{venue}_core",
+                    "venue": venue,
+                    "status": "critical",
+                    "ready": False,
+                    "latest_data_ts": None,
+                    "latest_age_seconds": None,
+                    "record_count": 0,
+                    "issue_count": 1,
+                }
+            )
+            continue
+        has_critical = any(str(signal.get("status") or "healthy") == "critical" for signal in signals)
+        has_warning = any(str(signal.get("status") or "healthy") == "warning" for signal in signals)
+        venue_status = "critical" if has_critical else "warning" if has_warning else "healthy"
+        latest_row = min(
+            (signal for signal in signals if signal.get("latest_age_seconds") is not None),
+            key=lambda row: float(row.get("latest_age_seconds") or 0.0),
+            default=None,
+        )
+        best_for_readiness = max(signals, key=lambda signal: int(bool(signal.get("running"))))
+        venue_rows.append(
+            {
+                "connector_id": f"{venue}_core",
+                "venue": venue,
+                "status": venue_status,
+                "ready": bool(any(signal.get("ready") for signal in signals)),
+                "latest_data_ts": (latest_row or signals[0]).get("latest_data_ts"),
+                "latest_age_seconds": (latest_row or signals[0]).get("latest_age_seconds"),
+                "record_count": sum(1 for item in signals if item.get("latest_data_ts")),
+                "issue_count": max(int(item.get("issue_count") or 0) for item in signals),
+                "portfolio_id": str(best_for_readiness.get("portfolio_id") or ""),
+            }
+        )
+
+    if venue_rows:
+        healthy_count = sum(1 for row in venue_rows if row.get("status") == "healthy")
+        warning_count = sum(1 for row in venue_rows if row.get("status") == "warning")
+        critical_count = sum(1 for row in venue_rows if row.get("status") == "critical")
+        latest_row = min(
+            (row for row in venue_rows if row.get("latest_age_seconds") is not None),
+            key=lambda row: float(row.get("latest_age_seconds") or 0.0),
+            default=None,
+        )
+        latest_data_ts = latest_row.get("latest_data_ts") if latest_row else None
+        latest_age_seconds = latest_row.get("latest_age_seconds") if latest_row else None
+        overall_status = (
+            "critical"
+            if critical_count > 0
+            else ("degraded" if warning_count > 0 else ("healthy" if healthy_count else "critical"))
+        )
+        summary_parts = [f"{healthy_count}/{len(venue_rows)} healthy"]
+        if warning_count:
+            summary_parts.append(f"{warning_count} slow")
+        if critical_count:
+            summary_parts.append(f"{critical_count} down")
+        if latest_age_seconds is not None:
+            summary_parts.append(f"latest {int(latest_age_seconds)}s ago")
+        return {
+            "status": overall_status,
+            "headline": f"{healthy_count}/{len(venue_rows)} feeds healthy",
+            "summary": " · ".join(summary_parts),
+            "total_count": len(venue_rows),
+            "healthy_count": healthy_count,
+            "warning_count": warning_count,
+            "critical_count": critical_count,
+            "latest_data_ts": latest_data_ts,
+            "latest_age_seconds": latest_age_seconds,
+            "connectors": venue_rows,
+        }
+
+    return _build_connector_feed_health(connector_rows)
 
 
 def _assessment_progress(
@@ -114,68 +480,32 @@ def _assessment_progress(
     realized_roi_pct: float | None = None,
     current_stage: str | None = None,
 ) -> Dict[str, Any]:
-    joined_labels = [str(item or "") for item in labels]
-    slow = _assessment_uses_slow_thresholds(*joined_labels)
-    required_days = int(
-        getattr(
-            config,
-            "FACTORY_PAPER_GATE_MIN_DAYS",
-            30,
-        )
-        or 30
+    return assessment_progress(
+        paper_days=paper_days,
+        trade_count=trade_count,
+        labels=labels,
+        realized_roi_pct=realized_roi_pct,
+        current_stage=current_stage,
+        phase="full",
     )
-    required_trades = int(
-        getattr(
-            config,
-            "FACTORY_PAPER_GATE_MIN_SLOW_SETTLED" if slow else "FACTORY_PAPER_GATE_MIN_FAST_TRADES",
-            10 if slow else 50,
-        )
-        or (10 if slow else 50)
+
+
+def _first_assessment_progress(
+    *,
+    paper_days: int,
+    trade_count: int,
+    labels: Iterable[str],
+    realized_roi_pct: float | None = None,
+    current_stage: str | None = None,
+) -> Dict[str, Any]:
+    return assessment_progress(
+        paper_days=paper_days,
+        trade_count=trade_count,
+        labels=labels,
+        realized_roi_pct=realized_roi_pct,
+        current_stage=current_stage,
+        phase="first",
     )
-    observed_days = max(0, int(paper_days or 0))
-    observed_trades = max(0, int(trade_count or 0))
-    days_progress = min(1.0, observed_days / max(required_days, 1))
-    trades_progress = min(1.0, observed_trades / max(required_trades, 1))
-    completion_pct = round(((days_progress + trades_progress) / 2.0) * 100.0, 1)
-    days_remaining = max(0, required_days - observed_days)
-    trades_remaining = max(0, required_trades - observed_trades)
-    trades_per_day = (observed_trades / observed_days) if observed_days > 0 else 0.0
-    if days_remaining <= 0 and trades_remaining <= 0:
-        eta = "complete"
-        status = "complete"
-    else:
-        eta_days_candidates: List[int] = []
-        if days_remaining > 0:
-            eta_days_candidates.append(days_remaining)
-        if trades_remaining > 0:
-            if trades_per_day > 0.0:
-                eta_days_candidates.append(max(1, int((trades_remaining / trades_per_day) + 0.999)))
-            else:
-                eta_days_candidates.append(required_days)
-        eta_days = max(eta_days_candidates) if eta_days_candidates else 0
-        eta = f"~{eta_days}d left"
-        status = "complete" if completion_pct >= 100.0 else ("early" if completion_pct < 50.0 else "maturing")
-    roi = _compact_number(realized_roi_pct) if realized_roi_pct is not None else None
-    promoted = str(current_stage or "") in {
-        PromotionStage.CANARY_READY.value,
-        PromotionStage.LIVE_READY.value,
-        PromotionStage.APPROVED_LIVE.value,
-    }
-    if promoted and completion_pct >= 100.0:
-        status = "complete"
-    return {
-        "status": status,
-        "completion_pct": completion_pct,
-        "paper_days_observed": observed_days,
-        "paper_days_required": required_days,
-        "days_remaining": days_remaining,
-        "trade_count_observed": observed_trades,
-        "trade_count_required": required_trades,
-        "trades_remaining": trades_remaining,
-        "eta": eta,
-        "slow_strategy": slow,
-        "roi_pct": roi,
-    }
 
 
 def _execution_root() -> Path:
@@ -212,6 +542,16 @@ def _ideas_path() -> Path:
     return root / "ideas.md"
 
 
+def _idea_status_counts(idea_items: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    counts = {status: 0 for status in ["new", "adapted", "incubated", "tested", "promoted", "rejected"]}
+    for item in idea_items:
+        status = str(item.get("status") or "").strip()
+        if not status:
+            continue
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
 def _portfolio_dirs() -> List[Path]:
     root = _execution_root()
     if not root.exists():
@@ -232,6 +572,18 @@ def _tracked_portfolio_ids() -> List[str]:
     return [path.name for path in _portfolio_dirs()]
 
 
+def _runtime_alias_ids(factory_state: Dict[str, Any]) -> List[str]:
+    return list(
+        dict.fromkeys(
+            [
+                str(lineage.get("runtime_target_portfolio") or "").strip()
+                for lineage in list(factory_state.get("lineages") or [])
+                if str(lineage.get("runtime_target_portfolio") or "").strip()
+            ]
+        )
+    )
+
+
 def _running_portfolio_ids() -> set[str]:
     try:
         result = subprocess.run(
@@ -248,7 +600,10 @@ def _running_portfolio_ids() -> set[str]:
         if "scripts/run_portfolio.py" not in line or "--portfolio" not in line:
             continue
         try:
-            portfolio = line.split("--portfolio", 1)[1].strip().split()[0].strip()
+            runtime_portfolio = ""
+            if "--runtime-portfolio-id" in line:
+                runtime_portfolio = line.split("--runtime-portfolio-id", 1)[1].strip().split()[0].strip()
+            portfolio = runtime_portfolio or line.split("--portfolio", 1)[1].strip().split()[0].strip()
         except Exception:
             continue
         if portfolio:
@@ -260,6 +615,7 @@ def _has_runtime_state(path: Path) -> bool:
     runtime_files = (
         "account.json",
         "heartbeat.json",
+        "runtime_health.json",
         "state.json",
         "config_snapshot.json",
         "readiness.json",
@@ -277,24 +633,71 @@ def _portfolio_error(state: Dict[str, Any], readiness: Dict[str, Any]) -> str | 
     return None
 
 
+def _execution_evidence_for_portfolio(portfolio_id: str, root: Path) -> Dict[str, Any]:
+    try:
+        return build_portfolio_execution_evidence(portfolio_id, root=str(root))
+    except Exception:
+        return {
+            "requested_target": str(portfolio_id),
+            "resolved_target": str(portfolio_id),
+            "store_target": str(portfolio_id),
+            "canonical_target": str(portfolio_id),
+            "runtime_target": str(portfolio_id),
+            "evidence_source": "dashboard_fallback",
+            "evidence_store_exists": False,
+            "running": False,
+            "heartbeat_ts": None,
+            "heartbeat_age_seconds": None,
+            "status": "unknown",
+            "health_status": "warning",
+            "issue_codes": [],
+            "issues": [],
+            "account": {
+                "currency": "USD",
+                "current_balance": 0.0,
+                "starting_balance": 0.0,
+                "realized_pnl": 0.0,
+                "roi_pct": 0.0,
+                "drawdown_pct": 0.0,
+                "trade_count": 0,
+                "wins": 0,
+                "losses": 0,
+            },
+            "training_progress": {},
+            "trainability": {},
+            "recommendation_context": [],
+        }
+
+
 def _portfolio_snapshot_light(path: Path) -> Dict[str, Any]:
     has_runtime_state = _has_runtime_state(path)
-    account = _read_json(path / "account.json", default={}) or {}
-    heartbeat = _read_json(path / "heartbeat.json", default={}) or {}
-    state = _read_json(path / "state.json", default={}) or {}
-    readiness = _read_json(path / "readiness.json", default={}) or {}
+    evidence = _execution_evidence_for_portfolio(path.name, path.parent)
+    if not evidence.get("evidence_store_exists"):
+        return {
+            "portfolio_id": path.name,
+            "is_placeholder": not has_runtime_state,
+            "running": False,
+            "blocked": False,
+            "realized_pnl": 0.0,
+            "heartbeat_age_seconds": None,
+            "readiness_status": None,
+            "execution_health_status": "warning",
+            "execution_issue_codes": [],
+        }
 
-    heartbeat_ts = heartbeat.get("ts") or account.get("last_updated") or state.get("last_cycle_at")
-    heartbeat_age = _age_seconds(heartbeat_ts)
-    running = bool(has_runtime_state and heartbeat_age is not None and heartbeat_age <= 600)
-    readiness_status = str(readiness.get("status") or state.get("status") or "").strip().lower()
-    issue_codes = list(readiness.get("issue_codes") or state.get("issue_codes") or [])
-    blocked = readiness_status in {"blocked", "validation_blocked", "critical"} or "readiness_blocked" in issue_codes
-    realized_pnl = _compact_number(
-        account.get("realized_pnl")
-        if account.get("realized_pnl") is not None
-        else state.get("realized_pnl")
+    account = dict(evidence.get("account") or {})
+    issue_codes = list(evidence.get("issue_codes") or [])
+    readiness_status = str(evidence.get("status") or "").strip().lower()
+    health_status = str(evidence.get("health_status") or "").strip().lower()
+    running = bool(evidence.get("running"))
+    heartbeat_age = evidence.get("heartbeat_age_seconds")
+    blocked = health_status in {"critical", "warning"} and any(
+        item in {"runtime_error", "heartbeat_stale", "readiness_blocked", "trade_stalled", "training_stalled", "stalled_model"}
+        for item in issue_codes
     )
+    if not readiness_status:
+        readiness_status = "running" if running else (health_status if health_status else "unknown")
+    realized_pnl = _compact_number(account.get("realized_pnl"))
     return {
         "portfolio_id": path.name,
         "is_placeholder": not has_runtime_state,
@@ -303,6 +706,8 @@ def _portfolio_snapshot_light(path: Path) -> Dict[str, Any]:
         "realized_pnl": realized_pnl,
         "heartbeat_age_seconds": heartbeat_age,
         "readiness_status": readiness_status or None,
+        "execution_health_status": health_status or "warning",
+        "execution_issue_codes": issue_codes[:3],
     }
 
 
@@ -327,12 +732,44 @@ def _execution_summary_light() -> Dict[str, Any]:
     }
 
 
+def _best_execution_performer(portfolios: Iterable[Dict[str, Any]]) -> Dict[str, Any] | None:
+    rows = [dict(row) for row in portfolios if isinstance(row, dict)]
+    if not rows:
+        return None
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            _compact_number(row.get("roi_pct")),
+            _compact_number(row.get("realized_pnl")),
+            int(row.get("trade_count") or 0),
+        ),
+        reverse=True,
+    )
+    best = ranked[0]
+    return {
+        "portfolio_id": str(best.get("portfolio_id") or ""),
+        "label": str(best.get("label") or best.get("portfolio_id") or ""),
+        "currency": str(best.get("currency") or "USD"),
+        "realized_pnl": _compact_number(best.get("realized_pnl")),
+        "roi_pct": _compact_number(best.get("roi_pct")),
+        "trade_count": int(best.get("trade_count") or 0),
+        "paper_days": int(best.get("paper_days") or 0),
+    }
+
+
 def _lineage_portfolio_light(factory_state: Dict[str, Any]) -> Dict[str, Any]:
     tracked_ids = _tracked_portfolio_ids()
+    tracked_ids = list(dict.fromkeys(list(tracked_ids) + _runtime_alias_ids(factory_state)))
     running_ids = _running_portfolio_ids()
+    execution_root = _execution_root()
     grouped: Dict[str, List[Dict[str, Any]]] = {portfolio_id: [] for portfolio_id in tracked_ids}
     for lineage in list(factory_state.get("lineages") or []):
-        portfolio_id = str(lineage.get("curated_target_portfolio_id") or "").strip()
+        portfolio_id = str(
+            lineage.get("runtime_target_portfolio")
+            or lineage.get("live_paper_target_portfolio_id")
+            or lineage.get("curated_target_portfolio_id")
+            or ""
+        ).strip()
         if portfolio_id in grouped:
             grouped[portfolio_id].append(dict(lineage))
 
@@ -341,14 +778,32 @@ def _lineage_portfolio_light(factory_state: Dict[str, Any]) -> Dict[str, Any]:
     placeholder_count = 0
     for portfolio_id in tracked_ids:
         related = grouped.get(portfolio_id) or []
-        if not related and portfolio_id not in running_ids:
+        path = execution_root / portfolio_id
+        evidence = _execution_evidence_for_portfolio(portfolio_id, execution_root)
+        has_runtime_state = path.is_dir() and (_has_runtime_state(path) or bool(evidence.get("evidence_store_exists")))
+        if not related and not has_runtime_state and portfolio_id not in running_ids:
             placeholder_count += 1
             continue
+        account = dict(evidence.get("account") or {})
+        training_state = dict(evidence.get("training_state") or {})
+        currency = str(account.get("currency") or "USD")
+        starting_balance = _compact_number(account.get("starting_balance"))
+        if starting_balance == 0.0 and evidence.get("health_status") not in {"critical", "warning"}:
+            # keep compatibility with older files that only had current balance
+            starting_balance = _compact_number(evidence.get("starting_balance") or account.get("current_balance"))
+        current_balance = _compact_number(account.get("current_balance"))
+        realized_pnl = _compact_number(account.get("realized_pnl"))
+        account_roi_pct = _compact_number(account.get("roi_pct"))
+        account_trade_count = int(account.get("trade_count", 0) or 0)
+        wins = int(account.get("wins", 0) or 0)
+        losses = int(account.get("losses", 0) or 0)
+        win_rate = (wins / (wins + losses)) if (wins + losses) > 0 else 0.0
         worst_health = "healthy"
         issue_codes: List[str] = []
         candidate_families: List[str] = []
-        realized_roi_pct = 0.0
-        trade_count = 0
+        runtime_lanes: List[Dict[str, Any]] = []
+        realized_roi_pct = account_roi_pct
+        trade_count = account_trade_count
         paper_days = 0
         score_pct = 0.0
         for lineage in related:
@@ -362,6 +817,18 @@ def _lineage_portfolio_light(factory_state: Dict[str, Any]) -> Dict[str, Any]:
             family_id = str(lineage.get("family_id") or "").strip()
             if family_id and family_id not in candidate_families:
                 candidate_families.append(family_id)
+            lane_kind = str(lineage.get("runtime_lane_kind") or "").strip()
+            if lane_kind:
+                runtime_lanes.append(
+                    {
+                        "family_id": family_id,
+                        "lineage_id": str(lineage.get("lineage_id") or ""),
+                        "lane_kind": lane_kind,
+                        "lane_reason": str(lineage.get("runtime_lane_reason") or ""),
+                        "runtime_target_portfolio": str(lineage.get("runtime_target_portfolio") or ""),
+                        "canonical_target_portfolio": str(lineage.get("canonical_target_portfolio") or ""),
+                    }
+                )
             realized_roi_pct = max(
                 realized_roi_pct,
                 _compact_number(
@@ -380,13 +847,44 @@ def _lineage_portfolio_light(factory_state: Dict[str, Any]) -> Dict[str, Any]:
             )
             paper_days = max(paper_days, int(lineage.get("paper_days") or 0))
             score_pct = max(score_pct, _compact_number(lineage.get("readiness_score_pct")))
-        running = portfolio_id in running_ids
+        runtime_health_status = str(evidence.get("health_status") or "").strip()
+        runtime_health_issue_codes = [
+            str(item).strip()
+            for item in list(evidence.get("issue_codes") or [])
+            if str(item).strip()
+        ]
+        readiness_status = str(evidence.get("status") or "").strip()
+        if not readiness_status:
+            readiness_status = str(evidence.get("status") or "").strip()
+        if not runtime_health_status:
+            if readiness_status in {"paper_validating", "validation_blocked", "research_only"}:
+                runtime_health_status = "warning"
+            elif readiness_status in {"running", "active"}:
+                runtime_health_status = "healthy"
+            else:
+                runtime_health_status = "warning"
+        if runtime_health_status in severity_rank:
+            worst_health = runtime_health_status
+            if runtime_health_issue_codes:
+                issue_codes = list(dict.fromkeys(runtime_health_issue_codes))
+        running = portfolio_id in running_ids or bool(evidence.get("running"))
         display_status = (
-            "active"
-            if running
-            else ("blocked" if worst_health == "critical" else ("degraded" if worst_health == "warning" else "idle"))
+            readiness_status
+            if readiness_status in {"paper_validating", "validation_blocked", "research_only", "running", "active"}
+            else (
+                "active"
+                if running
+                else ("blocked" if worst_health == "critical" else ("degraded" if worst_health == "warning" else "idle"))
+            )
         )
         assessment = _assessment_progress(
+            paper_days=paper_days,
+            trade_count=trade_count,
+            labels=[portfolio_id],
+            realized_roi_pct=realized_roi_pct,
+            current_stage="paper",
+        )
+        first_assessment = _first_assessment_progress(
             paper_days=paper_days,
             trade_count=trade_count,
             labels=[portfolio_id],
@@ -398,36 +896,68 @@ def _lineage_portfolio_light(factory_state: Dict[str, Any]) -> Dict[str, Any]:
                 "portfolio_id": portfolio_id,
                 "label": _title_case_slug(portfolio_id),
                 "category": "execution_runner",
-                "currency": "USD",
-                "starting_balance": 0.0,
-                "current_balance": 0.0,
-                "realized_pnl": 0.0,
+                "currency": currency,
+                "starting_balance": starting_balance,
+                "current_balance": current_balance,
+                "realized_pnl": realized_pnl,
                 "roi_pct": realized_roi_pct,
+                "win_rate": _compact_number(win_rate),
+                "wins": wins,
+                "losses": losses,
                 "drawdown_pct": 0.0,
                 "trade_count": trade_count,
                 "paper_days": paper_days,
                 "status": "running" if running else "idle",
                 "display_status": display_status,
                 "running": running,
-                "heartbeat_ts": None,
-                "heartbeat_age_seconds": None,
-                "error": None,
-                "readiness_status": worst_health if related else ("running" if running else "unknown"),
+                "heartbeat_ts": evidence.get("heartbeat_ts"),
+                "heartbeat_age_seconds": evidence.get("heartbeat_age_seconds"),
+                "error": str(evidence.get("error") or "") or None,
+                "readiness_status": readiness_status or (worst_health if related else ("running" if running else "unknown")),
                 "readiness_score_pct": score_pct,
                 "readiness_blockers": issue_codes[:3],
+                "training_progress": {
+                    "tracked_examples": int(training_state.get("tracked_examples", 0) or 0),
+                    "labeled_examples": int(training_state.get("labeled_examples", 0) or 0),
+                    "pending_labels": int(training_state.get("pending_labels", 0) or 0),
+                    "closed_trades": int(training_state.get("closed_trades", 0) or 0),
+                },
+                "trainability": {
+                    "status": str(training_state.get("trainability", {}).get("status") or ""),
+                    "required_model_count": int(training_state.get("required_model_count", 0) or 0),
+                    "trainable_model_count": int(training_state.get("trainable_model_count", 0) or 0),
+                    "trained_model_count": int(training_state.get("trained_model_count", 0) or 0),
+                    "strict_pass_model_count": int(training_state.get("strict_pass_model_count", 0) or 0),
+                    "blocked_models": list(training_state.get("blocked_models") or [])[:3],
+                },
                 "candidate_context_count": len(related),
+                "runtime_lane_count": len(runtime_lanes),
+                "runtime_lanes": runtime_lanes[:4],
+                "primary_incumbent_lineage_id": next(
+                    (item["lineage_id"] for item in runtime_lanes if item.get("lane_kind") == "primary_incumbent"),
+                    None,
+                ),
+                "isolated_challenger_lineage_id": next(
+                    (item["lineage_id"] for item in runtime_lanes if item.get("lane_kind") == "isolated_challenger"),
+                    None,
+                ),
                 "live_manifest_count": 0,
                 "candidate_families": candidate_families[:4],
                 "recent_trades": [],
                 "recent_events": [],
                 "state_excerpt": {},
-                "blocked": worst_health == "critical",
+                "blocked": worst_health == "critical" and not running,
                 "has_runtime_state": True,
                 "is_placeholder": False,
                 "assessment": assessment,
-                "execution_health_status": worst_health if related else ("healthy" if running else "warning"),
+                "first_assessment": first_assessment,
+                "execution_health_status": worst_health if related or runtime_health_status else ("healthy" if running else "warning"),
                 "execution_issue_codes": issue_codes[:3],
-                "execution_recommendation_context": issue_codes[:1],
+                "execution_recommendation_context": (evidence.get("recommendation_context") or issue_codes)[:1],
+                "evidence_source": str(evidence.get("evidence_source") or ""),
+                "evidence_store": str(evidence.get("store_target") or portfolio_id),
+                "runtime_target": str(evidence.get("runtime_target") or portfolio_id),
+                "is_alias_store": bool(evidence.get("is_runtime_alias")),
             }
         )
     research_summary = dict(factory_state.get("research_summary") or {})
@@ -442,6 +972,7 @@ def _lineage_portfolio_light(factory_state: Dict[str, Any]) -> Dict[str, Any]:
         "running_count": sum(1 for row in portfolios if row.get("running")),
         "blocked_count": blocked_count,
         "realized_pnl_total": _compact_number(research_summary.get("paper_pnl")),
+        "best_performer": _best_execution_performer(portfolios),
         "portfolios": portfolios,
         "placeholders": [],
         "mode": "light_snapshot",
@@ -511,6 +1042,13 @@ def _portfolio_snapshot(path: Path) -> Dict[str, Any]:
         realized_roi_pct=_compact_number(account.get("roi_pct")),
         current_stage=str(readiness.get("status") or status or ""),
     )
+    first_assessment = _first_assessment_progress(
+        paper_days=observed_paper_days,
+        trade_count=int(account.get("trade_count", state.get("trade_count", 0)) or 0),
+        labels=[path.name, config_snapshot.get("category"), config_snapshot.get("label")],
+        realized_roi_pct=_compact_number(account.get("roi_pct")),
+        current_stage=str(readiness.get("status") or status or ""),
+    )
     return {
         "portfolio_id": path.name,
         "label": str(config_snapshot.get("label") or path.name.replace("_", " ").title()),
@@ -562,6 +1100,7 @@ def _portfolio_snapshot(path: Path) -> Dict[str, Any]:
         "has_runtime_state": has_runtime_state,
         "is_placeholder": not has_runtime_state,
         "assessment": assessment,
+        "first_assessment": first_assessment,
         "execution_health_status": (
             "critical"
             if blocked or heartbeat_health == "critical"
@@ -582,6 +1121,152 @@ def _severity_rank(alert: Dict[str, Any]) -> tuple[int, str]:
     return (order.get(severity, 9), str(alert.get("title") or ""))
 
 
+def _sanitize_alert_detail(value: Any, *, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if "Command '['codex', 'exec'" in text or "Command '[\"codex\", \"exec\"" in text:
+        return "codex_exec_failed"
+    compact = _compact_agent_run_error(text)
+    if compact and compact != _clean_operator_text(text, max_len=240):
+        return compact
+    if "Traceback" in text:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for line in reversed(lines):
+            if line.startswith("Traceback"):
+                continue
+            if line.startswith("File "):
+                continue
+            return _clean_operator_text(line, max_len=240)
+        return fallback or "runtime_error"
+    return _clean_operator_text(text, max_len=240) or fallback
+
+
+def _finalize_alerts(alerts: Iterable[Dict[str, Any]], *, limit: int = 12) -> List[Dict[str, Any]]:
+    severity_rank = {"critical": 0, "warning": 1, "positive": 2, "info": 3}
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for item in alerts:
+        if not isinstance(item, dict):
+            continue
+        detail = _sanitize_alert_detail(item.get("detail"), fallback="")
+        if not detail:
+            continue
+        alert = dict(item)
+        alert["detail"] = detail
+        key = str(
+            alert.get("dedupe_key")
+            or "::".join(
+                [
+                    str(alert.get("severity") or ""),
+                    str(alert.get("title") or ""),
+                    str(alert.get("lineage_id") or alert.get("portfolio_id") or ""),
+                    detail,
+                ]
+            )
+        )
+        existing = deduped.get(key)
+        if existing is None:
+            alert.pop("dedupe_key", None)
+            deduped[key] = alert
+            continue
+        current_rank = severity_rank.get(str(alert.get("severity") or "info"), 9)
+        existing_rank = severity_rank.get(str(existing.get("severity") or "info"), 9)
+        if current_rank < existing_rank:
+            alert.pop("dedupe_key", None)
+            deduped[key] = alert
+    return sorted(deduped.values(), key=_severity_rank)[:limit]
+
+
+def _build_agent_fallback_alerts(agent_runs: Iterable[Dict[str, Any]], *, max_age_hours: float = 24.0) -> List[Dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    latest_success_by_scope: Dict[tuple[str, str, str], datetime] = {}
+    latest_success_by_family_task: Dict[tuple[str, str], datetime] = {}
+    normalized_runs: List[Dict[str, Any]] = []
+    for run in agent_runs:
+        normalized_runs.append(dict(run))
+        generated_at = _parse_ts(run.get("generated_at"))
+        if generated_at is None:
+            continue
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=timezone.utc)
+        if run.get("success") is True:
+            scope = (
+                str(run.get("task_type") or ""),
+                str(run.get("family_id") or ""),
+                str(run.get("lineage_id") or ""),
+            )
+            previous = latest_success_by_scope.get(scope)
+            if previous is None or generated_at > previous:
+                latest_success_by_scope[scope] = generated_at
+            family_task = (str(run.get("task_type") or ""), str(run.get("family_id") or ""))
+            family_previous = latest_success_by_family_task.get(family_task)
+            if family_previous is None or generated_at > family_previous:
+                latest_success_by_family_task[family_task] = generated_at
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for run in normalized_runs:
+        if run.get("success") is not False:
+            continue
+        generated_at = _parse_ts(run.get("generated_at"))
+        if generated_at is not None:
+            if generated_at.tzinfo is None:
+                generated_at = generated_at.replace(tzinfo=timezone.utc)
+            age_hours = max(0.0, (now - generated_at).total_seconds()) / 3600.0
+            if age_hours > max_age_hours:
+                continue
+        task_type = str(run.get("task_type") or "agent_task")
+        family_id = str(run.get("family_id") or "").strip()
+        lineage_id = str(run.get("lineage_id") or "").strip()
+        success_scope = (task_type, family_id, lineage_id)
+        latest_success = latest_success_by_scope.get(success_scope)
+        if latest_success is not None and generated_at is not None and latest_success >= generated_at:
+            continue
+        family_task_success = latest_success_by_family_task.get((task_type, family_id))
+        if task_type in {"runtime_debug_review", "post_eval_critique", "family_bootstrap_generation", "maintenance_resolution_review"}:
+            if family_task_success is not None and generated_at is not None and family_task_success >= generated_at:
+                continue
+        detail = _sanitize_alert_detail(run.get("error") or f"{family_id or 'agent'} fell back from Codex", fallback="codex_exec_failed")
+        key = f"{task_type}:{detail}"
+        entry = grouped.get(key)
+        if entry is None:
+            grouped[key] = {
+                "severity": "warning",
+                "title": f"Agent fallback: {task_type}",
+                "detail": detail,
+                "task_type": task_type,
+                "families": [family_id] if family_id else [],
+                "lineages": [lineage_id] if lineage_id else [],
+                "count": 1,
+                "dedupe_key": f"agent_fallback_group:{key}",
+            }
+            continue
+        entry["count"] = int(entry.get("count") or 0) + 1
+        if family_id:
+            entry["families"] = list(dict.fromkeys(list(entry.get("families") or []) + [family_id]))
+        if lineage_id:
+            entry["lineages"] = list(dict.fromkeys(list(entry.get("lineages") or []) + [lineage_id]))
+    alerts: List[Dict[str, Any]] = []
+    for entry in grouped.values():
+        count = int(entry.get("count") or 0)
+        families = [str(item) for item in list(entry.get("families") or []) if str(item).strip()]
+        detail = str(entry.get("detail") or "")
+        if count > 1:
+            family_text = ""
+            if families:
+                shown = ", ".join(families[:2])
+                extra = len(families) - 2
+                family_text = f" across {shown}" + (f" +{extra} more" if extra > 0 else "")
+            detail = f"{detail} · {count} recent runs{family_text}"
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": str(entry.get("title") or "Agent fallback"),
+                "detail": detail,
+                "dedupe_key": str(entry.get("dedupe_key") or ""),
+            }
+        )
+    return alerts
+
+
 def _primary_issue_codes(portfolio: Dict[str, Any]) -> List[str]:
     issue_codes = [str(item) for item in (portfolio.get("execution_issue_codes") or []) if str(item).strip()]
     generic = {"readiness_blocked", "heartbeat_stale", "heartbeat_slow"}
@@ -597,11 +1282,14 @@ def _build_alerts(factory_state: Dict[str, Any], portfolios: Iterable[Dict[str, 
     operator_signals = dict(factory_state.get("operator_signals") or {})
     for check in readiness.get("checks") or []:
         if not check.get("ok"):
+            if str(check.get("name") or "").strip() in {"connector_catalog_ready"}:
+                continue
             alerts.append(
                 {
                     "severity": "warning",
                     "title": f"Factory check failing: {check.get('name')}",
                     "detail": str(check.get("reason") or ""),
+                    "dedupe_key": f"readiness:{check.get('name')}",
                 }
             )
     for portfolio in portfolios:
@@ -613,6 +1301,7 @@ def _build_alerts(factory_state: Dict[str, Any], portfolios: Iterable[Dict[str, 
                     "title": f"{portfolio.get('label')} issue",
                     "detail": str(portfolio.get("error")),
                     "portfolio_id": portfolio.get("portfolio_id"),
+                    "dedupe_key": f"portfolio_error:{portfolio.get('portfolio_id')}:{_sanitize_alert_detail(portfolio.get('error'), fallback='runtime_error')}",
                 }
             )
         elif str(portfolio.get("execution_health_status") or "") in {"critical", "warning"}:
@@ -623,26 +1312,9 @@ def _build_alerts(factory_state: Dict[str, Any], portfolios: Iterable[Dict[str, 
                     "title": f"{portfolio.get('label')} model health",
                     "detail": ", ".join(notes[:3]) or "execution health degraded",
                     "portfolio_id": portfolio.get("portfolio_id"),
+                    "dedupe_key": f"portfolio_health:{portfolio.get('portfolio_id')}:{','.join(notes[:3]) or 'execution health degraded'}",
                 }
             )
-    for item in list(operator_signals.get("escalation_candidates") or [])[:4]:
-        alerts.append(
-            {
-                "severity": "positive",
-                "title": f"Operator review: {item.get('family_id')}",
-                "detail": f"{item.get('lineage_id')} is {item.get('current_stage')} with {item.get('roi_pct')}% paper ROI. Review before any real-trading push.",
-                "lineage_id": item.get("lineage_id"),
-            }
-        )
-    for item in list(operator_signals.get("positive_models") or [])[:4]:
-        alerts.append(
-            {
-                "severity": "positive",
-                "title": f"Positive ROI: {item.get('family_id')}",
-                "detail": f"{item.get('lineage_id')} is at {item.get('roi_pct')}% ROI across {item.get('trade_count')} trades.",
-                "lineage_id": item.get("lineage_id"),
-            }
-        )
     for item in list(operator_signals.get("human_action_required") or [])[:4]:
         alerts.append(
             {
@@ -650,19 +1322,10 @@ def _build_alerts(factory_state: Dict[str, Any], portfolios: Iterable[Dict[str, 
                 "title": f"Human action required: {item.get('family_id')}",
                 "detail": str(item.get("human_action") or item.get("summary") or item.get("lineage_id") or ""),
                 "lineage_id": item.get("lineage_id"),
+                "dedupe_key": f"human_action:{item.get('lineage_id')}:{_sanitize_alert_detail(item.get('human_action') or item.get('summary') or item.get('lineage_id') or '', fallback='human_action_required')}",
             }
         )
-    for item in list(factory_state.get("lineages") or []):
-        if item.get("agent_review_due"):
-            alerts.append(
-                {
-                    "severity": "info",
-                    "title": f"Agent review due: {item.get('family_id')}",
-                    "detail": f"{item.get('lineage_id')} is due for {item.get('agent_review_due_reason')}.",
-                    "lineage_id": item.get("lineage_id"),
-                }
-            )
-    return sorted(alerts, key=_severity_rank)[:12]
+    return _finalize_alerts(alerts)
 
 
 def _agent_invocations_by_role(agent_runs: Iterable[Dict[str, Any]]) -> Dict[str, int]:
@@ -678,27 +1341,75 @@ def _agent_invocations_by_role(agent_runs: Iterable[Dict[str, Any]]) -> Dict[str
     return counts
 
 
+def _desk_member_invocation_counts(agent_runs: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for run in agent_runs:
+        if not run.get("success"):
+            continue
+        task_type = str(run.get("task_type") or "").strip()
+        model_class = str(run.get("model_class") or "").strip()
+        model = str(run.get("model") or "").strip()
+        members: List[str] = []
+        if task_type in {"proposal_generation", "family_bootstrap_generation"}:
+            members.extend(["hypothesis_author", "feature_ideator", "pipeline_assembler"])
+        if task_type == "underperformance_tweak":
+            members.append("genome_mutation_runner")
+        if task_type == "post_eval_critique":
+            members.extend(["evaluation_integrator", "capital_risk_reviewer", "promotion_policy_reviewer"])
+        if task_type == "runtime_debug_review":
+            members.extend(["execution_path_reviewer", "evaluation_integrator"])
+        if task_type == "maintenance_resolution_review":
+            members.extend(["evaluation_integrator", "capital_risk_reviewer", "execution_path_reviewer"])
+        if model_class == "cheap_structured" or "mini" in model or "spark" in model:
+            members.append("test_scaffold")
+        for member in members:
+            counts[member] = counts.get(member, 0) + 1
+    return counts
+
+
+def _scientific_domain_invocation_counts(agent_runs: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for run in agent_runs:
+        if not run.get("success"):
+            continue
+        result_payload = dict(run.get("result_payload") or {})
+        prompt_payload = dict(run.get("prompt_payload") or {})
+        domains = list(result_payload.get("scientific_domains") or [])
+        if not domains:
+            domains = list(prompt_payload.get("hypothesis", {}).get("scientific_domains") or [])
+        if not domains:
+            domains = list(prompt_payload.get("champion_hypothesis", {}).get("scientific_domains") or [])
+        if not domains:
+            domains = list(prompt_payload.get("family", {}).get("scientific_domains") or [])
+        for domain in domains:
+            name = str(domain).strip()
+            if not name:
+                continue
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
 def _build_agent_run_view(agent_runs: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for run in agent_runs:
         result_payload = dict(run.get("result_payload") or {})
         prompt_payload = dict(run.get("prompt_payload") or {})
-        headline = str(
+        headline = _clean_operator_text(
             result_payload.get("title")
             or result_payload.get("summary")
             or result_payload.get("thesis")
             or prompt_payload.get("family", {}).get("label")
             or ""
-        ).strip()
+        )
         notes = [
-            str(item)
+            _clean_operator_text(item)
             for item in (
                 result_payload.get("agent_notes")
                 or result_payload.get("next_tests")
                 or result_payload.get("recommended_actions")
                 or []
             )
-            if str(item).strip()
+            if _clean_operator_text(item)
         ]
         rows.append(
             {
@@ -714,7 +1425,7 @@ def _build_agent_run_view(agent_runs: Iterable[Dict[str, Any]]) -> List[Dict[str
                 "success": bool(run.get("success")),
                 "fallback_used": bool(run.get("fallback_used")),
                 "duration_ms": int(run.get("duration_ms", 0) or 0),
-                "error": str(run.get("error") or ""),
+                "error": _compact_agent_run_error(run.get("error")),
                 "artifact_path": str(run.get("artifact_path") or ""),
                 "headline": headline,
                 "notes": notes[:3],
@@ -847,6 +1558,13 @@ def _build_lineage_atlas(factory_state: Dict[str, Any]) -> Dict[str, Any]:
                 realized_roi_pct=_compact_number(row.get("monthly_roi_pct")),
                 current_stage=str(row.get("current_stage") or ""),
             ),
+            "first_assessment": _first_assessment_progress(
+                paper_days=int(row.get("paper_days", 0) or 0),
+                trade_count=int(row.get("live_paper_trade_count", row.get("trade_count", 0)) or 0),
+                labels=[family_id, row.get("current_stage"), row.get("live_paper_target_portfolio_id")],
+                realized_roi_pct=_compact_number(row.get("live_paper_roi_pct", row.get("monthly_roi_pct"))),
+                current_stage=str(row.get("current_stage") or ""),
+            ),
             "creation_kind": str(getattr(record, "creation_kind", "") or row.get("creation_kind") or "").strip() or None,
             "source_idea_id": str(getattr(record, "source_idea_id", "") or row.get("source_idea_id") or "").strip() or None,
             "has_artifact_package": bool(row.get("latest_artifact_package")),
@@ -867,6 +1585,12 @@ def _build_lineage_atlas(factory_state: Dict[str, Any]) -> Dict[str, Any]:
             "selected_feature_subset": params["feature_subset"],
             "selected_min_edge": params["min_edge"],
             "selected_stake_fraction": params["stake_fraction"],
+            "runtime_lane_selected": bool(row.get("runtime_lane_selected")),
+            "runtime_lane_kind": row.get("runtime_lane_kind"),
+            "runtime_lane_reason": row.get("runtime_lane_reason"),
+            "runtime_target_portfolio": row.get("runtime_target_portfolio"),
+            "canonical_target_portfolio": row.get("canonical_target_portfolio"),
+            "suppressed_runtime_sibling": bool(row.get("suppressed_runtime_sibling")),
             "child_lineage_ids": [],
             "depth": 0,
         }
@@ -913,6 +1637,14 @@ def _build_lineage_atlas(factory_state: Dict[str, Any]) -> Dict[str, Any]:
         )
         champion = next((node for node in nodes if node.get("role") == "champion"), None)
         summary = family_meta.get(family_id, {})
+        primary_runtime_node = next(
+            (node for node in nodes if str(node.get("lineage_id") or "") == str(summary.get("primary_incumbent_lineage_id") or "")),
+            {},
+        )
+        isolated_runtime_node = next(
+            (node for node in nodes if str(node.get("lineage_id") or "") == str(summary.get("isolated_challenger_lineage_id") or "")),
+            {},
+        )
         sorted_nodes = sorted(nodes, key=_lineage_sort_key)
         history = sorted(nodes, key=_history_sort_key, reverse=True)
         atlas_families.append(
@@ -923,6 +1655,15 @@ def _build_lineage_atlas(factory_state: Dict[str, Any]) -> Dict[str, Any]:
                 "active_lineage_count": int(summary.get("active_lineage_count", 0) or sum(1 for node in nodes if node.get("active"))),
                 "retired_lineage_count": int(summary.get("retired_lineage_count", 0) or sum(1 for node in nodes if not node.get("active"))),
                 "target_portfolios": list(summary.get("target_portfolios") or []),
+                "primary_incumbent_lineage_id": summary.get("primary_incumbent_lineage_id"),
+                "isolated_challenger_lineage_id": summary.get("isolated_challenger_lineage_id"),
+                "runtime_lane_reason": summary.get("runtime_lane_reason"),
+                "runtime_target_portfolio": summary.get("runtime_target_portfolio")
+                or isolated_runtime_node.get("runtime_target_portfolio")
+                or primary_runtime_node.get("runtime_target_portfolio"),
+                "canonical_target_portfolio": summary.get("canonical_target_portfolio")
+                or isolated_runtime_node.get("canonical_target_portfolio")
+                or primary_runtime_node.get("canonical_target_portfolio"),
                 "root_lineage_ids": roots,
                 "max_depth": max((int(node.get("depth") or 0) for node in nodes), default=0),
                 "mutation_count": sum(1 for node in nodes if node.get("creation_kind") == "mutation"),
@@ -965,10 +1706,22 @@ def _build_agent_desks(
     journal_actions: List[str],
     agent_runs: Iterable[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
+    deterministic_display_names = {
+        "Director": "Control Router",
+        "Budget Allocator": "Budget Policy",
+        "Venue/Data Curator": "Venue/Data Policy",
+        "Genome Mutator": "Mutation Engine",
+        "Evaluator": "Evaluation Engine",
+        "Risk Governor": "Risk Rules Engine",
+        "Promotion Arbiter": "Promotion Rules Engine",
+        "Goldfish Bridge": "Execution Bridge",
+    }
     agent_roles = dict(factory_state.get("agent_roles") or {})
     lineages = list(factory_state.get("lineages") or [])
     recent_text = " | ".join(journal_actions[-12:])
     invocation_counts = _agent_invocations_by_role(agent_runs)
+    desk_invocation_counts = _desk_member_invocation_counts(agent_runs)
+    domain_invocation_counts = _scientific_domain_invocation_counts(agent_runs)
     families_by_agent: Dict[str, set[str]] = {}
     stages_by_agent: Dict[str, set[str]] = {}
     lineages_by_agent: Dict[str, set[str]] = {}
@@ -988,30 +1741,44 @@ def _build_agent_desks(
 
     desks: List[Dict[str, Any]] = []
     for tier, members in agent_roles.items():
+        desk_kind = "algorithmic_control" if str(tier) == "tier0_deterministic" else "agent_desk"
         rows: List[Dict[str, Any]] = []
         for member in members:
             member_name = str(member)
+            display_name = deterministic_display_names.get(member_name, member_name) if desk_kind == "algorithmic_control" else member_name
             involvement = len(lineages_by_agent.get(member_name, set()))
             recent_mentions = member_name.lower() in recent_text.lower()
-            status = "active" if involvement or recent_mentions else "standby"
+            real_invocation_count = int(invocation_counts.get(member_name, 0)) + int(desk_invocation_counts.get(member_name, 0))
+            if real_invocation_count > 0:
+                status = "model_active"
+            elif involvement or recent_mentions:
+                status = "coverage_only"
+            else:
+                status = "standby"
             rows.append(
                 {
                     "name": member_name,
+                    "display_name": display_name,
                     "status": status,
                     "lineage_count": involvement,
-                    "real_invocation_count": int(invocation_counts.get(member_name, 0)),
+                    "real_invocation_count": real_invocation_count,
                     "families": sorted(families_by_agent.get(member_name, set())),
                     "stages": sorted(stages_by_agent.get(member_name, set())),
                     "recent_mention": recent_mentions,
                 }
             )
+        model_active_count = sum(1 for row in rows if row["status"] == "model_active")
+        coverage_count = sum(1 for row in rows if row["status"] == "coverage_only")
         desks.append(
             {
                 "desk_id": tier,
-                "label": _title_case_slug(tier),
+                "label": "Deterministic Control Algorithms" if desk_kind == "algorithmic_control" else _title_case_slug(tier),
+                "desk_kind": desk_kind,
                 "member_count": len(rows),
-                "active_count": sum(1 for row in rows if row["status"] == "active"),
+                "active_count": model_active_count,
+                "coverage_count": coverage_count,
                 "members": rows,
+                "status": "model_active" if model_active_count else ("coverage_only" if coverage_count else "standby"),
             }
         )
 
@@ -1019,12 +1786,14 @@ def _build_agent_desks(
     for domain in factory_state.get("scientific_researchers") or []:
         label = _title_case_slug(str(domain))
         involvement = sum(1 for lineage in lineages if str(domain) in [str(item) for item in (lineage.get("scientific_domains") or [])])
+        real_invocation_count = int(domain_invocation_counts.get(str(domain), 0))
+        status = "model_active" if real_invocation_count > 0 else ("coverage_only" if involvement else "standby")
         scientist_rows.append(
             {
                 "name": label,
-                "status": "active" if involvement else "standby",
+                "status": status,
                 "lineage_count": involvement,
-                "real_invocation_count": 0,
+                "real_invocation_count": real_invocation_count,
                 "families": sorted(
                     {
                         str(lineage.get("family_id") or "")
@@ -1046,9 +1815,16 @@ def _build_agent_desks(
         {
             "desk_id": "scientific_swarm",
             "label": "Scientific Swarm",
+            "desk_kind": "agent_desk",
             "member_count": len(scientist_rows),
-            "active_count": sum(1 for row in scientist_rows if row["status"] == "active"),
+            "active_count": sum(1 for row in scientist_rows if row["status"] == "model_active"),
+            "coverage_count": sum(1 for row in scientist_rows if row["status"] == "coverage_only"),
             "members": scientist_rows,
+            "status": (
+                "model_active"
+                if any(row["status"] == "model_active" for row in scientist_rows)
+                else ("coverage_only" if any(row["status"] == "coverage_only" for row in scientist_rows) else "standby")
+            ),
         }
     )
     return desks
@@ -1056,8 +1832,22 @@ def _build_agent_desks(
 
 def _build_family_view(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+    lineages_by_id = {
+        str(item.get("lineage_id") or ""): dict(item)
+        for item in list(factory_state.get("lineages") or [])
+        if str(item.get("lineage_id") or "").strip()
+    }
     for family in factory_state.get("families") or []:
         champion = dict(family.get("champion") or {})
+        primary = lineages_by_id.get(str(family.get("primary_incumbent_lineage_id") or ""), {})
+        challenger = lineages_by_id.get(str(family.get("isolated_challenger_lineage_id") or ""), {})
+        derived_isolated_ready = bool(
+            str(challenger.get("runtime_target_portfolio") or "").strip()
+            and str(challenger.get("runtime_target_portfolio") or "").strip()
+            != str(primary.get("runtime_target_portfolio") or primary.get("canonical_target_portfolio") or "").strip()
+        )
+        runtime_lineages = [payload for payload in [primary, challenger] if payload]
+        runtime_statuses = [_lineage_paper_runtime_status(payload) for payload in runtime_lineages]
         rows.append(
             {
                 "family_id": family.get("family_id"),
@@ -1071,6 +1861,31 @@ def _build_family_view(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "champion_stage": champion.get("current_stage"),
                 "champion_roi_pct": _compact_number(champion.get("monthly_roi_pct")),
                 "champion_fitness": _compact_number(champion.get("fitness_score")),
+                "origin": family.get("origin"),
+                "source_idea_id": family.get("source_idea_id"),
+                "incubation_status": family.get("incubation_status"),
+                "incubation_cycle_created": family.get("incubation_cycle_created"),
+                "incubation_notes": list(family.get("incubation_notes") or []),
+                "incubation_decided_at": family.get("incubation_decided_at"),
+                "incubation_decision_reason": family.get("incubation_decision_reason"),
+                "primary_incumbent_lineage_id": family.get("primary_incumbent_lineage_id"),
+                "isolated_challenger_lineage_id": family.get("isolated_challenger_lineage_id"),
+                "prepared_isolated_lane_lineage_id": family.get("prepared_isolated_lane_lineage_id"),
+                "runtime_lane_reason": family.get("runtime_lane_reason"),
+                "activation_status": family.get("activation_status"),
+                "alias_runner_running": bool(family.get("alias_runner_running")),
+                "isolated_evidence_ready": bool(family.get("isolated_evidence_ready")) or derived_isolated_ready,
+                "paper_runtime_expected_count": sum(1 for payload in runtime_lineages if _lineage_expected_to_trade(payload)),
+                "paper_runtime_running_count": sum(1 for status in runtime_statuses if status == "paper_running"),
+                "paper_runtime_statuses": runtime_statuses,
+                "weak_family": bool(family.get("weak_family")),
+                "autopilot_status": family.get("autopilot_status"),
+                "autopilot_actions": list(family.get("autopilot_actions") or []),
+                "autopilot_reason": family.get("autopilot_reason"),
+                "autopilot_issue_codes": list(family.get("autopilot_issue_codes") or []),
+                "autopilot_live_roi_pct": _compact_number(family.get("autopilot_live_roi_pct")),
+                "autopilot_live_win_rate": _compact_number(family.get("autopilot_live_win_rate")),
+                "autopilot_trade_count": int(family.get("autopilot_trade_count", 0) or 0),
                 "curated_rankings": list(family.get("curated_rankings") or []),
             }
         )
@@ -1085,6 +1900,13 @@ def _build_model_league_view(factory_state: Dict[str, Any]) -> List[Dict[str, An
         if str(item.get("lineage_id") or "").strip()
     }
     for family in factory_state.get("families") or []:
+        primary = lineages_by_id.get(str(family.get("primary_incumbent_lineage_id") or ""), {})
+        challenger = lineages_by_id.get(str(family.get("isolated_challenger_lineage_id") or ""), {})
+        derived_isolated_ready = bool(
+            str(challenger.get("runtime_target_portfolio") or "").strip()
+            and str(challenger.get("runtime_target_portfolio") or "").strip()
+            != str(primary.get("runtime_target_portfolio") or primary.get("canonical_target_portfolio") or "").strip()
+        )
         rankings = []
         for item in list(family.get("curated_rankings") or [])[:3]:
             lineage = lineages_by_id.get(str(item.get("lineage_id") or ""), {})
@@ -1099,6 +1921,17 @@ def _build_model_league_view(factory_state: Dict[str, Any]) -> List[Dict[str, An
                 realized_roi_pct=_compact_number(item.get("paper_roi_pct")),
                 current_stage=str(item.get("current_stage") or lineage.get("current_stage") or ""),
             )
+            first_assessment = _first_assessment_progress(
+                paper_days=int(lineage.get("paper_days", 0) or 0),
+                trade_count=int(lineage.get("live_paper_trade_count", item.get("paper_closed_trade_count", 0)) or 0),
+                labels=[
+                    family.get("family_id"),
+                    item.get("target_portfolio_id"),
+                    item.get("current_stage"),
+                ],
+                realized_roi_pct=_compact_number(lineage.get("live_paper_roi_pct", item.get("paper_roi_pct"))),
+                current_stage=str(item.get("current_stage") or lineage.get("current_stage") or ""),
+            )
             rankings.append(
                 {
                     "lineage_id": str(item.get("lineage_id") or ""),
@@ -1111,13 +1944,31 @@ def _build_model_league_view(factory_state: Dict[str, Any]) -> List[Dict[str, An
                     "paper_closed_trade_count": int(item.get("paper_closed_trade_count", 0) or 0),
                     "strict_gate_pass": bool(item.get("strict_gate_pass", False)),
                     "current_stage": str(item.get("current_stage") or ""),
+                    "runtime_lane_kind": lineage.get("runtime_lane_kind"),
+                    "runtime_lane_reason": lineage.get("runtime_lane_reason"),
+                    "runtime_target_portfolio": lineage.get("runtime_target_portfolio"),
+                    "canonical_target_portfolio": lineage.get("canonical_target_portfolio"),
                     "assessment": assessment,
+                    "first_assessment": first_assessment,
                 }
             )
         rows.append(
             {
                 "family_id": str(family.get("family_id") or ""),
                 "label": str(family.get("label") or ""),
+                "origin": family.get("origin"),
+                "source_idea_id": family.get("source_idea_id"),
+                "incubation_status": family.get("incubation_status"),
+                "incubation_cycle_created": family.get("incubation_cycle_created"),
+                "incubation_decided_at": family.get("incubation_decided_at"),
+                "incubation_decision_reason": family.get("incubation_decision_reason"),
+                "primary_incumbent_lineage_id": family.get("primary_incumbent_lineage_id"),
+                "isolated_challenger_lineage_id": family.get("isolated_challenger_lineage_id"),
+                "prepared_isolated_lane_lineage_id": family.get("prepared_isolated_lane_lineage_id"),
+                "runtime_lane_reason": family.get("runtime_lane_reason"),
+                "activation_status": family.get("activation_status"),
+                "alias_runner_running": bool(family.get("alias_runner_running")),
+                "isolated_evidence_ready": bool(family.get("isolated_evidence_ready")) or derived_isolated_ready,
                 "rankings": rankings,
             }
         )
@@ -1126,6 +1977,11 @@ def _build_model_league_view(factory_state: Dict[str, Any]) -> List[Dict[str, An
 
 def _build_operator_signal_view(factory_state: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(factory_state.get("operator_signals") or {})
+    lineage_rows = {
+        str(item.get("lineage_id") or "").strip(): dict(item)
+        for item in list(factory_state.get("lineages") or [])
+        if str(item.get("lineage_id") or "").strip()
+    }
     positives_raw = [dict(item) for item in list(payload.get("positive_models") or [])]
     grouped_positive: Dict[str, Dict[str, Any]] = {}
     for item in positives_raw:
@@ -1161,6 +2017,13 @@ def _build_operator_signal_view(factory_state: Dict[str, Any]) -> Dict[str, Any]
             realized_roi_pct=_compact_number(row.get("roi_pct")),
             current_stage=str(row.get("current_stage") or ""),
         )
+        row["first_assessment"] = _first_assessment_progress(
+            paper_days=int(row.get("paper_days", 0) or 0),
+            trade_count=int(row.get("trade_count", 0) or 0),
+            labels=[row.get("family_id"), row.get("current_stage")],
+            realized_roi_pct=_compact_number(row.get("roi_pct")),
+            current_stage=str(row.get("current_stage") or ""),
+        )
         positives.append(row)
     escalations = []
     for item in list(payload.get("escalation_candidates") or []):
@@ -1172,14 +2035,123 @@ def _build_operator_signal_view(factory_state: Dict[str, Any]) -> Dict[str, Any]
             realized_roi_pct=_compact_number(row.get("roi_pct")),
             current_stage=str(row.get("current_stage") or ""),
         )
+        row["first_assessment"] = _first_assessment_progress(
+            paper_days=int(row.get("paper_days", 0) or 0),
+            trade_count=int(row.get("trade_count", 0) or 0),
+            labels=[row.get("family_id"), row.get("current_stage")],
+            realized_roi_pct=_compact_number(row.get("roi_pct")),
+            current_stage=str(row.get("current_stage") or ""),
+        )
         escalations.append(row)
+    paper_qualification_queue = []
+    for item in list(payload.get("paper_qualification_queue") or []):
+        row = dict(item)
+        row["first_assessment"] = _first_assessment_progress(
+            paper_days=int(row.get("paper_days", 0) or 0),
+            trade_count=int(row.get("live_trade_count", 0) or 0),
+            labels=[row.get("family_id"), row.get("current_stage")],
+            realized_roi_pct=0.0,
+            current_stage=str(row.get("current_stage") or ""),
+        )
+        paper_qualification_queue.append(row)
+    family_autopilot_actions = {
+        str(item.get("family_id") or "").strip()
+        for item in list(payload.get("maintenance_queue") or [])
+        if str(item.get("action") or "").strip() == "family_autopilot"
+    }
+    cooldown_hours = max(0, int(getattr(config, "FACTORY_MAINTENANCE_QUEUE_REVIEW_COOLDOWN_HOURS", 12) or 12))
+    review_cutoff = datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)
+    raw_queue: List[Dict[str, Any]] = []
+    for item in list(payload.get("maintenance_queue") or []):
+        row = dict(item)
+        lineage_id = str(row.get("lineage_id") or "").strip()
+        lineage = dict(lineage_rows.get(lineage_id) or {})
+        if lineage and not bool(lineage.get("active", True)):
+            continue
+        reviewed_at = _parse_iso_dt(lineage.get("last_maintenance_review_at") or row.get("last_maintenance_review_at"))
+        reviewed_status = str(lineage.get("last_maintenance_review_status") or row.get("last_maintenance_review_status") or "").strip().lower()
+        reviewed_action = str(lineage.get("last_maintenance_review_action") or row.get("last_maintenance_review_action") or "").strip().lower()
+        action = str(row.get("action") or "").strip().lower()
+        if (
+            reviewed_at is not None
+            and reviewed_at >= review_cutoff
+            and reviewed_status in {"completed", "success", "succeeded"}
+            and (action == "review_due" or (reviewed_action and reviewed_action == action))
+        ):
+            continue
+        if (
+            str(row.get("family_id") or "").strip() in family_autopilot_actions
+            and action in {"replace", "retrain", "rework", "retire", "review_due"}
+            and str(row.get("source") or "").strip() != "family_autopilot"
+            and not bool(row.get("requires_human"))
+        ):
+            continue
+        row["assessment"] = _assessment_progress(
+            paper_days=int(row.get("paper_days", 0) or 0),
+            trade_count=int(row.get("trade_count", 0) or 0),
+            labels=[row.get("family_id"), row.get("current_stage")],
+            realized_roi_pct=_compact_number(row.get("roi_pct")),
+            current_stage=str(row.get("current_stage") or ""),
+        )
+        row["first_assessment"] = _first_assessment_progress(
+            paper_days=int(row.get("paper_days", 0) or 0),
+            trade_count=int(row.get("trade_count", 0) or 0),
+            labels=[row.get("family_id"), row.get("current_stage")],
+            realized_roi_pct=_compact_number(row.get("roi_pct")),
+            current_stage=str(row.get("current_stage") or ""),
+        )
+        raw_queue.append(row)
+    deduped_queue: Dict[str, Dict[str, Any]] = {}
+    family_scoped_queue: List[Dict[str, Any]] = []
+    for row in raw_queue:
+        lineage_id = str(row.get("lineage_id") or "").strip()
+        if not lineage_id:
+            family_scoped_queue.append(row)
+            continue
+        current = deduped_queue.get(lineage_id)
+        candidate_key = (
+            int(row.get("priority", 9) if row.get("priority") is not None else 9),
+            0 if row.get("requires_human") else 1,
+            0 if str(row.get("source") or "") == "family_autopilot" else 1,
+        )
+        if current is None:
+            deduped_queue[lineage_id] = row
+            continue
+        current_key = (
+            int(current.get("priority", 9) if current.get("priority") is not None else 9),
+            0 if current.get("requires_human") else 1,
+            0 if str(current.get("source") or "") == "family_autopilot" else 1,
+        )
+        if candidate_key < current_key:
+            deduped_queue[lineage_id] = row
+    per_family_cap = max(1, int(getattr(config, "FACTORY_MAINTENANCE_QUEUE_MAX_PER_FAMILY", 3) or 3))
+    per_family_counts: Dict[str, int] = {}
+    maintenance_queue: List[Dict[str, Any]] = []
+    for row in sorted(
+        list(deduped_queue.values()) + family_scoped_queue,
+        key=lambda item: (
+            int(item.get("priority", 9) if item.get("priority") is not None else 9),
+            0 if item.get("execution_health_status") == "critical" else 1,
+            item.get("family_id") or "",
+            item.get("lineage_id") or "",
+        ),
+    ):
+        family_id = str(row.get("family_id") or "").strip()
+        if family_id and str(row.get("action") or "") != "family_autopilot":
+            count = int(per_family_counts.get(family_id, 0) or 0)
+            if count >= per_family_cap:
+                continue
+            per_family_counts[family_id] = count + 1
+        maintenance_queue.append(row)
     return {
         "positive_models": positives,
         "research_positive_models": list(payload.get("research_positive_models") or []),
+        "paper_qualification_queue": paper_qualification_queue,
+        "first_assessment_candidates": list(payload.get("first_assessment_candidates") or []),
         "escalation_candidates": escalations,
         "human_action_required": list(payload.get("human_action_required") or []),
         "action_inbox": list(payload.get("action_inbox") or []),
-        "maintenance_queue": list(payload.get("maintenance_queue") or []),
+        "maintenance_queue": maintenance_queue,
     }
 
 
@@ -1195,6 +2167,7 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
     )
     rows: List[Dict[str, Any]] = []
     for row in sorted_lineages[:24]:
+        paper_runtime_status = _lineage_paper_runtime_status(dict(row))
         rows.append(
             {
                 "lineage_id": row.get("lineage_id"),
@@ -1224,6 +2197,13 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                     ),
                     current_stage=str(row.get("current_stage") or ""),
                 ),
+                "first_assessment": _first_assessment_progress(
+                    paper_days=int(row.get("paper_days", 0) or 0),
+                    trade_count=int(row.get("live_paper_trade_count", 0) or 0),
+                    labels=[row.get("family_id"), row.get("current_stage"), row.get("live_paper_target_portfolio_id")],
+                    realized_roi_pct=_compact_number(row.get("live_paper_roi_pct")),
+                    current_stage=str(row.get("current_stage") or ""),
+                ),
                 "execution_has_signal": bool(row.get("execution_has_signal")),
                 "execution_health_status": row.get("execution_health_status"),
                 "execution_issue_codes": list(row.get("execution_issue_codes") or []),
@@ -1240,6 +2220,18 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "curated_target_portfolio_id": row.get("curated_target_portfolio_id"),
                 "curated_paper_roi_pct": _compact_number(row.get("curated_paper_roi_pct")),
                 "curated_paper_win_rate": _compact_number(row.get("curated_paper_win_rate")),
+                "runtime_lane_selected": bool(row.get("runtime_lane_selected")),
+                "runtime_lane_kind": row.get("runtime_lane_kind"),
+                "runtime_lane_reason": row.get("runtime_lane_reason"),
+                "paper_runtime_status": paper_runtime_status,
+                "expected_to_trade": _lineage_expected_to_trade(dict(row)),
+                "prepared_isolated_lane": bool(row.get("prepared_isolated_lane")),
+                "activation_status": row.get("activation_status"),
+                "alias_runner_running": bool(row.get("alias_runner_running")),
+                "isolate_evidence_start_failed": bool(row.get("isolate_evidence_start_failed")),
+                "runtime_target_portfolio": row.get("runtime_target_portfolio"),
+                "canonical_target_portfolio": row.get("canonical_target_portfolio"),
+                "suppressed_runtime_sibling": bool(row.get("suppressed_runtime_sibling")),
                 "hypothesis_origin": row.get("hypothesis_origin"),
                 "latest_agent_decision": dict(row.get("latest_agent_decision") or {}),
                 "proposal_agent": dict(row.get("proposal_agent") or {}),
@@ -1267,9 +2259,16 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
     ideas_text = ideas_path.read_text(encoding="utf-8") if ideas_path.exists() else ""
     idea_items = annotate_idea_statuses(all_ideas(_project_root()), list(factory_state.get("lineages") or []))
     idea_buckets = split_active_and_archived_ideas(idea_items)
+    idea_status_counts = _idea_status_counts(idea_items)
     agent_run_rows = recent_agent_runs(_project_root(), limit=24)
 
-    portfolios = [_portfolio_snapshot(path) for path in _portfolio_dirs()]
+    portfolio_paths = {path.name: path for path in _portfolio_dirs()}
+    execution_root = _execution_root()
+    for portfolio_id in _runtime_alias_ids(factory_state):
+        path = execution_root / portfolio_id
+        if path.is_dir():
+            portfolio_paths.setdefault(portfolio_id, path)
+    portfolios = [_portfolio_snapshot(path) for path in portfolio_paths.values()]
     placeholder_portfolios = [row for row in portfolios if row.get("is_placeholder")]
     tracked_portfolios = [
         row
@@ -1287,18 +2286,13 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
         "placeholders": placeholder_portfolios,
     }
     alerts = _build_alerts(factory_state, tracked_portfolios)
-    for run in agent_run_rows:
-        if run.get("success") is False:
-            alerts.append(
-                {
-                    "severity": "warning",
-                    "title": f"Agent fallback: {run.get('task_type')}",
-                    "detail": str(run.get("error") or f"{run.get('family_id')} fell back from Codex"),
-                }
-            )
-    alerts = sorted(alerts, key=_severity_rank)[:12]
+    alerts.extend(_build_agent_fallback_alerts(agent_run_rows))
+    alerts = _finalize_alerts(alerts)
     research_summary = dict(factory_state.get("research_summary") or {})
     readiness = dict(factory_state.get("readiness") or {})
+    paper_runtime = _paper_runtime_summary(factory_state)
+    connectors = list(factory_state.get("connectors") or [])
+    feed_health = _build_feed_health(factory_state, connectors)
 
     return {
         "generated_at": utc_now_iso(),
@@ -1309,15 +2303,18 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
             "cycle_count": int(factory_state.get("cycle_count", 0) or 0),
             "readiness": readiness,
             "research_summary": research_summary,
+            "paper_runtime": paper_runtime,
+            "feed_health": feed_health,
             "families": _build_family_view(factory_state),
             "model_league": _build_model_league_view(factory_state),
             "lineages": _build_lineage_table(factory_state),
             "lineage_atlas": _build_lineage_atlas(factory_state),
             "queue": list(factory_state.get("queue") or []),
-            "connectors": list(factory_state.get("connectors") or []),
+            "connectors": connectors,
             "manifests": dict(factory_state.get("manifests") or {}),
             "agent_runs": _build_agent_run_view(agent_run_rows),
             "operator_signals": _build_operator_signal_view(factory_state),
+            "execution_bridge": dict(factory_state.get("execution_bridge") or {}),
         },
         "company": {
             "journal_markdown": journal.get("content") or "",
@@ -1334,10 +2331,7 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
             "idea_count": len(idea_items),
             "active_count": len(idea_buckets["active"]),
             "archived_count": len(idea_buckets["archived"]),
-            "status_counts": {
-                status: sum(1 for item in idea_items if item.get("status") == status)
-                for status in ["new", "adapted", "tested", "promoted", "rejected"]
-            },
+            "status_counts": idea_status_counts,
             "items": idea_buckets["active"],
             "archived_items": idea_buckets["archived"],
         },
@@ -1351,21 +2345,17 @@ def build_dashboard_snapshot_light() -> Dict[str, Any]:
     ideas_text = ideas_path.read_text(encoding="utf-8") if ideas_path.exists() else ""
     idea_items = annotate_idea_statuses(all_ideas(_project_root()), list(factory_state.get("lineages") or []))
     idea_buckets = split_active_and_archived_ideas(idea_items)
+    idea_status_counts = _idea_status_counts(idea_items)
     agent_run_rows = recent_agent_runs(_project_root(), limit=24)
     alerts = _build_alerts(factory_state, [])
-    for run in agent_run_rows:
-        if run.get("success") is False:
-            alerts.append(
-                {
-                    "severity": "warning",
-                    "title": f"Agent fallback: {run.get('task_type')}",
-                    "detail": str(run.get("error") or f"{run.get('family_id')} fell back from Codex"),
-                }
-            )
-    alerts = sorted(alerts, key=_severity_rank)[:12]
+    alerts.extend(_build_agent_fallback_alerts(agent_run_rows))
+    alerts = _finalize_alerts(alerts)
     research_summary = dict(factory_state.get("research_summary") or {})
     readiness = dict(factory_state.get("readiness") or {})
     execution_summary = _lineage_portfolio_light(factory_state)
+    paper_runtime = _paper_runtime_summary(factory_state)
+    connectors = list(factory_state.get("connectors") or [])
+    feed_health = _build_feed_health(factory_state, connectors)
     return {
         "generated_at": utc_now_iso(),
         "project_root": str(_project_root()),
@@ -1375,15 +2365,18 @@ def build_dashboard_snapshot_light() -> Dict[str, Any]:
             "cycle_count": int(factory_state.get("cycle_count", 0) or 0),
             "readiness": readiness,
             "research_summary": research_summary,
+            "paper_runtime": paper_runtime,
+            "feed_health": feed_health,
             "families": _build_family_view(factory_state),
             "model_league": _build_model_league_view(factory_state),
             "lineages": _build_lineage_table(factory_state),
             "lineage_atlas": _build_lineage_atlas(factory_state),
             "queue": list(factory_state.get("queue") or []),
-            "connectors": list(factory_state.get("connectors") or []),
+            "connectors": connectors,
             "manifests": dict(factory_state.get("manifests") or {}),
             "agent_runs": _build_agent_run_view(agent_run_rows),
             "operator_signals": _build_operator_signal_view(factory_state),
+            "execution_bridge": dict(factory_state.get("execution_bridge") or {}),
         },
         "company": {
             "journal_markdown": journal.get("content") or "",
@@ -1400,10 +2393,7 @@ def build_dashboard_snapshot_light() -> Dict[str, Any]:
             "idea_count": len(idea_items),
             "active_count": len(idea_buckets["active"]),
             "archived_count": len(idea_buckets["archived"]),
-            "status_counts": {
-                status: sum(1 for item in idea_items if item.get("status") == status)
-                for status in ["new", "adapted", "tested", "promoted", "rejected"]
-            },
+            "status_counts": idea_status_counts,
             "items": idea_buckets["active"],
             "archived_items": idea_buckets["archived"],
         },

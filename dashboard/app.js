@@ -1,4 +1,10 @@
 const REFRESH_MS = 5000;
+const uiState = {
+  activeTab: "overview",
+  selectedFamilyId: null,
+  selectedLineageId: null,
+};
+let latestSnapshot = null;
 
 function formatNumber(value, digits = 2) {
   const number = Number(value ?? 0);
@@ -19,9 +25,43 @@ function formatCurrency(value, currency = "USD") {
   }).format(number);
 }
 
+function formatDateTime(value) {
+  if (!value) return "n/a";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatDate(value) {
+  if (!value) return "n/a";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatAgeCompact(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return "n/a";
+  if (value < 60) return `${Math.round(value)}s`;
+  if (value < 3600) return `${Math.round(value / 60)}m`;
+  if (value < 86400) return `${Math.round(value / 3600)}h`;
+  return `${Math.round(value / 86400)}d`;
+}
+
 function pillClass(kind) {
   if (["live_ready", "approved_live", "running", "active", "healthy", "positive"].includes(kind)) return "status-pill status-ok";
   if (["blocked", "error", "critical", "start_failed"].includes(kind)) return "status-pill status-critical";
+  if (["model_active"].includes(kind)) return "status-pill status-ok";
+  if (["coverage_only"].includes(kind)) return "status-pill status-warning";
   if (["warning", "paper_validating", "research_only", "autostart_disabled", "validation_blocked", "degraded", "adapted", "tested"].includes(kind)) return "status-pill status-warning";
   if (["promoted"].includes(kind)) return "status-pill status-ok";
   if (["rejected"].includes(kind)) return "status-pill status-critical";
@@ -35,6 +75,13 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
+function basenamePath(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const parts = text.split("/");
+  return parts[parts.length - 1] || text;
+}
+
 function renderAssessment(assessment) {
   const item = assessment || {};
   const pct = formatNumber(item.completion_pct || 0, 0);
@@ -44,9 +91,15 @@ function renderAssessment(assessment) {
   const requiredDays = formatNumber(item.paper_days_required || 0, 0);
   const observedTrades = formatNumber(item.trade_count_observed || 0, 0);
   const requiredTrades = formatNumber(item.trade_count_required || 0, 0);
+  const daysRemaining = formatNumber(item.days_remaining || 0, 0);
+  const tradesRemaining = formatNumber(item.trades_remaining || 0, 0);
+  const verdict = item.complete
+    ? "fully assessed"
+    : `not enough evidence${daysRemaining > 0 || tradesRemaining > 0 ? ` · needs ${daysRemaining}d / ${tradesRemaining} trades` : ""}`;
   return `
     <div class="cell-stack">
       <span class="${pillClass(status)}">${escapeHtml(`${pct}% assessed`)}</span>
+      <span class="${pillClass(item.complete ? "active" : "warning")}">${escapeHtml(verdict)}</span>
       <span class="card-subtitle">${escapeHtml(eta)}</span>
       <span class="card-subtitle">${escapeHtml(`${observedDays}/${requiredDays} days · ${observedTrades}/${requiredTrades} trades`)}</span>
     </div>
@@ -58,6 +111,7 @@ function renderKpis(snapshot) {
   const execution = snapshot.execution;
   const ideas = snapshot.ideas;
   const research = factory.research_summary || {};
+  const paperRuntime = factory.paper_runtime || {};
   const readiness = factory.readiness || {};
   const agentRuns = factory.agent_runs || [];
   const cards = [
@@ -72,14 +126,18 @@ function renderKpis(snapshot) {
       detail: `${formatNumber(research.challenge_count, 0)} challengers in rotation`,
     },
     {
-      label: "Execution Runners",
+      label: "Paper Runtime",
       value: formatNumber(execution.running_count, 0),
-      detail: `${formatNumber(execution.blocked_count, 0)} blocked or degraded · ${formatNumber(execution.placeholder_count || 0, 0)} placeholders hidden`,
+      detail: `${formatNumber(paperRuntime.running_count || 0, 0)} / ${formatNumber(paperRuntime.expected_count || 0, 0)} expected lineages running · ${formatNumber(paperRuntime.research_only_count || 0, 0)} research-only`,
     },
     {
-      label: "Realized PnL",
-      value: formatCurrency(execution.realized_pnl_total || 0, "USD"),
-      detail: execution.note || "Summed across tracked execution portfolios",
+      label: "Best Agent P&L",
+      value: execution.best_performer
+        ? formatCurrency(execution.best_performer.realized_pnl || 0, execution.best_performer.currency || "USD")
+        : formatCurrency(0, "USD"),
+      detail: execution.best_performer
+        ? `${execution.best_performer.label} · ${formatNumber(execution.best_performer.roi_pct || 0)}% ROI`
+        : "No live paper performer yet",
     },
     {
       label: "Pending Manifests",
@@ -89,7 +147,7 @@ function renderKpis(snapshot) {
     {
       label: "Operator Reviews",
       value: formatNumber((factory.operator_signals?.escalation_candidates || []).length, 0),
-      detail: `${formatNumber((research.positive_model_count || 0), 0)} positive ROI models · ${formatNumber((research.human_action_required_count || 0), 0)} human blockers`,
+      detail: `${formatNumber((factory.operator_signals?.action_inbox || []).length, 0)} inbox · ${formatNumber((factory.operator_signals?.maintenance_queue || []).length, 0)} maintenance · ${formatNumber((factory.operator_signals?.paper_qualification_queue || []).length, 0)} paper-qualify · ${formatNumber((research.human_action_required_count || 0), 0)} human blockers`,
     },
     {
       label: "Real Agent Runs",
@@ -114,6 +172,41 @@ function renderKpis(snapshot) {
       `
     )
     .join("");
+}
+
+function renderFeedHealth(snapshot) {
+  const health = snapshot.factory.feed_health || {};
+  const container = document.getElementById("feed-health-strip");
+  const connectorTags = (health.connectors || [])
+    .slice(0, 4)
+    .map((item) => {
+      const label = item.venue || item.connector_id || "feed";
+      return `
+        <span class="feed-health-chip">
+          <span class="${pillClass(item.status || "info")}">${escapeHtml(item.status || "info")}</span>
+          <span>${escapeHtml(label)}</span>
+        </span>
+      `;
+    })
+    .join("");
+
+  const latestText = health.latest_age_seconds != null ? `Latest ${formatAgeCompact(health.latest_age_seconds)} ago` : "No recent payload";
+  container.innerHTML = `
+    <div class="feed-health-card">
+      <div class="feed-health-copy">
+        <span class="tiny-label">Data Feeds</span>
+        <div class="feed-health-row">
+          <strong>${escapeHtml(health.headline || "No data feeds configured")}</strong>
+          <span class="${pillClass(health.status || "info")}">${escapeHtml(health.status || "info")}</span>
+        </div>
+        <p>${escapeHtml(health.summary || "Connector health will appear here once feeds are wired into factory state.")}</p>
+      </div>
+      <div class="feed-health-meta">
+        <span class="card-subtitle">${escapeHtml(latestText)}</span>
+        <div class="feed-health-tags">${connectorTags || `<span class="tag">no connectors</span>`}</div>
+      </div>
+    </div>
+  `;
 }
 
 function renderAlerts(snapshot) {
@@ -175,18 +268,114 @@ function renderEscalations(snapshot) {
   );
   const positiveCards = positives.slice(0, 4).map(
     (item) => `
-      <article class="alert-card" data-severity="positive">
+      <article class="alert-card" data-severity="${escapeHtml(item.replacement_pressure ? "warning" : item.independent_live_evidence ? "positive" : "warning")}">
         <header class="panel-header">
           <h3>${escapeHtml(item.family_id)} · positive ROI</h3>
-          <span class="${pillClass("positive")}">green</span>
+          <span class="${pillClass(item.replacement_pressure ? "warning" : item.independent_live_evidence ? "positive" : "warning")}">${escapeHtml(item.replacement_pressure ? "watch" : item.independent_live_evidence ? "green" : "fragile")}</span>
         </header>
         <p>${escapeHtml(item.lineage_id)} is at ${formatNumber(item.roi_pct)}% ROI across ${escapeHtml(item.trade_count)} trades.</p>
         <p class="card-subtitle">Stage ${escapeHtml(item.current_stage)} · rank #${escapeHtml(item.curated_family_rank || "n/a")}${item.shared_lineage_count > 1 ? ` · shared by ${escapeHtml(item.shared_lineage_count)} lineages via ${escapeHtml(item.curated_target_portfolio_id || "shared portfolio")}` : ""}</p>
+        <p class="card-subtitle">${escapeHtml(item.independent_live_evidence ? "independent live paper evidence" : "shared or incomplete live evidence")} ${item.replacement_pressure ? `· replacement pressure (${item.replacement_pressure_reason || "active"})` : ""}</p>
         ${renderAssessment(item.assessment)}
       </article>
     `
   );
   container.innerHTML = humanCards.concat(escalationCards, positiveCards).join("");
+}
+
+function renderOperatorInbox(snapshot) {
+  const inbox = (snapshot.factory.operator_signals || {}).action_inbox || [];
+  const container = document.getElementById("operator-inbox-list");
+  if (!inbox.length) {
+    container.innerHTML = `<article class="queue-item"><header class="panel-header"><h3>No pending operator actions</h3><span class="${pillClass("active")}">clear</span></header><p>The factory does not currently need a human decision for real-trading review or human-only blockers.</p></article>`;
+    return;
+  }
+  container.innerHTML = inbox
+    .slice(0, 12)
+    .map(
+      (item) => `
+        <article class="queue-item">
+          <header class="panel-header">
+            <h3>${escapeHtml(item.family_id || "unknown_family")} · ${escapeHtml(item.signal_type || "operator_action")}</h3>
+            <span class="${pillClass(item.signal_type === "human_action_required" ? "warning" : "positive")}">${escapeHtml(item.requested_action || "review")}</span>
+          </header>
+          <p>${escapeHtml(item.summary || "Operator review required.")}</p>
+          <p class="card-subtitle">${escapeHtml(item.lineage_id || "family-level")} · status ${escapeHtml(item.status || "open")}</p>
+          <div class="tag-row">
+            ${(item.available_decisions || []).map((decision) => `<span class="tag">${escapeHtml(decision)}</span>`).join("")}
+          </div>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderMaintenanceQueue(snapshot) {
+  const queue = (snapshot.factory.operator_signals || {}).maintenance_queue || [];
+  const recentRuns = (snapshot.factory.agent_runs || []).filter((row) => row.task_type === "maintenance_resolution_review");
+  const container = document.getElementById("maintenance-queue-list");
+  if (!queue.length) {
+    container.innerHTML = `<article class="queue-item"><header class="panel-header"><h3>No pending maintenance pressure</h3><span class="${pillClass("active")}">clear</span></header><p>The factory has no queued replace, retrain, retire, or isolated-lane actions right now.</p></article>`;
+    return;
+  }
+  container.innerHTML = queue
+    .slice(0, 12)
+    .map((item) => {
+      const recentRun = recentRuns.find(
+        (row) =>
+          row.lineage_id === item.lineage_id &&
+          row.family_id === item.family_id
+      );
+      return `
+        <article class="queue-item">
+          <header class="panel-header">
+            <h3>${escapeHtml(item.family_id)} · ${escapeHtml(item.action || "maintain")}</h3>
+            <span class="${pillClass(item.execution_health_status || "warning")}">${escapeHtml(item.execution_health_status || "queued")}</span>
+          </header>
+          <p>${escapeHtml(item.reason || "Maintenance action queued.")}</p>
+          <p class="card-subtitle">${escapeHtml(item.lineage_id || "family-level")} · ${escapeHtml(item.current_stage || "n/a")} · ${escapeHtml(item.iteration_status || "n/a")}</p>
+          <div class="metric-row"><span class="metric-label">ROI / Trades</span><strong>${formatNumber(item.roi_pct || 0)}% · ${escapeHtml(item.trade_count || 0)}</strong></div>
+          <div class="metric-row"><span class="metric-label">Assessment</span><strong>${formatNumber(((item.assessment || {}).completion_pct) || 0, 0)}% · ${escapeHtml(((item.assessment || {}).eta) || "n/a")}</strong></div>
+          ${item.last_maintenance_review_at ? `<p class="card-subtitle">maintenance review ${escapeHtml(item.last_maintenance_review_status || "done")} · ${escapeHtml(item.last_maintenance_review_action || "hold")} · ${escapeHtml(item.last_maintenance_review_summary || "")}</p>` : recentRun ? `<p class="card-subtitle">live maintenance review · ${escapeHtml(recentRun.provider || "codex")} ${escapeHtml(recentRun.model || "")} · ${escapeHtml(recentRun.headline || "")}</p>` : ""}
+          <div class="tag-row">
+            <span class="tag">priority ${escapeHtml(item.priority || 0)}</span>
+            <span class="tag">${escapeHtml(item.source || "factory")}</span>
+            ${item.requires_human ? `<span class="tag">human</span>` : ""}
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderPaperQualificationQueue(snapshot) {
+  const queue = (snapshot.factory.operator_signals || {}).paper_qualification_queue || [];
+  const container = document.getElementById("paper-qualification-list");
+  if (!queue.length) {
+    container.innerHTML = `<article class="queue-item"><header class="panel-header"><h3>No pending paper qualification</h3><span class="${pillClass("active")}">clear</span></header><p>No promising challenger is currently waiting for a first live paper read.</p></article>`;
+    return;
+  }
+  container.innerHTML = queue
+    .slice(0, 12)
+    .map(
+      (item) => `
+        <article class="queue-item">
+          <header class="panel-header">
+            <h3>${escapeHtml(item.family_id)} · first paper read</h3>
+            <span class="${pillClass(item.execution_health_status || "warning")}">${escapeHtml(item.execution_health_status || "queued")}</span>
+          </header>
+          <p>${escapeHtml(item.reason || "Promising challenger queued for live paper validation.")}</p>
+          <p class="card-subtitle">${escapeHtml(item.lineage_id || "unknown lineage")} · ${escapeHtml(item.current_stage || "n/a")} · ${escapeHtml(item.iteration_status || "n/a")}</p>
+          <div class="metric-row"><span class="metric-label">Research ROI / Trades</span><strong>${formatNumber(item.research_roi_pct || 0)}% · ${escapeHtml(item.research_trade_count || 0)}</strong></div>
+          <div class="metric-row"><span class="metric-label">Live Paper</span><strong>${escapeHtml(item.live_trade_count || 0)} trades · ${escapeHtml(((item.first_assessment || {}).eta) || "first read pending")}</strong></div>
+          <div class="tag-row">
+            <span class="tag">${escapeHtml(item.source || "factory")}</span>
+            <span class="tag">${escapeHtml(item.lane_reason || "qualification")}</span>
+          </div>
+        </article>
+      `
+    )
+    .join("");
 }
 
 function renderDesks(snapshot) {
@@ -198,21 +387,21 @@ function renderDesks(snapshot) {
           <header>
             <div>
               <h3>${escapeHtml(desk.label)}</h3>
-              <p class="card-subtitle">${escapeHtml(desk.active_count)} active of ${escapeHtml(desk.member_count)} operators</p>
+              <p class="card-subtitle">${escapeHtml(desk.active_count)} ${escapeHtml(desk.desk_kind === "algorithmic_control" ? "model-active algorithms" : "model-active agents")} · ${escapeHtml(desk.coverage_count || 0)} coverage-only of ${escapeHtml(desk.member_count)} ${escapeHtml(desk.desk_kind === "algorithmic_control" ? "systems" : "operators")}</p>
             </div>
-            <span class="${pillClass(desk.active_count ? "active" : "standby")}">${escapeHtml(desk.active_count ? "active" : "standby")}</span>
+            <span class="${pillClass(desk.status || "standby")}">${escapeHtml((desk.status || "standby").replaceAll("_", "-"))}</span>
           </header>
+          <p class="card-subtitle">${escapeHtml(desk.desk_kind === "algorithmic_control" ? "Deterministic control logic. These are algorithms, not autonomous model-backed agents." : "Model-backed research and review workers.")}</p>
           <div class="desk-members">
             ${(desk.members || [])
               .map(
                 (member) => `
                   <article class="desk-member">
-                    <strong>${escapeHtml(member.name)}</strong>
+                    <strong>${escapeHtml(member.display_name || member.name)}</strong>
                     <p>${escapeHtml(member.lineage_count)} attached lineages</p>
-                    <p>${escapeHtml(member.real_invocation_count || 0)} real model runs</p>
+                    <p>${escapeHtml(member.real_invocation_count || 0)} ${escapeHtml(desk.desk_kind === "algorithmic_control" ? "real model handoffs" : "real model runs")}</p>
                     <div class="tag-row">
-                      <span class="${pillClass(member.status)}">${escapeHtml(member.status)}</span>
-                      <span class="${pillClass((member.real_invocation_count || 0) > 0 ? "active" : "info")}">${escapeHtml((member.real_invocation_count || 0) > 0 ? "model-active" : "role-only")}</span>
+                      <span class="${pillClass(member.status)}">${escapeHtml(String(member.status || "standby").replaceAll("_", "-"))}</span>
                       ${(member.stages || []).slice(0, 2).map((stage) => `<span class="tag">${escapeHtml(stage)}</span>`).join("")}
                     </div>
                   </article>
@@ -243,6 +432,9 @@ function renderFamilies(snapshot) {
           <div class="metric-row"><span class="metric-label">Champion ROI</span><strong>${formatNumber(family.champion_roi_pct)}%</strong></div>
           <div class="metric-row"><span class="metric-label">Champion Fitness</span><strong>${formatNumber(family.champion_fitness)}</strong></div>
           <div class="metric-row"><span class="metric-label">Active / Retired</span><strong>${escapeHtml(family.active_lineage_count)} / ${escapeHtml(family.retired_lineage_count)}</strong></div>
+          <div class="metric-row"><span class="metric-label">Paper Runtime</span><strong>${escapeHtml(family.paper_runtime_running_count || 0)} / ${escapeHtml(family.paper_runtime_expected_count || 0)} running</strong></div>
+          ${(family.paper_runtime_statuses || []).length ? `<p class="card-subtitle">${escapeHtml((family.paper_runtime_statuses || []).join(" · "))}</p>` : ""}
+          ${renderFamilyAutopilot(family)}
           ${renderFamilyLeagueHint(family)}
           <div class="tag-row">
             ${(family.target_portfolios || []).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}
@@ -261,6 +453,28 @@ function renderFamilyLeagueHint(family) {
       <span class="metric-label">Curated Leader</span>
       <strong>#${escapeHtml(leader.family_rank)} · ${formatNumber(leader.ranking_score)}</strong>
     </div>
+  `;
+}
+
+function renderFamilyAutopilot(family) {
+  if (!family.weak_family) return "";
+  const actions = (family.autopilot_actions || []).slice(0, 3).join(", ") || "monitor";
+  const winRatePct = formatNumber((family.autopilot_live_win_rate || 0) * 100);
+  const detail = family.autopilot_reason || `${actions} in progress`;
+  return `
+    <div class="metric-row">
+      <span class="metric-label">Factory Autopilot</span>
+      <strong>${escapeHtml(family.autopilot_status || "autopilot_active")}</strong>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Autopilot Actions</span>
+      <strong>${escapeHtml(actions)}</strong>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Live Read</span>
+      <strong>${formatNumber(family.autopilot_live_roi_pct)}% ROI · ${winRatePct}% win · ${escapeHtml(family.autopilot_trade_count)} trades</strong>
+    </div>
+    <p class="card-subtitle">${escapeHtml(detail)}</p>
   `;
 }
 
@@ -329,6 +543,11 @@ function renderPortfolios(snapshot) {
     .map((portfolio) => {
       const status = portfolio.display_status || (portfolio.error ? "blocked" : (portfolio.status || "unknown"));
       const eventHint = (portfolio.recent_events || []).slice(-1)[0];
+      const trainability = portfolio.trainability || {};
+      const training = portfolio.training_progress || {};
+      const trainabilityLabel = trainability.status || "n/a";
+      const trainingDetail = `${formatNumber(training.labeled_examples || 0, 0)} labeled · ${formatNumber(training.pending_labels || 0, 0)} pending`;
+      const modelDetail = `${formatNumber(trainability.trained_model_count || 0, 0)}/${formatNumber(trainability.required_model_count || 0, 0)} trained`;
       return `
         <article class="portfolio-card">
           <header>
@@ -343,13 +562,18 @@ function renderPortfolios(snapshot) {
           <div class="metric-row"><span class="metric-label">Starting Bankroll</span><strong>${formatCurrency(portfolio.starting_balance, portfolio.currency)}</strong></div>
           <div class="metric-row"><span class="metric-label">Realized PnL</span><strong>${formatCurrency(portfolio.realized_pnl, portfolio.currency)}</strong></div>
           <div class="metric-row"><span class="metric-label">ROI / Drawdown</span><strong>${formatNumber(portfolio.roi_pct)}% / ${formatNumber(portfolio.drawdown_pct)}%</strong></div>
+          <div class="metric-row"><span class="metric-label">Win Rate</span><strong>${formatNumber((portfolio.win_rate || 0) * 100)}% · ${escapeHtml(portfolio.wins || 0)}W / ${escapeHtml(portfolio.losses || 0)}L</strong></div>
           <div class="metric-row"><span class="metric-label">Heartbeat Age</span><strong>${portfolio.heartbeat_age_seconds == null ? "n/a" : `${formatNumber(portfolio.heartbeat_age_seconds, 1)}s`}</strong></div>
           <div class="metric-row"><span class="metric-label">Candidate Contexts</span><strong>${escapeHtml(portfolio.candidate_context_count)}</strong></div>
           <div class="metric-row"><span class="metric-label">Readiness</span><strong>${escapeHtml(portfolio.readiness_status || "n/a")} ${portfolio.readiness_score_pct ? `(${formatNumber(portfolio.readiness_score_pct, 0)}%)` : ""}</strong></div>
+          <div class="metric-row"><span class="metric-label">Trainability</span><strong>${escapeHtml(trainabilityLabel)} · ${escapeHtml(modelDetail)}</strong></div>
+          <div class="metric-row"><span class="metric-label">Training Flow</span><strong>${escapeHtml(trainingDetail)}</strong></div>
           <div class="metric-row"><span class="metric-label">Assessment</span><strong>${formatNumber((portfolio.assessment || {}).completion_pct || 0, 0)}% · ${escapeHtml((portfolio.assessment || {}).eta || "n/a")}</strong></div>
+          <div class="metric-row"><span class="metric-label">Evidence</span><strong>${escapeHtml((portfolio.assessment || {}).complete ? "fully assessed" : "not enough evidence yet")}</strong></div>
           ${portfolio.error ? `<p class="card-subtitle">${escapeHtml(portfolio.error)}</p>` : ""}
           ${(portfolio.execution_recommendation_context || []).length ? `<p class="card-subtitle">${escapeHtml(portfolio.execution_recommendation_context[0])}</p>` : ""}
-          <p class="card-subtitle">${escapeHtml(`${formatNumber((portfolio.assessment || {}).paper_days_observed || 0, 0)}/${formatNumber((portfolio.assessment || {}).paper_days_required || 0, 0)} days · ${formatNumber((portfolio.assessment || {}).trade_count_observed || 0, 0)}/${formatNumber((portfolio.assessment || {}).trade_count_required || 0, 0)} trades`)}</p>
+          ${(trainability.blocked_models || []).length ? `<p class="card-subtitle">blocked models: ${escapeHtml((trainability.blocked_models || []).join(", "))}</p>` : ""}
+          <p class="card-subtitle">${escapeHtml(`${formatNumber((portfolio.assessment || {}).paper_days_observed || 0, 0)}/${formatNumber((portfolio.assessment || {}).paper_days_required || 0, 0)} days · ${formatNumber((portfolio.assessment || {}).trade_count_observed || 0, 0)}/${formatNumber((portfolio.assessment || {}).trade_count_required || 0, 0)} trades · remaining ${formatNumber((portfolio.assessment || {}).days_remaining || 0, 0)}d / ${formatNumber((portfolio.assessment || {}).trades_remaining || 0, 0)} trades`)}</p>
           ${eventHint ? `<div class="tag-row"><span class="tag">${escapeHtml(eventHint.kind || "event")}</span></div>` : ""}
           <div class="tag-row">
             ${(portfolio.execution_issue_codes || []).slice(0, 3).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}
@@ -435,6 +659,7 @@ function renderLineageAgent(row) {
 function renderLineageExecution(row) {
   const signalTag = row.execution_has_signal ? "signal" : "quiet";
   const health = row.execution_health_status || "unknown";
+  const runtimeIntent = row.paper_runtime_status || "research_only";
   const issue = row.latest_execution_refresh_selected || row.latest_retrain_action || (row.execution_issue_codes || [])[0];
   const refreshTag = row.latest_execution_refresh_status || "n/a";
   const scorecard = row.promotion_scorecard || {};
@@ -458,6 +683,7 @@ function renderLineageExecution(row) {
     <span class="${pillClass(health)}">${escapeHtml(health)}</span>
     <div class="cell-stack">
       <span class="${pillClass(row.execution_has_signal ? "active" : "standby")}">${escapeHtml(signalTag)}</span>
+      <span class="card-subtitle">paper intent: ${escapeHtml(runtimeIntent)}</span>
       <span class="card-subtitle">${escapeHtml(issue || "no acute issue")}</span>
       <span class="card-subtitle">${escapeHtml(`${formatNumber(assessment.completion_pct || 0, 0)}% assessed · ${assessment.eta || "n/a"}`)}</span>
       <span class="card-subtitle">refresh: ${escapeHtml(refreshTag)}</span>
@@ -519,7 +745,7 @@ function renderIdeas(snapshot) {
   }
   const items = ideas.items || [];
   const summary = ideas.status_counts || {};
-  const cards = items.slice(0, 10).map((item) => `
+  const cards = items.slice(0, 12).map((item) => `
     <article class="alert-card" data-severity="${escapeHtml(item.status || "info")}">
       <header>
         <h3>${escapeHtml(item.title || item.idea_id)}</h3>
@@ -533,6 +759,7 @@ function renderIdeas(snapshot) {
     <div class="tag-row">
       <span class="tag">new ${escapeHtml(summary.new || 0)}</span>
       <span class="tag">adapted ${escapeHtml(summary.adapted || 0)}</span>
+      <span class="tag">incubated ${escapeHtml(summary.incubated || 0)}</span>
       <span class="tag">tested ${escapeHtml(summary.tested || 0)}</span>
       <span class="tag">promoted ${escapeHtml(summary.promoted || 0)}</span>
       <span class="tag">rejected ${escapeHtml(summary.rejected || 0)}</span>
@@ -541,14 +768,281 @@ function renderIdeas(snapshot) {
   `;
 }
 
+function renderViewTabs() {
+  document.querySelectorAll("[data-tab-target]").forEach((button) => {
+    const isActive = button.dataset.tabTarget === uiState.activeTab;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
+  document.querySelectorAll("[data-tab-panel]").forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset.tabPanel === uiState.activeTab);
+  });
+}
+
+function ensureLineageSelection(atlas) {
+  const families = atlas.families || [];
+  if (!families.length) {
+    uiState.selectedFamilyId = null;
+    uiState.selectedLineageId = null;
+    return null;
+  }
+  let family = families.find((item) => item.family_id === uiState.selectedFamilyId) || families[0];
+  const nodes = family.nodes || [];
+  if (!nodes.length) {
+    uiState.selectedFamilyId = family.family_id;
+    uiState.selectedLineageId = null;
+    return family;
+  }
+  const selectedNode = nodes.find((item) => item.lineage_id === uiState.selectedLineageId);
+  if (!selectedNode) {
+    uiState.selectedLineageId = family.champion_lineage_id || family.root_lineage_ids?.[0] || nodes[0].lineage_id;
+  }
+  uiState.selectedFamilyId = family.family_id;
+  family = families.find((item) => item.family_id === uiState.selectedFamilyId) || family;
+  return family;
+}
+
+function lineagePerformanceTone(node) {
+  const roi = Number(node?.monthly_roi_pct ?? 0);
+  if (roi > 0.25) return "positive";
+  if (roi < -0.25) return "negative";
+  return "flat";
+}
+
+function lineageParamTags(node) {
+  return [
+    node.selected_model_class ? `model ${node.selected_model_class}` : "",
+    node.selected_horizon_seconds ? `${formatNumber(node.selected_horizon_seconds, 0)}s` : "",
+    node.selected_feature_subset ? node.selected_feature_subset : "",
+    node.selected_min_edge != null ? `edge ${formatNumber(node.selected_min_edge, 3)}` : "",
+    node.selected_stake_fraction != null ? `stake ${formatNumber(node.selected_stake_fraction, 3)}` : "",
+  ].filter(Boolean);
+}
+
+function renderAtlasHero(snapshot) {
+  const summary = snapshot.factory.lineage_atlas?.summary || {};
+  const cards = [
+    {
+      label: "Tracked Families",
+      value: formatNumber(summary.family_count || 0, 0),
+      detail: `${formatNumber(summary.node_count || 0, 0)} total lineage nodes`,
+    },
+    {
+      label: "Root Branches",
+      value: formatNumber(summary.root_count || 0, 0),
+      detail: `${formatNumber(summary.max_depth || 0, 0)} maximum generation depth`,
+    },
+    {
+      label: "Mutation Paths",
+      value: formatNumber(summary.mutation_count || 0, 0),
+      detail: `${formatNumber(summary.new_model_count || 0, 0)} new-model forks`,
+    },
+    {
+      label: "Positive ROI Nodes",
+      value: formatNumber(summary.positive_roi_count || 0, 0),
+      detail: "Nodes currently above zero monthly ROI",
+    },
+  ];
+  document.getElementById("lineage-atlas-hero").innerHTML = cards
+    .map(
+      (card) => `
+        <article class="atlas-stat">
+          <span class="tiny-label">${escapeHtml(card.label)}</span>
+          <strong>${escapeHtml(card.value)}</strong>
+          <p>${escapeHtml(card.detail)}</p>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderFamilyTabs(atlas, selectedFamily) {
+  const families = atlas.families || [];
+  const container = document.getElementById("lineage-family-tabs");
+  container.innerHTML = families
+    .map(
+      (family) => `
+        <button
+          class="family-chip ${family.family_id === selectedFamily?.family_id ? "is-active" : ""}"
+          type="button"
+          data-family-select="${escapeHtml(family.family_id)}"
+        >
+          <span class="tiny-label">${escapeHtml(family.family_id)}</span>
+          <strong>${escapeHtml(family.label)}</strong>
+          <span class="card-subtitle">${escapeHtml(`${formatNumber(family.active_lineage_count || 0, 0)} active · depth ${formatNumber(family.max_depth || 0, 0)}`)}</span>
+        </button>
+      `
+    )
+    .join("");
+}
+
+function renderTreeBranch(lineageId, nodesById, selectedLineageId) {
+  const node = nodesById[lineageId];
+  if (!node) return "";
+  const children = (node.child_lineage_ids || []).filter((childId) => nodesById[childId]);
+  const tags = lineageParamTags(node).slice(0, 3);
+  return `
+    <li>
+      <button
+        class="tree-node-card ${lineageId === selectedLineageId ? "is-selected" : ""}"
+        type="button"
+        data-lineage-select="${escapeHtml(lineageId)}"
+        data-performance="${escapeHtml(lineagePerformanceTone(node))}"
+      >
+        <div class="tree-node-header">
+          <span class="tiny-label">${escapeHtml(node.short_name || lineageId)}</span>
+          <span class="${pillClass(node.current_stage || "info")}">${escapeHtml(node.current_stage || "n/a")}</span>
+        </div>
+        <strong>${escapeHtml(node.display_name || node.short_name || lineageId)}</strong>
+        <p class="card-subtitle">${escapeHtml(formatDate(node.created_at))} · ${escapeHtml(node.creation_kind || node.role || "lineage")}</p>
+        <div class="tree-node-metrics">
+          <span>ROI ${escapeHtml(`${formatNumber(node.monthly_roi_pct)}%`)}</span>
+          <span>Fit ${escapeHtml(formatNumber(node.fitness_score))}</span>
+          <span>${escapeHtml(`${formatNumber(node.trade_count || 0, 0)} trades`)}</span>
+          <span>${escapeHtml(`${formatNumber(node.paper_days || 0, 0)} days`)}</span>
+        </div>
+        <div class="tree-node-footer">
+          <span class="${pillClass(node.execution_health_status || "info")}">${escapeHtml(node.execution_health_status || "unknown")}</span>
+          <div class="tag-row">
+            ${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
+          </div>
+        </div>
+      </button>
+      ${children.length ? `<ul>${children.map((childId) => renderTreeBranch(childId, nodesById, selectedLineageId)).join("")}</ul>` : ""}
+    </li>
+  `;
+}
+
+function renderLineageTree(selectedFamily) {
+  const container = document.getElementById("lineage-tree-shell");
+  if (!selectedFamily || !(selectedFamily.nodes || []).length) {
+    container.innerHTML = `<div class="lineage-tree-empty">No lineage history available for this family yet.</div>`;
+    return;
+  }
+  const nodesById = Object.fromEntries((selectedFamily.nodes || []).map((node) => [node.lineage_id, node]));
+  const roots = (selectedFamily.root_lineage_ids || []).filter((lineageId) => nodesById[lineageId]);
+  container.innerHTML = `
+    <ul class="lineage-tree">
+      ${roots.map((lineageId) => renderTreeBranch(lineageId, nodesById, uiState.selectedLineageId)).join("")}
+    </ul>
+  `;
+}
+
+function renderLineageInspector(selectedFamily) {
+  const container = document.getElementById("lineage-inspector");
+  if (!selectedFamily || !(selectedFamily.nodes || []).length) {
+    container.innerHTML = `<div class="lineage-tree-empty">Pick a family to inspect its active and historical models.</div>`;
+    return;
+  }
+  const nodesById = Object.fromEntries((selectedFamily.nodes || []).map((node) => [node.lineage_id, node]));
+  const node = nodesById[uiState.selectedLineageId] || selectedFamily.nodes[0];
+  if (!node) {
+    container.innerHTML = `<div class="lineage-tree-empty">No lineage selected.</div>`;
+    return;
+  }
+  const parent = node.parent_lineage_id ? nodesById[node.parent_lineage_id] : null;
+  const children = (node.child_lineage_ids || []).map((lineageId) => nodesById[lineageId]).filter(Boolean);
+  const paramTags = lineageParamTags(node);
+  container.innerHTML = `
+    <div class="inspector-header">
+      <span class="tiny-label">${escapeHtml(selectedFamily.label)}</span>
+      <strong>${escapeHtml(node.display_name || node.short_name || node.lineage_id)}</strong>
+      <p class="card-subtitle">${escapeHtml(node.lineage_id)}</p>
+      <div class="tag-row">
+        <span class="${pillClass(node.current_stage || "info")}">${escapeHtml(node.current_stage || "n/a")}</span>
+        <span class="${pillClass(node.execution_health_status || "info")}">${escapeHtml(node.execution_health_status || "unknown")}</span>
+        ${node.creation_kind ? `<span class="tag">${escapeHtml(node.creation_kind)}</span>` : ""}
+        ${node.iteration_status ? `<span class="tag">${escapeHtml(node.iteration_status)}</span>` : ""}
+      </div>
+    </div>
+    <div class="inspector-grid">
+      <section class="inspector-card">
+        <h3>Performance</h3>
+        <div class="inspector-row"><span class="metric-label">Monthly ROI</span><strong>${escapeHtml(`${formatNumber(node.monthly_roi_pct)}%`)}</strong></div>
+        <div class="inspector-row"><span class="metric-label">Fitness</span><strong>${escapeHtml(formatNumber(node.fitness_score))}</strong></div>
+        <div class="inspector-row"><span class="metric-label">Paper Window</span><strong>${escapeHtml(`${formatNumber(node.paper_days || 0, 0)}d · ${formatNumber(node.trade_count || 0, 0)} trades`)}</strong></div>
+        <div class="inspector-row"><span class="metric-label">Assessment</span><strong>${escapeHtml(`${formatNumber((node.assessment || {}).completion_pct || 0, 0)}% · ${(node.assessment || {}).eta || "n/a"}`)}</strong></div>
+      </section>
+      <section class="inspector-card">
+        <h3>Parameters</h3>
+        <div class="tag-row">
+          ${paramTags.length ? paramTags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("") : `<span class="tag">No compact parameter bundle</span>`}
+        </div>
+        ${node.target_portfolios?.length ? `<p class="card-subtitle">${escapeHtml(node.target_portfolios.join(", "))}</p>` : ""}
+      </section>
+      <section class="inspector-card">
+        <h3>Lineage Links</h3>
+        <div class="inspector-row"><span class="metric-label">Created</span><strong>${escapeHtml(formatDateTime(node.created_at))}</strong></div>
+        <div class="inspector-row"><span class="metric-label">Updated</span><strong>${escapeHtml(formatDateTime(node.updated_at))}</strong></div>
+        <div class="inspector-row"><span class="metric-label">Parent</span><strong>${parent ? `<button class="lineage-link" type="button" data-lineage-select="${escapeHtml(parent.lineage_id)}">${escapeHtml(parent.short_name || parent.lineage_id)}</button>` : "root"}</strong></div>
+        <div class="inspector-row"><span class="metric-label">Children</span><strong>${children.length ? children.map((child) => `<button class="lineage-link" type="button" data-lineage-select="${escapeHtml(child.lineage_id)}">${escapeHtml(child.short_name || child.lineage_id)}</button>`).join(" ") : "none"}</strong></div>
+      </section>
+      <section class="inspector-card">
+        <h3>Agent Trail</h3>
+        <div class="inspector-row"><span class="metric-label">Lead role</span><strong>${escapeHtml(node.lead_agent_role || "n/a")}</strong></div>
+        <div class="inspector-row"><span class="metric-label">Latest agent</span><strong>${escapeHtml(node.latest_agent_provider ? `${node.latest_agent_provider} / ${node.latest_agent_model}` : "n/a")}</strong></div>
+        <div class="inspector-row"><span class="metric-label">Proposal seed</span><strong>${escapeHtml(node.proposal_provider ? `${node.proposal_provider} / ${node.proposal_model}` : "n/a")}</strong></div>
+        ${node.source_idea_id ? `<div class="inspector-row"><span class="metric-label">Idea source</span><strong>${escapeHtml(node.source_idea_id)}</strong></div>` : ""}
+        ${node.latest_artifact_package ? `<div class="inspector-row"><span class="metric-label">Artifact</span><strong>${escapeHtml(basenamePath(node.latest_artifact_package))}</strong></div>` : ""}
+      </section>
+    </div>
+  `;
+}
+
+function renderLineageLedger(selectedFamily) {
+  const container = document.getElementById("lineage-ledger");
+  if (!selectedFamily || !(selectedFamily.history || []).length) {
+    container.innerHTML = `<div class="lineage-tree-empty">No chronology available yet.</div>`;
+    return;
+  }
+  container.innerHTML = (selectedFamily.history || [])
+    .map((node) => {
+      const tags = lineageParamTags(node).slice(0, 4);
+      const parentText = node.parent_lineage_id ? `from ${node.parent_lineage_id}` : "root branch";
+      return `
+        <article class="ledger-item">
+          <header>
+            <div>
+              <span class="tiny-label">${escapeHtml(formatDateTime(node.created_at))}</span>
+              <strong>${escapeHtml(node.display_name || node.short_name || node.lineage_id)}</strong>
+            </div>
+            <button class="lineage-link" type="button" data-lineage-select="${escapeHtml(node.lineage_id)}">${escapeHtml(node.short_name || node.lineage_id)}</button>
+          </header>
+          <p>${escapeHtml(parentText)} · ${escapeHtml(node.current_stage || "n/a")} · ROI ${escapeHtml(`${formatNumber(node.monthly_roi_pct)}%`)} · fitness ${escapeHtml(formatNumber(node.fitness_score))}</p>
+          <div class="tag-row">
+            ${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
+            ${node.execution_issue_codes?.slice(0, 2).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("") || ""}
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderLineageAtlas(snapshot) {
+  const atlas = snapshot.factory.lineage_atlas || { summary: {}, families: [] };
+  renderAtlasHero(snapshot);
+  const selectedFamily = ensureLineageSelection(atlas);
+  document.getElementById("lineage-family-tag").textContent = selectedFamily?.label || "Family View";
+  renderFamilyTabs(atlas, selectedFamily);
+  renderLineageTree(selectedFamily);
+  renderLineageInspector(selectedFamily);
+  renderLineageLedger(selectedFamily);
+}
+
 function renderFrame(snapshot) {
+  latestSnapshot = snapshot;
   document.getElementById("factory-mode").textContent = snapshot.factory.mode || "unknown";
   document.getElementById("snapshot-time").textContent = new Date(snapshot.generated_at).toLocaleTimeString();
   document.getElementById("factory-status-tag").className = pillClass(snapshot.factory.readiness?.status || "info");
   document.getElementById("factory-status-tag").textContent = snapshot.factory.readiness?.status || "unknown";
+  renderFeedHealth(snapshot);
   renderKpis(snapshot);
   renderAlerts(snapshot);
   renderEscalations(snapshot);
+  renderOperatorInbox(snapshot);
+  renderMaintenanceQueue(snapshot);
+  renderPaperQualificationQueue(snapshot);
   renderDesks(snapshot);
   renderFamilies(snapshot);
   renderModelLeague(snapshot);
@@ -558,6 +1052,8 @@ function renderFrame(snapshot) {
   renderLineages(snapshot);
   renderJournal(snapshot);
   renderIdeas(snapshot);
+  renderLineageAtlas(snapshot);
+  renderViewTabs();
 }
 
 async function loadSnapshot() {
@@ -579,6 +1075,27 @@ async function refresh() {
     `;
   }
 }
+
+document.addEventListener("click", (event) => {
+  const tabButton = event.target.closest("[data-tab-target]");
+  if (tabButton) {
+    uiState.activeTab = tabButton.dataset.tabTarget || "overview";
+    renderViewTabs();
+    return;
+  }
+  const familyButton = event.target.closest("[data-family-select]");
+  if (familyButton && latestSnapshot) {
+    uiState.selectedFamilyId = familyButton.dataset.familySelect || null;
+    uiState.selectedLineageId = null;
+    renderFrame(latestSnapshot);
+    return;
+  }
+  const lineageButton = event.target.closest("[data-lineage-select]");
+  if (lineageButton && latestSnapshot) {
+    uiState.selectedLineageId = lineageButton.dataset.lineageSelect || null;
+    renderFrame(latestSnapshot);
+  }
+});
 
 refresh();
 setInterval(refresh, REFRESH_MS);

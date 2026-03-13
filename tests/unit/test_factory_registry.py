@@ -219,3 +219,6 @@ def test_registry_opens_and_resolves_operator_actions(tmp_path):
     assert resolved.decision == "instruct"
     assert resolved.resolved_by == "ben"
     assert resolved.instruction
+    latest = registry.latest_operator_action("lineage-a", status="resolved")
+    assert latest is not None
+    assert latest.action_id == opened.action_id

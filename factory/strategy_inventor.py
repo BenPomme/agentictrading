@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+import hashlib
+import re
 from typing import Any, Dict, List, Sequence
 
 from factory.contracts import FactoryFamily, LearningMemoryEntry, MutationBounds, ResearchHypothesis, StrategyGenome
@@ -36,6 +38,24 @@ class ScientificAgentProposal:
     origin: str = "scientific_agent_collective"
     agent_notes: List[str] = field(default_factory=list)
     agent_metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScientificFamilyProposal:
+    proposal_id: str
+    family_id: str
+    label: str
+    thesis: str
+    explainer: str
+    target_venues: List[str]
+    primary_connector_ids: List[str]
+    target_portfolios: List[str]
+    scientific_domains: List[str]
+    lead_agent_role: str
+    collaborating_agent_roles: List[str]
+    source_idea_id: str | None = None
+    origin: str = "incubated_family"
+    incubation_notes: List[str] = field(default_factory=list)
 
 
 _DOMAIN_PROFILES: Dict[str, _DomainAgentProfile] = {
@@ -225,6 +245,53 @@ _FAMILY_TUNING: Dict[str, Dict[str, Any]] = {
 
 
 class ScientificStrategyInventor:
+    def generate_family_proposal(
+        self,
+        *,
+        idea: Dict[str, Any],
+        existing_family_ids: Sequence[str],
+        cycle_count: int,
+        proposal_index: int,
+        research_portfolio_id: str,
+    ) -> ScientificFamilyProposal:
+        venue = self._idea_primary_venue(idea)
+        scientific_domains = self._idea_domains(idea)
+        lead_domain = scientific_domains[0]
+        lead_profile = _DOMAIN_PROFILES.get(lead_domain, _DOMAIN_PROFILES["econometrics"])
+        collaborators = [_DOMAIN_PROFILES[domain].role for domain in scientific_domains[1:] if domain in _DOMAIN_PROFILES]
+        family_id = self._family_id_for_idea(idea, venue=venue, existing_family_ids=existing_family_ids)
+        label = self._family_label_for_idea(idea, venue=venue)
+        idea_title = str(idea.get("title") or "").strip()
+        summary = str(idea.get("summary") or "").strip()
+        explainer = (
+            summary
+            or f"Incubates a new {venue.title()} family from idea intake using {lead_profile.role.lower()} guidance."
+        )
+        raw_thesis = (
+            f"Exploring a new {venue} strategy family built from the idea '{idea_title or label}', using "
+            f"{lead_profile.role.lower()} guidance to test {lead_profile.angle} in a bounded incubation lane."
+        )
+        thesis = normalize_family_thesis(raw_thesis)
+        return ScientificFamilyProposal(
+            proposal_id=f"{family_id}:family_proposal:{cycle_count}:{proposal_index}",
+            family_id=family_id,
+            label=label,
+            thesis=thesis,
+            explainer=explainer,
+            target_venues=[venue],
+            primary_connector_ids=[self._connector_for_venue(venue)],
+            target_portfolios=[str(research_portfolio_id or "research_factory")],
+            scientific_domains=scientific_domains,
+            lead_agent_role=lead_profile.role,
+            collaborating_agent_roles=collaborators,
+            source_idea_id=str(idea.get("idea_id") or "") or None,
+            incubation_notes=[
+                f"source=idea_intake",
+                f"idea_title={idea_title or 'untitled'}",
+                f"venue={venue}",
+            ],
+        )
+
     def generate_proposal(
         self,
         *,
@@ -442,6 +509,82 @@ class ScientificStrategyInventor:
         }.get(str(model_class or "logit").lower(), 0.02)
         return self._clip_range(bounds.hyperparameter_ranges.get("learning_rate"), preferred, fallback=0.02)
 
+    def _idea_primary_venue(self, idea: Dict[str, Any]) -> str:
+        tokens = " ".join(
+            [
+                str(idea.get("title") or ""),
+                str(idea.get("summary") or ""),
+                " ".join(str(item) for item in (idea.get("tags") or [])),
+                " ".join(str(item) for item in (idea.get("family_candidates") or [])),
+            ]
+        ).lower()
+        if any(token in tokens for token in ["polymarket", "prediction market", "event contract"]):
+            return "polymarket"
+        if any(token in tokens for token in ["betfair", "horse racing", "football odds", "book synchronization"]):
+            return "betfair"
+        return "binance"
+
+    def _idea_domains(self, idea: Dict[str, Any]) -> List[str]:
+        tokens = " ".join(
+            [
+                str(idea.get("title") or ""),
+                str(idea.get("summary") or ""),
+                " ".join(str(item) for item in (idea.get("tags") or [])),
+            ]
+        ).lower()
+        domains: List[str] = []
+        if any(token in tokens for token in ["regime", "cascade", "phase", "liquidation"]):
+            domains.append("statistical_physics")
+        if any(token in tokens for token in ["microstructure", "depth", "order book", "queue", "lag"]):
+            domains.append("microstructure")
+        if any(token in tokens for token in ["cross venue", "cross-market", "propagation", "network"]):
+            domains.append("network_epidemiology")
+        if any(token in tokens for token in ["entropy", "information", "signal"]):
+            domains.append("information_theory")
+        if any(token in tokens for token in ["control", "policy", "adaptive", "feedback"]):
+            domains.append("control_rl")
+        if any(token in tokens for token in ["causal", "bayesian", "probability", "calibration"]):
+            domains.append("bayesian_causal")
+        if any(token in tokens for token in ["crowd", "behavior", "consensus", "game"]):
+            domains.append("game_theory_behavioral")
+        if not domains:
+            domains = ["econometrics", "microstructure", "information_theory"]
+        while len(domains) < 3:
+            for fallback in ["econometrics", "microstructure", "information_theory", "control_rl"]:
+                if fallback not in domains:
+                    domains.append(fallback)
+                if len(domains) >= 3:
+                    break
+        return domains[:3]
+
+    def _connector_for_venue(self, venue: str) -> str:
+        return {
+            "binance": "binance_core",
+            "betfair": "betfair_core",
+            "polymarket": "polymarket_core",
+        }.get(str(venue or "binance").lower(), "binance_core")
+
+    def _family_label_for_idea(self, idea: Dict[str, Any], *, venue: str) -> str:
+        title = str(idea.get("title") or "").strip()
+        stem = _compact_title_fragment(title or "Incubation")
+        venue_label = {
+            "binance": "Binance",
+            "betfair": "Betfair",
+            "polymarket": "Polymarket",
+        }.get(venue, venue.title())
+        return f"{venue_label} {stem} Incubator"
+
+    def _family_id_for_idea(self, idea: Dict[str, Any], *, venue: str, existing_family_ids: Sequence[str]) -> str:
+        title = str(idea.get("title") or "") or str(idea.get("idea_id") or "incubator")
+        base_slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+        base_slug = "_".join(base_slug.split("_")[:3]) or "incubator"
+        candidate = f"{venue}_{base_slug}"
+        existing = {str(item) for item in existing_family_ids}
+        if candidate not in existing:
+            return candidate
+        digest = hashlib.sha1(f"{title}|{idea.get('idea_id')}".encode("utf-8")).hexdigest()[:6]
+        return f"{candidate}_{digest}"
+
 
 def build_proposal_title(
     *,
@@ -492,6 +635,20 @@ def normalize_alpha_thesis(
     if proposal_kind == "new_model" and "new model" not in body.lower():
         body = f"exploring a new model that {body}".strip()
     body = body.rstrip(".")
+    if body:
+        body = body[0].lower() + body[1:]
+    return f"We believe we can create alpha by {body}."
+
+
+def normalize_family_thesis(thesis: str) -> str:
+    text = " ".join(str(thesis or "").strip().split()).rstrip(".")
+    if not text:
+        text = "exploring a new bounded strategy family with a testable alpha thesis"
+    prefix = "we believe we can create alpha by "
+    if text.lower().startswith(prefix):
+        body = text[len(prefix) :].strip()
+    else:
+        body = text
     if body:
         body = body[0].lower() + body[1:]
     return f"We believe we can create alpha by {body}."

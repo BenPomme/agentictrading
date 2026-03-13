@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-03-12T16:31:26.032041+00:00",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:1",
+  "family_mode": "funding_contrarian",
+  "trigger_health_status": "warning",
+  "trigger_issue_codes": [
+    "readiness_blocked",
+    "excessive_rejections",
+    "no_trade_syndrome",
+    "zero_simulated_fills",
+    "negative_realized_pnl",
+    "negative_paper_roi"
+  ],
+  "recommendation_context": [
+    "review filters and execution thresholds because the runner is failing to convert opportunities",
+    "improve model quality and data coverage before promoting this family",
+    "tighten entry logic and retrain for better trade selection quality"
+  ],
+  "maintenance_request": {
+    "source": "agent_review",
+    "action": "replace",
+    "reason": "Paper review outcome: blocked. Reproducible evidence is negative across both performance and operability: monthly ROI -1.5824%, failure_rate 1.0, slippage_headroom_pct -4.4345, regime_robustness 0.275, baseline_beaten_windows 0, stress_positive false, and the fallback window has no settled recovery evidence. The only target that trades (`contrarian_legacy`) still has negative realized PnL/negative paper ROI, while the hedge targets are mostly blocked by spread/basis gating with zero simulated fills. This looks worse than simple model staleness and is consistent with repeated family-level failure-rate retirements.",
+    "requires_human": false,
+    "requires_new_challenger": true
+  },
+  "retrain_triggered": true,
+  "retrain_action": "agent_requested_replace",
+  "target_objective": "reduce missed settlement windows while improving strict-gate pass rate on funding dislocations",
+  "requested_model_class": "gbdt",
+  "resolved_model_engine": "naive_contrarian_backtest",
+  "source_mode": "log_fallback",
+  "source_paths": [],
+  "dataset_rows": 0,
+  "current_parameters": {
+    "selected_model_class": "gbdt",
+    "selected_feature_subset": "regime",
+    "selected_horizon_seconds": 600,
+    "selected_min_edge": 0.05,
+    "selected_stake_fraction": 0.015,
+    "selected_learning_rate": 0.04,
+    "selected_lookback_hours": 96.0
+  }
+}

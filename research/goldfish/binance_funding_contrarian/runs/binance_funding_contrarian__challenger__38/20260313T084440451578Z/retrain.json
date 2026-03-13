@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-03-13T08:44:40.452398+00:00",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:38",
+  "family_mode": "funding_contrarian",
+  "trigger_health_status": "warning",
+  "trigger_issue_codes": [
+    "readiness_blocked",
+    "excessive_rejections",
+    "no_trade_syndrome",
+    "zero_simulated_fills",
+    "trade_stalled",
+    "stalled_model",
+    "negative_realized_pnl",
+    "negative_paper_roi"
+  ],
+  "recommendation_context": [
+    "review filters and execution thresholds because the runner is failing to convert opportunities",
+    "improve model quality and data coverage before promoting this family",
+    "trigger a maintenance cycle now: debug the runner, rework the lineage, and retire it if the stall persists after tweaks",
+    "tighten entry logic and retrain for better trade selection quality"
+  ],
+  "maintenance_request": {
+    "source": "execution_policy",
+    "action": "rework",
+    "reason": "Execution evidence says the model has stalled and needs a maintenance rework cycle now.",
+    "requires_human": false,
+    "issue_codes": [
+      "stalled_model",
+      "trade_stalled"
+    ]
+  },
+  "retrain_triggered": true,
+  "retrain_action": "agent_requested_rework",
+  "target_objective": "reduce missed settlement windows while improving strict-gate pass rate on funding dislocations",
+  "requested_model_class": "gbdt",
+  "resolved_model_engine": "naive_contrarian_backtest",
+  "source_mode": "log_fallback",
+  "source_paths": [],
+  "dataset_rows": 0,
+  "current_parameters": {
+    "selected_model_class": "gbdt",
+    "selected_feature_subset": "microstructure",
+    "selected_horizon_seconds": 600,
+    "selected_min_edge": 0.05,
+    "selected_stake_fraction": 0.015,
+    "selected_learning_rate": 0.04,
+    "selected_lookback_hours": 96.0
+  }
+}

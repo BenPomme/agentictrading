@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Any, Dict, Iterable, List
 import config
 
 
-_IDEA_START_RE = re.compile(r"^\s*(\d+)\.\s+(.+?)\s*$")
+_IDEA_START_RE = re.compile(r"^\s*(\d+)\s*[\.:]\s*(.+?)\s*$")
 
 _FAMILY_KEYWORDS = {
     "binance_cascade_regime": ["regime", "classifier", "pre-market", "volatility", "skew"],
@@ -33,6 +34,9 @@ _FAMILY_IDEA_TAG_PREFERENCES = {
 }
 
 _NOISE_LINES = {"voir plus", "clara bennett", "@codeswithclara", "14h", "·", "i need a", "i"}
+_ARCHIVED_IDEA_STATUSES = {"incubated", "tested", "promoted", "rejected"}
+_ACTIVE_STATUS_PRIORITY = {"new": 0, "adapted": 1}
+_ARCHIVED_STATUS_PRIORITY = {"incubated": 0, "tested": 1, "promoted": 2, "rejected": 3}
 
 
 def ideas_path(project_root: Path) -> Path:
@@ -58,9 +62,18 @@ def idea_scout_state_path(project_root: Path) -> Path:
     return _factory_root(project_root) / "ideas" / "scout_state.json"
 
 
+def manual_idea_watch_state_path(project_root: Path) -> Path:
+    return _factory_root(project_root) / "ideas" / "manual_watch_state.json"
+
+
 def _clean_line(line: str) -> str:
     text = " ".join(line.replace('"', "").split()).strip()
     return text
+
+
+def _normalize_idea_title(text: str) -> str:
+    cleaned = _clean_line(text)
+    return re.sub(r"^(?:new\s+idea\s*:\s*)", "", cleaned, flags=re.IGNORECASE).strip()
 
 
 def _is_noise_line(text: str) -> bool:
@@ -100,6 +113,7 @@ def parse_ideas_markdown(project_root: Path) -> List[Dict[str, Any]]:
     ideas: List[Dict[str, Any]] = []
     current: Dict[str, Any] | None = None
     body_lines: List[str] = []
+    seen_ids: Dict[str, int] = {}
     for raw_line in lines:
         match = _IDEA_START_RE.match(raw_line)
         if match:
@@ -111,9 +125,13 @@ def parse_ideas_markdown(project_root: Path) -> List[Dict[str, Any]]:
                 current["source"] = "manual"
                 ideas.append(current)
             number = int(match.group(1))
-            title = _clean_line(match.group(2))
+            title = _normalize_idea_title(match.group(2))
+            base_idea_id = f"idea_{number:03d}"
+            ordinal = seen_ids.get(base_idea_id, 0) + 1
+            seen_ids[base_idea_id] = ordinal
+            idea_id = base_idea_id if ordinal == 1 else f"{base_idea_id}_{ordinal}"
             current = {
-                "idea_id": f"idea_{number:03d}",
+                "idea_id": idea_id,
                 "rank": number,
                 "title": title,
                 "summary": "",
@@ -199,6 +217,7 @@ def annotate_idea_statuses(ideas: Iterable[Dict[str, Any]], lineages: Iterable[D
     for idea in ideas:
         row = dict(idea)
         related = [item for item in lineage_rows if item.get("source_idea_id") == row.get("idea_id")]
+        incubated = any(str(item.get("creation_kind") or "").strip() == "new_model" for item in related)
         if not related:
             if row.get("family_candidates"):
                 status = "adapted"
@@ -206,6 +225,8 @@ def annotate_idea_statuses(ideas: Iterable[Dict[str, Any]], lineages: Iterable[D
                 status = "new"
         elif any(item.get("current_stage") in {"canary_ready", "live_ready", "approved_live"} for item in related):
             status = "promoted"
+        elif incubated:
+            status = "incubated"
         elif all(not item.get("active", True) for item in related):
             status = "rejected"
         else:
@@ -217,9 +238,78 @@ def annotate_idea_statuses(ideas: Iterable[Dict[str, Any]], lineages: Iterable[D
     return annotated
 
 
+def _idea_sort_key(row: Dict[str, Any], *, archived: bool) -> tuple[Any, ...]:
+    status = str(row.get("status") or "")
+    source = str(row.get("source") or "")
+    rank = int(row.get("rank") or 0)
+    title = str(row.get("title") or row.get("idea_id") or "")
+    if archived:
+        return (_ARCHIVED_STATUS_PRIORITY.get(status, 9), 0 if source == "manual" else 1, -rank, title)
+    return (_ACTIVE_STATUS_PRIORITY.get(status, 9), 0 if source == "manual" else 1, -rank, title)
+
+
 def split_active_and_archived_ideas(ideas: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     rows = list(ideas)
-    archived_statuses = {"tested", "promoted", "rejected"}
-    active = [row for row in rows if str(row.get("status") or "") not in archived_statuses]
-    archived = [row for row in rows if str(row.get("status") or "") in archived_statuses]
-    return {"active": active, "archived": archived}
+    active = [row for row in rows if str(row.get("status") or "") not in _ARCHIVED_IDEA_STATUSES]
+    archived = [row for row in rows if str(row.get("status") or "") in _ARCHIVED_IDEA_STATUSES]
+    return {
+        "active": sorted(active, key=lambda row: _idea_sort_key(row, archived=False)),
+        "archived": sorted(archived, key=lambda row: _idea_sort_key(row, archived=True)),
+    }
+
+
+def _idea_watch_key(idea: Dict[str, Any]) -> str:
+    payload = "|".join(
+        [
+            str(idea.get("idea_id") or "").strip(),
+            str(idea.get("title") or "").strip(),
+            str(idea.get("summary") or "").strip(),
+        ]
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def maybe_run_manual_idea_watch(project_root: Path) -> Dict[str, Any]:
+    path = ideas_path(project_root)
+    if not path.exists():
+        return {"ran": False, "reason": "missing_ideas_file"}
+    state_path = manual_idea_watch_state_path(project_root)
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except Exception:
+        state = {}
+    previous = {str(item) for item in (state.get("seen_keys") or []) if str(item).strip()}
+    rows = parse_ideas_markdown(project_root)
+    seen_rows = []
+    seen_keys: List[str] = []
+    for row in rows:
+        key = _idea_watch_key(row)
+        seen_keys.append(key)
+        if key not in previous:
+            seen_rows.append(
+                {
+                    "idea_id": row.get("idea_id"),
+                    "rank": row.get("rank"),
+                    "title": row.get("title"),
+                }
+            )
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "last_read_at": rows and path.stat().st_mtime_ns,
+                "last_seen_path": str(path),
+                "idea_count": len(rows),
+                "seen_keys": seen_keys,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "ran": True,
+        "path": str(path),
+        "idea_count": len(rows),
+        "new_count": len(seen_rows),
+        "new_items": seen_rows,
+    }

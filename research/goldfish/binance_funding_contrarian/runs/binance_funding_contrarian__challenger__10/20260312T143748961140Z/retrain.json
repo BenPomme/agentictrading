@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-03-12T14:37:48.961857+00:00",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:10",
+  "family_mode": "funding_contrarian",
+  "trigger_health_status": "healthy",
+  "trigger_issue_codes": [],
+  "recommendation_context": [],
+  "maintenance_request": {},
+  "retrain_triggered": false,
+  "retrain_action": "scheduled_refresh",
+  "target_objective": "reduce missed settlement windows while improving strict-gate pass rate on funding dislocations",
+  "requested_model_class": "logit",
+  "resolved_model_engine": "naive_contrarian_backtest",
+  "source_mode": "log_fallback",
+  "source_paths": [],
+  "dataset_rows": 0,
+  "current_parameters": {
+    "selected_model_class": "logit",
+    "selected_feature_subset": "microstructure",
+    "selected_horizon_seconds": 600,
+    "selected_min_edge": 0.03,
+    "selected_stake_fraction": 0.01,
+    "selected_learning_rate": 0.02,
+    "selected_lookback_hours": 72.0
+  }
+}

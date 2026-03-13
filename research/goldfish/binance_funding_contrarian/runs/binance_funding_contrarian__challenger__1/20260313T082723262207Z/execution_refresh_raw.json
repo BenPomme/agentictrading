@@ -1,0 +1,18 @@
+{
+  "error": "IO Error: Could not set lock on file \"/Users/benjaminpommeraud/Documents/Coding/Arbitrage/data/research/research.duckdb\": Conflicting lock is held in /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python (PID 44278) by user benjaminpommeraud. However, you would be able to open this database in read-only mode, e.g. by using the -readonly parameter in the CLI. See also https://duckdb.org/docs/stable/connect/concurrency",
+  "family_id": "binance_funding_contrarian",
+  "generated_at": "2026-03-13T08:27:34.263578+00:00",
+  "reason": "funding_refresh_exception",
+  "request_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260313T082723262207Z/execution_refresh_request.json",
+  "status": "failed",
+  "symbols": [
+    "API3USDT",
+    "BCHUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT"
+  ]
+}

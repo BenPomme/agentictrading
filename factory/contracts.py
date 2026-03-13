@@ -317,6 +317,23 @@ class LineageRecord(JsonMixin):
     last_debug_human_action: Optional[str] = None
     last_debug_bug_category: Optional[str] = None
     last_debug_summary: Optional[str] = None
+    last_debug_safe_auto_actions: List[str] = field(default_factory=list)
+    last_debug_should_pause_lineage: bool = False
+    last_debug_severity: Optional[str] = None
+    last_maintenance_review_at: Optional[str] = None
+    next_maintenance_review_at: Optional[str] = None
+    last_maintenance_review_reason: Optional[str] = None
+    last_maintenance_review_signature: Optional[str] = None
+    last_maintenance_review_status: Optional[str] = None
+    last_maintenance_review_artifact_path: Optional[str] = None
+    last_maintenance_review_action: Optional[str] = None
+    last_maintenance_review_summary: Optional[str] = None
+    last_operator_action_id: Optional[str] = None
+    last_operator_action_at: Optional[str] = None
+    last_operator_signal_type: Optional[str] = None
+    last_operator_decision: Optional[str] = None
+    last_operator_note: Optional[str] = None
+    last_operator_instruction: Optional[str] = None
     iteration_status: str = "new_candidate"
     parent_lineage_id: Optional[str] = None
     retired_at: Optional[str] = None
@@ -338,6 +355,13 @@ class FactoryFamily(JsonMixin):
     budget_split: Dict[str, float]
     queue_stage: str
     explainer: str
+    origin: str = "seeded_family"
+    source_idea_id: Optional[str] = None
+    incubation_status: str = "core"
+    incubation_cycle_created: int = 0
+    incubation_notes: List[str] = field(default_factory=list)
+    incubation_decided_at: Optional[str] = None
+    incubation_decision_reason: Optional[str] = None
     last_cycle_at: Optional[str] = None
     retired_lineage_ids: List[str] = field(default_factory=list)
 

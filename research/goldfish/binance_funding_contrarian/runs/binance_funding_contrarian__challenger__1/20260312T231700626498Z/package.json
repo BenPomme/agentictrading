@@ -1,0 +1,31 @@
+{
+  "generated_at": "2026-03-12T23:17:12.319123+00:00",
+  "lineage_id": "binance_funding_contrarian:challenger:1",
+  "family_id": "binance_funding_contrarian",
+  "artifact_summary": {
+    "run_id": "20260312T231700626498Z",
+    "mode": "funding_contrarian",
+    "package_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z/package.json",
+    "run_root": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z",
+    "requested_model_class": "gbdt",
+    "resolved_model_engine": "naive_contrarian_backtest",
+    "source_mode": "log_fallback",
+    "dataset_rows": 0,
+    "symbol_count": 0,
+    "retrain_triggered": true,
+    "retrain_action": "agent_requested_rework",
+    "execution_refresh_status": "failed",
+    "execution_refresh_reason": "funding_refresh_failed:1",
+    "execution_refresh_selected": "",
+    "execution_refresh_artifact": ""
+  },
+  "files": {
+    "dataset": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z/dataset.json",
+    "features": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z/features.json",
+    "retrain": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z/retrain.json",
+    "execution_refresh": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z/execution_refresh.json",
+    "train": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z/train.json",
+    "walkforward": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z/walkforward.json",
+    "stress": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/binance_funding_contrarian/runs/binance_funding_contrarian__challenger__1/20260312T231700626498Z/stress.json"
+  }
+}

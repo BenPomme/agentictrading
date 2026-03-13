@@ -1,0 +1,6 @@
+{
+  "status": "skipped",
+  "reason": "not_enabled_for_lineage",
+  "family_id": "binance_funding_contrarian",
+  "lineage_id": "binance_funding_contrarian:challenger:28"
+}

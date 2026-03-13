@@ -249,3 +249,118 @@ def test_build_portfolio_execution_evidence_surfaces_stalled_models(tmp_path, mo
     assert "trade_stalled" in evidence["issue_codes"]
     assert "training_stalled" in evidence["issue_codes"]
     assert "stalled_model" in evidence["issue_codes"]
+
+
+def test_build_portfolio_execution_evidence_reads_runtime_alias_store_distinctly(tmp_path):
+    now = datetime.now(timezone.utc).isoformat()
+    canonical = tmp_path / "portfolios" / "contrarian_legacy"
+    alias = tmp_path / "portfolios" / "factory_lane__contrarian_legacy__binance_funding_contrarian-challenger-9"
+
+    _write_json(
+        canonical / "account.json",
+        {
+            "portfolio_id": "contrarian_legacy",
+            "currency": "USD",
+            "current_balance": 1010.0,
+            "realized_pnl": 10.0,
+            "roi_pct": 1.0,
+            "drawdown_pct": 0.5,
+            "wins": 2,
+            "losses": 1,
+            "trade_count": 3,
+            "last_updated": now,
+        },
+    )
+    _write_json(canonical / "heartbeat.json", {"ts": now, "status": "running"})
+    _write_json(canonical / "state.json", {"portfolio_id": "contrarian_legacy", "running": True, "status": "running", "scan_count": 50})
+    _write_jsonl(canonical / "trades.jsonl", [{"trade_id": "c1", "status": "CLOSED", "net_pnl_usd": 10.0}])
+    _write_jsonl(canonical / "events.jsonl", [])
+
+    _write_json(
+        alias / "account.json",
+        {
+            "portfolio_id": "contrarian_legacy",
+            "currency": "USD",
+            "current_balance": 1250.0,
+            "realized_pnl": 250.0,
+            "roi_pct": 25.0,
+            "drawdown_pct": 1.2,
+            "wins": 12,
+            "losses": 2,
+            "trade_count": 14,
+            "last_updated": now,
+        },
+    )
+    _write_json(alias / "heartbeat.json", {"ts": now, "status": "running"})
+    _write_json(alias / "state.json", {"portfolio_id": "contrarian_legacy", "running": True, "status": "running", "scan_count": 75})
+    _write_jsonl(alias / "trades.jsonl", [{"trade_id": "a1", "status": "CLOSED", "net_pnl_usd": 25.0}])
+    _write_jsonl(alias / "events.jsonl", [])
+
+    evidence = build_portfolio_execution_evidence(
+        "factory_lane__contrarian_legacy__binance_funding_contrarian-challenger-9",
+        root=str(tmp_path / "portfolios"),
+    )
+
+    assert evidence["is_runtime_alias"] is True
+    assert evidence["store_target"] == "factory_lane__contrarian_legacy__binance_funding_contrarian-challenger-9"
+    assert evidence["canonical_target"] == "contrarian_legacy"
+    assert evidence["runtime_target"] == "factory_lane__contrarian_legacy__binance_funding_contrarian-challenger-9"
+    assert evidence["account"]["realized_pnl"] == 250.0
+    assert evidence["account"]["trade_count"] == 14
+
+
+def test_build_portfolio_execution_evidence_prefers_runtime_health_contract(tmp_path):
+    now = datetime.now(timezone.utc).isoformat()
+    base = tmp_path / "portfolios" / "hedge_validation"
+    _write_json(
+        base / "runtime_health.json",
+        {
+            "schema_version": 1,
+            "portfolio_id": "hedge_validation",
+            "canonical_portfolio_id": "hedge_validation",
+            "runtime_portfolio_id": "hedge_validation",
+            "status": "running",
+            "running": True,
+            "heartbeat": {"ts": now, "status": "running"},
+            "process": {"pid": 1234, "running": True, "status": "running", "started_at": now},
+            "publication": {"status": "publishing", "first_publish_at": now, "last_publish_at": now},
+            "health": {"status": "warning", "issue_codes": [], "error": None, "blockers": ["closed_hedges_minimum"]},
+            "readiness": {"status": "paper_validating", "blockers": ["closed_hedges_minimum"]},
+            "account": {
+                "portfolio_id": "hedge_validation",
+                "currency": "USD",
+                "starting_balance": 50000.0,
+                "current_balance": 50025.0,
+                "realized_pnl": 25.0,
+                "roi_pct": 0.05,
+                "drawdown_pct": 0.0,
+                "wins": 2,
+                "losses": 1,
+                "trade_count": 3,
+                "last_updated": now,
+            },
+            "recent_trade_count": 1,
+            "recent_event_count": 1,
+            "recent_trade_stats": {"closed_count": 1, "winning_count": 1, "losing_count": 0, "win_rate_pct": 100.0, "recent_loss_streak": 0},
+            "event_summary": {"kind_counts": {"hedge_opened": 1}, "reason_counts": {}, "top_reason": ""},
+            "raw_state": {
+                "portfolio_id": "hedge_validation",
+                "running": True,
+                "status": "running",
+                "mode": "paper",
+                "scan_count": 50,
+                "execution_quality": {"avg_modeled_slippage_bps": 1.2},
+                "training_progress": {"tracked_examples": 12},
+                "trainability": {"status": "warming_up", "training_required": False},
+            },
+        },
+    )
+
+    evidence = build_portfolio_execution_evidence("hedge_validation", root=str(tmp_path / "portfolios"))
+
+    assert evidence["contract_source"] == "runtime_health"
+    assert evidence["running"] is True
+    assert evidence["account"]["realized_pnl"] == 25.0
+    assert evidence["recent_trade_stats"]["closed_count"] == 1
+    assert evidence["health_status"] == "warning"
+    assert "readiness_blocked" in evidence["issue_codes"]

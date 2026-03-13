@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-03-12T17:48:36.024907+00:00",
+  "lineage_id": "betfair_prediction_value_league:challenger:5",
+  "family_id": "betfair_prediction_value_league",
+  "artifact_summary": {
+    "run_id": "20260312T174835955944Z",
+    "mode": "prediction_walkforward",
+    "package_path": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__5/20260312T174835955944Z/package.json",
+    "run_root": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__5/20260312T174835955944Z",
+    "requested_model_class": "gbdt",
+    "resolved_model_engine": "hybrid_logit",
+    "feature_subset": "cross_science",
+    "example_count": 2411,
+    "train_window": 280,
+    "test_window": 70
+  },
+  "files": {
+    "dataset": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__5/20260312T174835955944Z/dataset.json",
+    "features": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__5/20260312T174835955944Z/features.json",
+    "train": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__5/20260312T174835955944Z/train.json",
+    "walkforward": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__5/20260312T174835955944Z/walkforward.json",
+    "stress": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__5/20260312T174835955944Z/stress.json",
+    "model": "/Users/benjaminpommeraud/Documents/AgenticTrading/research/goldfish/betfair_prediction_value_league/runs/betfair_prediction_value_league__challenger__5/20260312T174835955944Z/model.json"
+  }
+}

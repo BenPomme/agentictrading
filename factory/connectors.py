@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List
 
+import config
 from factory.contracts import ConnectorSnapshot
 
 
@@ -35,6 +36,8 @@ class FileConnectorAdapter:
                 record_count += len(list(path.rglob("*")))
             else:
                 record_count += 1
+        if existing:
+            issues = []
         return ConnectorSnapshot(
             connector_id=self.connector_id,
             venue=self.venue,
@@ -49,6 +52,10 @@ class FileConnectorAdapter:
 
 def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAdapter]:
     root = Path(project_root)
+    execution_root = Path(str(getattr(config, "EXECUTION_REPO_ROOT", "")).strip()).expanduser()
+    exec_data_root = execution_root / "data" if execution_root.is_dir() else root / "data"
+    factory_data_root = root / "data"
+
     return [
         FileConnectorAdapter(
             connector_id="binance_core",
@@ -60,9 +67,12 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
                 "liquidation_logs",
             ],
             paths=[
-                root / "data/funding_history",
-                root / "data/funding",
-                root / "data/funding_models",
+                exec_data_root / "funding_history",
+                exec_data_root / "funding",
+                exec_data_root / "funding_models",
+                factory_data_root / "funding_history",
+                factory_data_root / "funding",
+                factory_data_root / "funding_models",
             ],
         ),
         FileConnectorAdapter(
@@ -75,10 +85,14 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
                 "information_books",
             ],
             paths=[
-                root / "data/candidates",
-                root / "data/prediction",
-                root / "data/state",
-                root / "data/portfolios/betfair_core",
+                exec_data_root / "candidates",
+                exec_data_root / "prediction",
+                exec_data_root / "state",
+                exec_data_root / "portfolios" / "betfair_core",
+                factory_data_root / "candidates",
+                factory_data_root / "prediction",
+                factory_data_root / "state",
+                factory_data_root / "portfolios" / "betfair_core",
             ],
         ),
         FileConnectorAdapter(
@@ -91,8 +105,10 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
                 "binary_research_state",
             ],
             paths=[
-                root / "data/portfolios/polymarket_quantum_fold",
-                root / "data/portfolios/betfair_core/runtime/polymarket_binary_research_state.json",
+                exec_data_root / "portfolios" / "polymarket_quantum_fold",
+                exec_data_root / "portfolios" / "betfair_core" / "runtime" / "polymarket_binary_research_state.json",
+                factory_data_root / "portfolios" / "polymarket_quantum_fold",
+                factory_data_root / "portfolios" / "betfair_core" / "runtime" / "polymarket_binary_research_state.json",
             ],
         ),
     ]

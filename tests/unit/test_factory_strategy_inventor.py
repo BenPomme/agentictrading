@@ -143,3 +143,30 @@ def test_scientific_strategy_inventor_new_models_get_distinct_name_and_alpha_the
     assert proposal.title == "Binance Funding Contrarian FundingReflex Gbdt Model 5"
     assert proposal.thesis.startswith("We believe we can create alpha by ")
     assert "new model" in proposal.thesis.lower()
+
+
+def test_scientific_strategy_inventor_can_generate_new_family_from_idea():
+    inventor = ScientificStrategyInventor()
+
+    proposal = inventor.generate_family_proposal(
+        idea={
+            "idea_id": "idea_009",
+            "title": "Cross Venue Entropy Ladder",
+            "summary": "Use cross venue information gain and lag propagation to incubate a fresh event-driven family.",
+            "tags": ["cross-venue", "information", "event contract"],
+            "family_candidates": [],
+        },
+        existing_family_ids=["binance_funding_contrarian", "polymarket_cross_venue"],
+        cycle_count=3,
+        proposal_index=1,
+        research_portfolio_id="research_factory",
+    )
+
+    assert proposal.origin == "incubated_family"
+    assert proposal.source_idea_id == "idea_009"
+    assert proposal.family_id.startswith("polymarket_")
+    assert proposal.label.startswith("Polymarket ")
+    assert proposal.thesis.startswith("We believe we can create alpha by ")
+    assert proposal.target_portfolios == ["research_factory"]
+    assert proposal.primary_connector_ids == ["polymarket_core"]
+    assert len(proposal.scientific_domains) == 3

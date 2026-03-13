@@ -47,6 +47,7 @@ Commonly useful explicit values:
 - `FACTORY_AGENT_DEMO_FAMILY`
 - `FACTORY_AGENT_CODEX_MODEL_CHEAP`, `FACTORY_AGENT_CODEX_MODEL_PROPOSAL`, `FACTORY_AGENT_CODEX_MODEL_STANDARD`
 - `FACTORY_AGENT_CODEX_MODEL_HARD`, `FACTORY_AGENT_CODEX_MODEL_FRONTIER`, `FACTORY_AGENT_CODEX_MODEL_DEEP`
+- `FACTORY_AGENT_CODEX_MULTI_AGENT_ENABLED`, `FACTORY_AGENT_CODEX_MULTI_AGENT_TASKS`
 - `FACTORY_AGENT_REASONING_CHEAP`, `FACTORY_AGENT_REASONING_PROPOSAL`, `FACTORY_AGENT_REASONING_STANDARD`
 - `FACTORY_AGENT_REASONING_HARD`, `FACTORY_AGENT_REASONING_FRONTIER`, `FACTORY_AGENT_REASONING_DEEP`
 - `FACTORY_AGENT_OLLAMA_FALLBACK_ENABLED`, `FACTORY_AGENT_OLLAMA_MODEL`, `FACTORY_AGENT_LOG_DIR`
@@ -60,6 +61,7 @@ Venue credentials are optional unless you are running the venue auth or data scr
 For real agent-backed research:
 
 - primary backend: local `codex` CLI auth with task-routed GPT models
+- high-value loops can explicitly request Codex child-agent decomposition for proposal, family bootstrap, review, and debug tasks
 - default fallback: deterministic inventor/tweaker
 - optional local fallback for cheap tasks only: `ollama`
 

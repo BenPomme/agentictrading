@@ -1,0 +1,12 @@
+{
+  "kind": "hybrid_logit",
+  "bias": -0.022203,
+  "weights": {
+    "depth_total_eur": 3.4485679376808336,
+    "imbalance": -0.007536194895451797,
+    "lay_back_ratio": 0.013524029044063378,
+    "spread_mean": 0.008727450895188575,
+    "top_of_book_concentration": -0.002345690111938,
+    "weighted_spread": 7.128902939883734e-05
+  }
+}
