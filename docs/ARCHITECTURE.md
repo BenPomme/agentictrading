@@ -1,6 +1,6 @@
 # NEBULA Architecture
 
-Last updated: 2026-03-13
+Last updated: 2026-03-14
 
 ## System Overview
 
@@ -101,6 +101,15 @@ data/
 | `scripts/refresh_alpaca_data.py` | Refresh Alpaca bars/quotes | As needed |
 | `scripts/batch_backtest.py` | Systematic backtesting | On demand |
 
+## Market-Hours Scheduling
+
+The factory loop is market-hours aware:
+
+- `is_stock_market_open()` checks if US market is open (Mon-Fri 9:30-16:00 ET)
+- `venue_schedule_class(family)` classifies families as `stock_market` or `always_on`
+- Stock-market families: paper/shadow only during market hours; backtest/optimize anytime
+- Always-on families: run 24/7 with priority boost outside market hours
+
 ## Experiment Runner
 
 `factory/experiment_runner.py` dispatches experiments by family:
@@ -109,6 +118,40 @@ data/
 - **binance_funding_contrarian**: Uses Binance funding rate data.
 - **binance_cascade_regime**: Uses Binance price/regime data.
 - **polymarket_cross_venue**: Uses Polymarket cross-venue price data.
+
+## Backtest Engine
+
+Ported from stockpred, the `backtest/` module provides:
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Walk-forward engine | `backtest/engine.py` | Walk-forward backtest with periodic retrain |
+| Optuna optimizer | `backtest/optimizer.py` | TPE parameter optimization (no tokens) |
+| Metrics | `backtest/metrics.py` | BacktestResults dataclass |
+
+### Backtest-Positive Gate
+
+Before paper promotion, lineages must pass:
+1. Walkforward evidence with stress_positive
+2. Fitness score > 0
+3. Positive backtest ROI (for Yahoo/Binance families)
+4. Betfair: relaxed to walkforward-only
+5. Polymarket: exempt until data accumulates
+
+### Lineage Retirement
+
+| Mechanism | Trigger | Config |
+|-----------|---------|--------|
+| Loss streak | N consecutive negative evals | FACTORY_MAX_LOSS_STREAK=3 |
+| Backtest TTL | Stuck in goldfish/walkforward too long | FACTORY_BACKTEST_TTL_HOURS=48 |
+| Family stagnation | Too many retired lineages | FACTORY_MAX_FAMILY_RETIREMENTS=8 |
+
+## Polymarket Data Pipeline
+
+`scripts/fetch_polymarket_history.py` collects historical price data:
+- Source: Polymarket CLOB API `/prices-history` endpoint
+- Storage: Parquet in `data/polymarket/prices_history/`
+- Run daily to accumulate; after 1-3 months enable backtest gate
 
 ## Dashboard
 

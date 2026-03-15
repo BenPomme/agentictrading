@@ -20,10 +20,31 @@ from typing import Any, Dict, List
 
 
 _SCOUT_QUERIES = [
-    "funding rate trading strategy",
-    "market regime trading strategy",
-    "prediction market trading strategy",
+    "crypto funding rate arbitrage strategy 2026",
+    "prediction market trading edge",
+    "VIX regime switching portfolio allocation",
+    "betfair in-play trading strategy",
+    "cross-venue arbitrage crypto prediction markets",
+    "oil geopolitical trading strategy",
+    "altcoin momentum divergence",
 ]
+
+_VENUE_KEYWORDS = {
+    "binance": ["binance", "funding rate", "perp", "perpetual", "crypto", "btc", "eth", "altcoin", "defi"],
+    "betfair": ["betfair", "sports betting", "in-play", "football", "horse racing", "cricket"],
+    "polymarket": ["polymarket", "prediction market", "kalshi", "event contract"],
+    "yahoo": ["stock", "equity", "s&p", "spy", "qqq", "vix", "etf", "oil", "gold"],
+    "alpaca": ["alpaca", "stock trading api"],
+}
+
+
+def _infer_venues(title: str, summary: str) -> List[str]:
+    text = f"{title} {summary}".lower()
+    venues = []
+    for venue, keywords in _VENUE_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            venues.append(venue)
+    return venues or ["yahoo"]
 
 
 def _parse_iso_dt(value: Any) -> datetime | None:
@@ -69,7 +90,15 @@ def _fetch_feed_items(query: str, *, limit: int = 5) -> List[Dict[str, str]]:
         description = str(item.findtext("description") or "").strip()
         if not title or not link:
             continue
-        items.append({"title": title, "link": link, "summary": description, "query": query})
+        inferred = _infer_venues(title, description)
+        items.append({
+            "title": title,
+            "link": link,
+            "summary": description,
+            "query": query,
+            "family_candidates": inferred,
+            "tags": inferred,
+        })
     return items
 
 

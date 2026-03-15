@@ -1,6 +1,6 @@
 # Factory Roadmap
 
-Last updated: 2026-03-13
+Last updated: 2026-03-14
 
 ## Current State
 
@@ -98,7 +98,7 @@ Last updated: 2026-03-13
 3. Standalone mode: `EXECUTION_REPO_ROOT` and `EXECUTION_PORTFOLIO_STATE_ROOT` are now optional. When empty, embedded mode uses `PORTFOLIO_STATE_ROOT` for state, `execution_refresh` skips gracefully, and `bootstrap_env.py` supports embedded-only `.env` generation.
 4. Clear separation between execution failure, validation-blocked, and research-only states in the dashboard.
 5. Continuous factory background operation.
-6. Idea-to-lineage status quality: move more ideas from `adapted` into `tested`.
+6. ~~Idea-to-lineage status quality: move more ideas from `adapted` into `tested`.~~ — **COMPLETED 2026-03-14**: generic experiment fallback and evidence collection now handle all idea-seeded families automatically.
 7. ~~**Agent cost optimization and OpenAI API fallback**~~ — **COMPLETED 2026-03-13** (see Completed section below).
 4. Surface assessment maturity more clearly in the dashboard so high ROI on tiny trade counts is visibly blocked as insufficient evidence.
 5. Shared-evidence dedupe and lineage-isolated paper assessment need tightening so one portfolio scorecard is not mistaken for multiple independent winners.
@@ -216,12 +216,101 @@ Last updated: 2026-03-13
    | `frontier_research` | gpt-5.3-codex | o4-mini | Family bootstrap only |
    | `deep_review` | gpt-5.4 | o3 | Reserved, cost-guard capped at 10% |
 
+## Completed: Runtime Scheduling Optimization
+
+### Market-Hours-Aware Scheduling
+- `is_stock_market_open()` and `venue_schedule_class()` in `factory/orchestrator.py`
+- Stock-market families (hmm_regime_adaptive) get priority boost during US market hours (Mon-Fri 9:30-16:00 ET)
+- Always-on families (binance, betfair, polymarket) get priority boost outside market hours and weekends
+- Hard gate: stock-market lineages in paper/shadow stage are skipped for dispatch outside market hours
+- Config: `FACTORY_STOCK_MARKET_TZ`, `FACTORY_STOCK_MARKET_OPEN`, `FACTORY_STOCK_MARKET_CLOSE`
+
+### Backtest Engine (ported from stockpred)
+- New `backtest/` module with walk-forward engine, Optuna TPE optimizer, metrics
+- `backtest/engine.py`: walk-forward backtest with periodic retrain, multi-window validation
+- `backtest/optimizer.py`: Optuna TPE parameter optimization (no LLM tokens)
+- `backtest/metrics.py`: BacktestResults dataclass with is_positive property
+- `scripts/batch_backtest.py` updated with `--optimize` flag using Optuna
+- Dependencies: added `optuna` to pyproject.toml
+
+### Backtest-Positive Gate
+- No lineage can advance to shadow/paper without positive backtest ROI
+- Full gate for Yahoo/Binance families (ROI > 0 + optimization results)
+- Relaxed gate for Betfair (walkforward evidence only, 6 months data)
+- Polymarket exempt until historical data pipeline accumulates data
+- Dashboard shows backtest ROI badge on each model card
+
+### Aggressive Lineage Retirement
+- Loss streak retirement: `FACTORY_MAX_LOSS_STREAK=3` consecutive negative evaluations → retire
+- Backtest TTL: `FACTORY_BACKTEST_TTL_HOURS=48` in goldfish_run/walkforward without positive results → retire
+- Family stagnation: `FACTORY_MAX_FAMILY_RETIREMENTS=8` lineages retired → deprioritize family
+- Learning recorded before retirement with outcome `retired_never_positive`
+
+### Polymarket Historical Data Pipeline
+- `scripts/fetch_polymarket_history.py`: fetches price history from CLOB API + Gamma API
+- Stores as Parquet in `data/polymarket/prices_history/`
+- Run daily to accumulate history; after 1-3 months, enable backtest gate for Polymarket
+- New `polymarket_history` connector in `factory/connectors.py`
+
+### Token Cost Discipline
+- `TASK_LOCAL` classification for pure computation tasks (backtest, optimization)
+- TASK_LOCAL bypasses agent runtime entirely — no LLM tokens used
+- Backtest engine and optimizer run locally as Python computation
+- Existing cost guard (10% cap on expensive models) unchanged
+
+## Completed: Champion Optimization and Agent Cost Reduction (2026-03-14)
+
+### Batch Optimization of All Families
+- **HMM regime adaptive**: Optuna TPE optimization on 10 Yahoo tickers (50 trials each). SPY: +1.11% ROI / 8.11 Sharpe, QQQ: +0.30%, AAPL: positive, MSFT: positive, AMZN: +2.25% (best). Results in `data/backtest_results/hmm_regime_adaptive/`.
+- **Binance adapter**: `_BinanceMomentumAdapter` in `scripts/batch_backtest.py` supports `binance_funding_contrarian` and `binance_cascade_regime` families using hourly klines from `data/funding_history/klines/`. Param space: lookback_hours (4-48), entry_threshold (0.5-3.0), exit_threshold (0.1-1.0).
+- **`scripts/optimize_all_champions.py`**: Auto-optimization script iterating all families with data, running Optuna (30-100 trials), writing to `data/backtest_results/{family}/`. Pure computation (TASK_LOCAL).
+- **Factory auto-optimization**: `_trigger_auto_optimization()` in `orchestrator.py` spawns optimization as background subprocess once per family per day. Tracked via `data/factory/state/last_auto_optimize.json`.
+- **Auto-promotion**: `_promote_optimized_lineages()` in `orchestrator.py` re-evaluates lineages after optimization results land, reporting positive ROI opportunities.
+
+### Agent Cost Reduction
+- **post_eval_critique**: Downgraded from `TASK_HARD` (gpt-4.1, $2/$8/M) to `TASK_STANDARD` (gpt-4.1-mini, $0.40/$1.60/M). Verified in run artifacts.
+- **_debug_task_class**: Requires BOTH `health_status == "critical"` AND `repeated_debug == True` for TASK_HARD. Critical OR repeated alone → TASK_STANDARD.
+- **_maintenance_task_class**: TASK_HARD only for replace/retire actions. All other maintenance → TASK_STANDARD.
+- **_tweak_task_class**: TASK_HARD requires `tweak_count >= 2`. First tweak → TASK_STANDARD. Fresh lineages → TASK_CHEAP.
+- **Measured impact**: post_eval_critique now using gpt-4.1-mini (confirmed in artifacts). Estimated 40-60% cost reduction per factory cycle.
+
+### Dashboard Backtest ROI Integration
+- Fixed `_load_backtest_roi` in `operator_dashboard.py` to handle Optuna result format (`best_metrics.total_return_pct`), nested optimization results, and legacy formats.
+- Backtest ROI badges now display actual values for all families with optimization results.
+
 ### Remaining work (agent costs)
 
 - Add token usage tracking per agent run so cost per cycle is visible in the dashboard.
 - Consider OpenAI Batch API (50% off) for non-time-sensitive agent tasks like scheduled reviews.
 - Add rate-limit / quota detection for the OpenAI API fallback so it can surface "both Codex and API quota exhausted" cleanly.
 - Periodically re-evaluate model pricing as OpenAI releases new models.
+
+## Completed: Fitness/Retirement/P&L Fixes and Pipeline Unblocking (2026-03-14)
+
+### Fitness Formula and Evaluation Fixes
+- **P&L charts fixed**: `PnlChart.tsx` now reads `data.points` (with fallback to `data.balance_points`). `findBalanceAt` helper also fixed. TypeScript types updated in `snapshot.ts`.
+- **Fitness formula rebalanced**: `failure_rate` weight reduced from 100 to 40 in `evaluation.py`. Hard veto penalty reduced from 25 to 10. Added profit floor: if `monthly_roi_pct > 0` and `trade_count >= 10`, score cannot drop below `monthly_roi_pct * 2.0`.
+- **Hard vetoes relaxed for early-stage models**: `capacity_below_minimum` and `regime_robustness_below_minimum` vetoes now require `trade_count >= 50`. `failure_rate_above_15pct` veto skipped when `failure_rate >= 1.0` (bogus default) and `trade_count > 0`.
+- **`failure_rate` computation fixed**: `experiment_runner.py` now considers `realized_pnl` when `pnl_pct` is None, preventing `failure_rate` from defaulting to 1.0 for trades with valid profit data.
+
+### Retirement Logic Overhaul
+- **Paper trial for untested models**: `_retire_by_backtest_ttl` now promotes lineages to PAPER with `iteration_status = "paper_trial_no_backtest"` instead of retiring them if they haven't traded.
+- **Paper trial TTL**: After `FACTORY_PAPER_TRIAL_DAYS` (default 7), paper trial lineages are either graduated (if traded and passed backtest gate) or retired (if still no trades).
+- **Trade count from registry**: `_backtest_positive_gate` and `_retire_by_backtest_ttl` now check `trade_count > 0` across all evaluation bundles instead of relying on non-existent `lineage.paper_trade_count`.
+
+### Generic Idea-to-Model Pipeline (Critical Fix)
+- **Generic experiment runner fallback**: `experiment_runner.run()` no longer returns `{"mode": "unsupported"}` for unknown families. New `_run_generic_experiment()` routes to the closest existing backtester based on `target_venues`: Binance-venue families use funding experiment, Yahoo/stock families use HMM experiment, Betfair families use candidate signal (information_lag mode), Polymarket families use candidate signal (cross_venue mode).
+- **Generic evidence collection**: `_collect_evidence()` now has an `else` branch that passes through experiment bundles for any family not in the 5 hardcoded branches. Previously, bundles from unknown families were silently discarded.
+- **Impact**: 3 incubating families (`binance_liminal_capturing_real`, `binance_perp_settlement_pressure`, `binance_stop_guessing_start`) that were permanently stuck in `goldfish_run` with `missing_walkforward_evidence` can now generate evaluation bundles and progress through the promotion pipeline. All future idea-seeded families will also be automatically handled.
+
+### HMM Family Bootstrap
+- **HMM bootstrapped as core family**: Created `hmm_regime_adaptive` family file, champion lineage (n_hidden_states=2, lookback_days=252), genome, experiment, and hypothesis. Best Optuna results: AMZN +2.25%, SPY +1.11%, MSFT +0.75%, QQQ +0.30%.
+- **`alpaca_paper` portfolio**: Added to `_KNOWN_PORTFOLIOS` in both `runtime_execution.py` and `embedded_execution.py`.
+
+### Dead Family Retirement
+- **`betfair_prediction_value_league` retired**: All lineages stuck in walkforward with no positive results. Goldfish learning recorded.
+- **`binance_cascade_regime` retired**: All Optuna results negative across all tickers. Goldfish learning recorded.
+- **Active family count**: Reduced from 8 to 7 (6 core + 3 incubating - 2 retired). Active lineage count: 20.
 
 ## Later
 

@@ -25,15 +25,71 @@ def _embedded_state_root() -> Path:
 
 
 def _embedded_portfolio_ids() -> List[str]:
-    """Portfolio IDs that have embedded runners (same set as runtime_execution._KNOWN_PORTFOLIOS)."""
+    """Derive portfolio IDs from registry active PAPER lineages, with legacy fallback."""
+    try:
+        from factory.registry import FactoryRegistry
+
+        project_root = _project_root()
+        factory_root = Path(getattr(config, "FACTORY_ROOT", "data/factory"))
+        if not factory_root.is_absolute():
+            factory_root = project_root / factory_root
+
+        registry = FactoryRegistry(str(factory_root))
+        portfolio_ids: set[str] = set()
+        for lineage in registry.lineages():
+            if not lineage.active:
+                continue
+            if lineage.current_stage in {"paper", "shadow", "canary_ready", "live_ready", "approved_live"}:
+                portfolio_ids.update(lineage.target_portfolios)
+        if portfolio_ids:
+            return sorted(portfolio_ids)
+    except Exception:
+        pass
+    # Legacy fallback
     return [
-        "betfair_core",
-        "hedge_validation",
-        "hedge_research",
-        "cascade_alpha",
-        "contrarian_legacy",
-        "polymarket_quantum_fold",
+        "betfair_core", "hedge_validation", "hedge_research",
+        "cascade_alpha", "contrarian_legacy", "polymarket_quantum_fold", "alpaca_paper",
     ]
+
+
+def _cycle_interval_for_portfolio(portfolio_id: str) -> float:
+    """Derive cycle interval from the portfolio's venue via registry, with defaults."""
+    try:
+        from factory.registry import FactoryRegistry
+
+        project_root = _project_root()
+        factory_root = Path(getattr(config, "FACTORY_ROOT", "data/factory"))
+        if not factory_root.is_absolute():
+            factory_root = project_root / factory_root
+
+        registry = FactoryRegistry(str(factory_root))
+        for lineage in registry.lineages():
+            if not lineage.active:
+                continue
+            if portfolio_id in lineage.target_portfolios:
+                venues = lineage.target_venues
+                for v in venues:
+                    if v.startswith("yahoo") or v.startswith("alpaca"):
+                        return 3600.0
+                    if v == "binance":
+                        return 28800.0
+                    if v in {"betfair", "polymarket"}:
+                        return 300.0
+                break
+    except Exception:
+        pass
+
+    # Legacy fallback
+    _LEGACY_INTERVALS: Dict[str, float] = {
+        "alpaca_paper": 3600.0,
+        "contrarian_legacy": 28800.0,
+        "cascade_alpha": 28800.0,
+        "hedge_validation": 28800.0,
+        "hedge_research": 28800.0,
+        "polymarket_quantum_fold": 300.0,
+        "betfair_core": 300.0,
+    }
+    return _LEGACY_INTERVALS.get(portfolio_id, 300.0)
 
 
 class EmbeddedExecutionManager:
@@ -76,8 +132,13 @@ class EmbeddedExecutionManager:
         state_dir.mkdir(parents=True, exist_ok=True)
         log_path = state_dir / "runner.log"
         log_handle = log_path.open("a", encoding="utf-8")
+        interval = _cycle_interval_for_portfolio(portfolio_id)
         proc = subprocess.Popen(
-            ["python3", "-m", "factory.local_runner_main", "--portfolio", portfolio_id],
+            [
+                "python3", "-m", "factory.local_runner_main",
+                "--portfolio", portfolio_id,
+                "--interval", str(interval),
+            ],
             cwd=str(self._project_root),
             stdout=log_handle,
             stderr=subprocess.STDOUT,

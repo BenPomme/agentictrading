@@ -48,7 +48,7 @@ def _build_chart_payload(portfolio_id: str) -> dict | None:
     if account_path.exists():
         with open(account_path) as fh:
             account = json.loads(fh.read())
-        starting_balance = float(account.get("starting_balance", 0))
+        starting_balance = float(account.get("starting_balance") or account.get("initial_balance") or 0)
 
     points: list[dict] = []
     balance_path = portfolio_dir / "balance_history.jsonl"

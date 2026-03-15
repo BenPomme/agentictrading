@@ -38,6 +38,7 @@ TASK_STANDARD = "standard_research"
 TASK_HARD = "hard_research"
 TASK_FRONTIER = "frontier_research"
 TASK_DEEP = "deep_review"
+TASK_LOCAL = "local"  # Pure computation, no LLM provider needed
 OVERRIDE_KEYS = [
     "selected_horizon_seconds",
     "selected_feature_subset",
@@ -193,9 +194,9 @@ def _openai_api_model(task_class: str) -> str:
     mapping = {
         TASK_CHEAP: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_CHEAP", "gpt-4.1-nano")),
         TASK_STANDARD: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_STANDARD", "gpt-4.1-mini")),
-        TASK_HARD: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_HARD", "gpt-4.1")),
-        TASK_FRONTIER: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_FRONTIER", "o4-mini")),
-        TASK_DEEP: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_DEEP", "o3")),
+        TASK_HARD: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_HARD", "gpt-5-mini-2025-08-07")),
+        TASK_FRONTIER: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_FRONTIER", "gpt-5-mini-2025-08-07")),
+        TASK_DEEP: str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_DEEP", "gpt-5.4")),
     }
     return mapping.get(task_class, str(getattr(config, "FACTORY_AGENT_OPENAI_MODEL_STANDARD", "gpt-4.1-mini")))
 
@@ -481,6 +482,109 @@ def _maintenance_resolution_schema() -> Dict[str, Any]:
     }
 
 
+_MODEL_DESIGN_PROTOCOL_REF = """
+class StrategyModel(Protocol):
+    def name(self) -> str: ...
+    def configure(self, genome: dict) -> None: ...
+    def required_data(self) -> dict:
+        # Return {"source": "yahoo"|"binance"|"betfair"|"polymarket"|"alpaca",
+        #         "instruments": ["SPY", ...], "fields": ["ohlcv"]}
+    def fit(self, df: pd.DataFrame) -> None: ...
+    def predict(self, df: pd.DataFrame) -> pd.Series:
+        # Returns +1 (long), 0 (flat), -1 (short) for each row
+    def position_size(self, signal: int, equity: float) -> float:
+        # Return notional size or fraction of equity
+""".strip()
+
+_MODEL_DESIGN_ALLOWED_IMPORTS = (
+    "numpy, pandas, scipy, sklearn, hmmlearn, statsmodels, ta, math, "
+    "statistics, collections, dataclasses, typing, logging, functools, "
+    "itertools, json, datetime, enum, abc"
+)
+
+_MODEL_DESIGN_EXAMPLE = '''
+import numpy as np
+import pandas as pd
+
+class MomentumMeanReversionModel:
+    """Mean-reversion on z-score of rolling returns."""
+
+    def name(self) -> str:
+        return "momentum_mean_reversion"
+
+    def configure(self, genome: dict) -> None:
+        self._lookback = int(genome.get("lookback", 20))
+        self._entry_z = float(genome.get("entry_z", 1.5))
+        self._size_frac = float(genome.get("size_frac", 0.1))
+
+    def required_data(self) -> dict:
+        return {"source": "yahoo", "instruments": ["SPY", "QQQ"], "fields": ["ohlcv"]}
+
+    def fit(self, df: pd.DataFrame) -> None:
+        pass
+
+    def predict(self, df: pd.DataFrame) -> pd.Series:
+        close = df["Close"] if "Close" in df.columns else df["close"]
+        returns = close.pct_change()
+        roll_mean = returns.rolling(self._lookback).mean()
+        roll_std = returns.rolling(self._lookback).std().replace(0, np.nan)
+        z = (returns - roll_mean) / roll_std
+        signals = pd.Series(0, index=df.index, dtype=int)
+        signals[z < -self._entry_z] = 1
+        signals[z > self._entry_z] = -1
+        return signals
+
+    def position_size(self, signal: int, equity: float) -> float:
+        return equity * self._size_frac
+'''.strip()
+
+_MODEL_DATA_SOURCES = """
+Available data sources and their schemas:
+- yahoo: OHLCV (Open, High, Low, Close, Volume) parquet files for US stocks.
+  Instruments: SPY, QQQ, AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA, JPM, USO, XLE, GLD, TLT, etc.
+- alpaca: Same OHLCV format as yahoo, US stocks and ETFs.
+- binance: Funding rate CSV files with columns: fundingRate, fundingTime, markPrice, symbol.
+  Crypto perpetual futures funding rates (BTCUSDT, ETHUSDT, etc.).
+- betfair: JSONL event prediction files with market odds and outcomes.
+- polymarket: Parquet price history files for prediction markets.
+""".strip()
+
+
+def _model_design_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["model_code", "class_name", "rationale", "data_requirements"],
+        "properties": {
+            "model_code": {"type": "string", "description": "Complete Python file implementing StrategyModel"},
+            "class_name": {"type": "string", "description": "Name of the class in model_code"},
+            "rationale": {"type": "string", "description": "Brief explanation of the model's approach"},
+            "data_requirements": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "enum": ["yahoo", "binance", "betfair", "polymarket", "alpaca"]},
+                    "instruments": {"type": "array", "items": {"type": "string"}},
+                    "fields": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["source", "instruments", "fields"],
+            },
+        },
+    }
+
+
+def _model_mutate_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["model_code", "class_name", "mutation_description"],
+        "properties": {
+            "model_code": {"type": "string", "description": "Complete modified Python file"},
+            "class_name": {"type": "string", "description": "Name of the class in model_code"},
+            "mutation_description": {"type": "string", "description": "What was changed and why"},
+        },
+    }
+
+
 def _fallback_family_venues(idea: Dict[str, Any]) -> List[str]:
     haystack = " ".join(
         [
@@ -716,7 +820,7 @@ class RealResearchAgentRuntime:
     ) -> AgentRunResult | None:
         if not bool(getattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)):
             return None
-        task_class = TASK_FRONTIER
+        task_class = TASK_DEEP
         prompt_payload = {
             "cycle_count": cycle_count,
             "proposal_index": proposal_index,
@@ -847,12 +951,12 @@ class RealResearchAgentRuntime:
         }
         prompt_payload["codex_multi_agent_plan"] = self._codex_multi_agent_plan(
             task_type="post_eval_critique",
-            task_class=TASK_HARD,
+            task_class=TASK_CHEAP,
         )
-        prompt = self._critique_prompt(prompt_payload, task_class=TASK_HARD)
+        prompt = self._critique_prompt(prompt_payload, task_class=TASK_CHEAP)
         return self._run_structured(
             task_type="post_eval_critique",
-            task_class=TASK_HARD,
+            task_class=TASK_CHEAP,
             family_id=family.family_id,
             lineage_id=lineage.lineage_id,
             prompt=prompt,
@@ -958,6 +1062,119 @@ class RealResearchAgentRuntime:
             schema=_maintenance_resolution_schema(),
         )
 
+    def design_model(
+        self,
+        *,
+        idea: Dict[str, Any],
+        family_id: str,
+        target_venues: Sequence[str],
+        thesis: str,
+        cycle_count: int,
+    ) -> AgentRunResult | None:
+        """Ask a FRONTIER agent to write a complete model_code.py from an idea."""
+        if not bool(getattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)):
+            return None
+        task_class = TASK_DEEP
+        prompt_payload = {
+            "cycle_count": cycle_count,
+            "idea": dict(idea),
+            "family_id": family_id,
+            "target_venues": list(target_venues),
+            "thesis": thesis,
+            "protocol_reference": _MODEL_DESIGN_PROTOCOL_REF,
+            "allowed_imports": _MODEL_DESIGN_ALLOWED_IMPORTS,
+            "data_sources": _MODEL_DATA_SOURCES,
+            "example_model": _MODEL_DESIGN_EXAMPLE,
+        }
+        prompt = (
+            "You are a quantitative model designer inside a paper-only trading factory.\n"
+            "Write a complete Python file implementing the StrategyModel protocol for the idea below.\n\n"
+            "IDEA:\n"
+            f"  Title: {idea.get('title', 'unknown')}\n"
+            f"  Summary: {idea.get('summary', '')}\n"
+            f"  Thesis: {thesis}\n"
+            f"  Target venues: {', '.join(target_venues)}\n\n"
+            "PROTOCOL (your class MUST implement ALL these methods):\n"
+            f"{_MODEL_DESIGN_PROTOCOL_REF}\n\n"
+            f"ALLOWED IMPORTS: {_MODEL_DESIGN_ALLOWED_IMPORTS}\n"
+            "Do NOT import os, sys, subprocess, pathlib, requests, or any I/O library.\n\n"
+            f"AVAILABLE DATA:\n{_MODEL_DATA_SOURCES}\n\n"
+            "EXAMPLE MODEL (for reference style only, create something DIFFERENT):\n"
+            f"{_MODEL_DESIGN_EXAMPLE}\n\n"
+            "REQUIREMENTS:\n"
+            "- The model must be genuinely novel, tailored to the idea.\n"
+            "- configure() must accept a genome dict and use its params.\n"
+            "- required_data() must return a valid source + instruments.\n"
+            "- fit() must train on historical data.\n"
+            "- predict() must return pd.Series of +1/0/-1.\n"
+            "- position_size() must return a sensible notional amount.\n"
+            "- The model MUST be different from a simple momentum/mean-reversion model.\n\n"
+            "Return ONLY the structured JSON with model_code, class_name, rationale, data_requirements."
+        )
+        return self._run_structured(
+            task_type="model_design",
+            task_class=task_class,
+            family_id=family_id,
+            lineage_id=None,
+            prompt=prompt,
+            prompt_payload=prompt_payload,
+            schema=_model_design_schema(),
+        )
+
+    def mutate_model(
+        self,
+        *,
+        family_id: str,
+        lineage_id: str,
+        current_model_code: str,
+        class_name: str,
+        backtest_results: Dict[str, Any],
+        thesis: str,
+        tweak_count: int = 0,
+    ) -> AgentRunResult | None:
+        """Ask a CHEAP/STANDARD agent to make a small code edit to an existing model."""
+        if not bool(getattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)):
+            return None
+        task_class = TASK_STANDARD if tweak_count >= 2 else TASK_CHEAP
+        prompt_payload = {
+            "family_id": family_id,
+            "lineage_id": lineage_id,
+            "current_model_code": current_model_code,
+            "class_name": class_name,
+            "backtest_results": dict(backtest_results),
+            "thesis": thesis,
+            "tweak_count": tweak_count,
+        }
+        prompt = (
+            "You are a model mutation agent inside a paper-only trading factory.\n"
+            "Make a SMALL, targeted improvement to the model code below.\n\n"
+            f"FAMILY: {family_id}\n"
+            f"THESIS: {thesis}\n"
+            f"TWEAK COUNT: {tweak_count}\n\n"
+            "CURRENT BACKTEST RESULTS:\n"
+            f"{json.dumps(backtest_results, indent=2, default=str)}\n\n"
+            "CURRENT MODEL CODE:\n"
+            f"```python\n{current_model_code}\n```\n\n"
+            "REQUIREMENTS:\n"
+            "- Make 1-3 targeted changes to improve performance.\n"
+            "- Keep the same class name and protocol interface.\n"
+            "- Ideas: adjust thresholds, add a feature, change position sizing, "
+            "add a filter, modify the signal logic.\n"
+            "- Do NOT rewrite from scratch unless tweak_count >= 2.\n"
+            "- The model must still satisfy the StrategyModel protocol.\n"
+            f"- Allowed imports: {_MODEL_DESIGN_ALLOWED_IMPORTS}\n\n"
+            "Return the COMPLETE modified Python file as model_code, plus class_name and mutation_description."
+        )
+        return self._run_structured(
+            task_type="model_mutate",
+            task_class=task_class,
+            family_id=family_id,
+            lineage_id=lineage_id,
+            prompt=prompt,
+            prompt_payload=prompt_payload,
+            schema=_model_mutate_schema(),
+        )
+
     def _family_enabled(self, family_id: str) -> bool:
         if not bool(getattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)):
             return False
@@ -1011,26 +1228,21 @@ class RealResearchAgentRuntime:
             )
         )
         issue_codes = {str(item) for item in ((execution_evidence or {}).get("issue_codes") or [])}
+        model_quality_issues = {
+            "untrainable_model", "training_stalled", "stalled_model",
+        }
+        if (
+            int(lineage.tweak_count or 0) >= 2
+            or (contradictory_metrics and str((execution_evidence or {}).get("health_status") or "") == "critical")
+            or issue_codes.intersection(model_quality_issues)
+        ):
+            return TASK_HARD
         if (
             int(lineage.tweak_count or 0) >= 1
             or contradictory_metrics
-            or str((execution_evidence or {}).get("health_status") or "") == "critical"
-            or bool(
-                issue_codes.intersection(
-                    {
-                        "negative_paper_roi",
-                        "poor_win_rate",
-                        "no_trade_syndrome",
-                        "zero_simulated_fills",
-                        "untrainable_model",
-                        "trade_stalled",
-                        "training_stalled",
-                        "stalled_model",
-                    }
-                )
-            )
+            or issue_codes.intersection({"negative_paper_roi", "poor_win_rate", "no_trade_syndrome", "zero_simulated_fills", "trade_stalled"})
         ):
-            return TASK_HARD
+            return TASK_STANDARD
         return TASK_CHEAP
 
     def _debug_task_class(
@@ -1040,13 +1252,12 @@ class RealResearchAgentRuntime:
     ) -> str:
         issue_codes = {str(item) for item in ((execution_evidence or {}).get("issue_codes") or [])}
         critical_bug_codes = {"runtime_error", "heartbeat_stale", "untrainable_model", "training_stalled", "stalled_model"}
+        is_critical = str((execution_evidence or {}).get("health_status") or "") == "critical"
         repeated_debug = bool(lineage.last_debug_issue_signature)
-        if (
-            str((execution_evidence or {}).get("health_status") or "") == "critical"
-            or issue_codes.intersection(critical_bug_codes)
-            or repeated_debug
-        ):
+        if is_critical and (repeated_debug or issue_codes.intersection(critical_bug_codes)):
             return TASK_HARD
+        if is_critical or repeated_debug:
+            return TASK_STANDARD
         return TASK_CHEAP
 
     def _maintenance_task_class(
@@ -1056,12 +1267,10 @@ class RealResearchAgentRuntime:
         maintenance_request: Dict[str, Any] | None,
     ) -> str:
         action = str((maintenance_request or {}).get("action") or "").strip().lower()
-        issue_codes = {str(item) for item in ((execution_evidence or {}).get("issue_codes") or [])}
+        iteration_status = str(lineage.iteration_status or "").strip().lower()
         if (
-            str((execution_evidence or {}).get("health_status") or "") == "critical"
-            or action in {"replace", "retire"}
-            or issue_codes.intersection({"negative_paper_roi", "poor_win_rate", "untrainable_model", "training_stalled", "stalled_model"})
-            or str(lineage.iteration_status or "").strip().lower() in {"review_requested_replace", "review_recommended_retire"}
+            action in {"replace", "retire"}
+            or iteration_status in {"review_requested_replace", "review_recommended_retire"}
         ):
             return TASK_HARD
         return TASK_STANDARD
@@ -1134,7 +1343,7 @@ class RealResearchAgentRuntime:
         expensive_tiers = {TASK_FRONTIER, TASK_DEEP}
         if task_class not in expensive_tiers:
             return task_class, model_override, reasoning_override
-        if task_type == "family_bootstrap_generation":
+        if task_type in {"family_bootstrap_generation", "model_design"}:
             return task_class, model_override, reasoning_override
 
         cap_pct = float(getattr(config, "FACTORY_AGENT_EXPENSIVE_CAP_PCT", 10))
@@ -1177,6 +1386,26 @@ class RealResearchAgentRuntime:
         model_override: str | None = None,
         reasoning_override: str | None = None,
     ) -> AgentRunResult:
+        if task_class == TASK_LOCAL:
+            logger.info("TASK_LOCAL: %s/%s bypasses agent runtime (pure computation)", task_type, task_class)
+            result = AgentRunResult(
+                run_id=self._new_run_id(task_type),
+                task_type=task_type,
+                model_class=TASK_LOCAL,
+                provider="local",
+                model="none",
+                reasoning_effort="none",
+                success=True,
+                fallback_used=False,
+                family_id=family_id,
+                lineage_id=lineage_id,
+                duration_ms=0,
+                prompt_payload=prompt_payload,
+                result_payload={"output": "Task executed locally without LLM"},
+                raw_text="Task executed locally without LLM",
+                attempted_providers=["local"],
+            )
+            return self._write_run_artifact(result)
         task_class, model_override, reasoning_override = self._apply_cost_guard(
             task_type, task_class, model_override, reasoning_override,
         )
@@ -1235,6 +1464,10 @@ class RealResearchAgentRuntime:
                         errors.append("openai_api:no_api_key")
                         continue
                     logger.info("Agent run [%s]: openai_api key present (len=%d), proceeding", task_type, len(api_key))
+                    # Don't carry codex-specific model names to the OpenAI API
+                    api_model_override = model_override
+                    if api_model_override and "codex" in api_model_override.lower():
+                        api_model_override = None
                     result = self._run_openai_api(
                         task_type=task_type,
                         task_class=task_class,
@@ -1243,7 +1476,7 @@ class RealResearchAgentRuntime:
                         prompt=prompt,
                         prompt_payload=prompt_payload,
                         schema=schema,
-                        model_override=model_override,
+                        model_override=api_model_override,
                         reasoning_override=reasoning_override,
                         fallback_used=bool(errors),
                         attempted=list(attempted),
@@ -1395,6 +1628,7 @@ class RealResearchAgentRuntime:
             import urllib.request
 
             is_reasoning_model = model.startswith("o1") or model.startswith("o3") or model.startswith("o4")
+            no_temperature = is_reasoning_model or model.startswith("gpt-5")
 
             messages = [
                 {"role": "system" if not is_reasoning_model else "user", "content": (
@@ -1402,20 +1636,15 @@ class RealResearchAgentRuntime:
                     "Respond ONLY with valid JSON matching the provided schema. No markdown, no commentary."
                 )},
             ]
-            if is_reasoning_model:
-                messages.append({"role": "user", "content": (
-                    f"Task:\n{prompt}\n\n"
-                    f"Required JSON output schema:\n{json.dumps(schema, indent=2)}\n\n"
-                    "Respond with ONLY the JSON object."
-                )})
-            else:
-                messages.append({"role": "user", "content": (
-                    f"Task:\n{prompt}\n\n"
-                    f"Required JSON output schema:\n{json.dumps(schema, indent=2)}\n\n"
-                    "Respond with ONLY the JSON object."
-                )})
+            messages.append({"role": "user", "content": (
+                f"Task:\n{prompt}\n\n"
+                f"Required JSON output schema:\n{json.dumps(schema, indent=2)}\n\n"
+                "Respond with ONLY the JSON object."
+            )})
 
-            body: Dict[str, Any] = {"model": model, "messages": messages, "temperature": 0.2}
+            body: Dict[str, Any] = {"model": model, "messages": messages}
+            if not no_temperature:
+                body["temperature"] = 0.2
             if not is_reasoning_model:
                 body["response_format"] = {"type": "json_object"}
 

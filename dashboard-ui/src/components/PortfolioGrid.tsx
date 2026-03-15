@@ -1,5 +1,5 @@
-import { useMemo, useState, useEffect } from 'react';
-import type { PortfolioSnapshot } from '../types/snapshot';
+import React, { useMemo, useState, useEffect } from 'react';
+import type { Family, Lineage, PortfolioSnapshot } from '../types/snapshot';
 import {
   venueIcon,
   formatNumber,
@@ -11,9 +11,25 @@ import {
 import { PnlChart } from './PnlChart';
 import './PortfolioGrid.css';
 
+function backtestBadge(lineage: Lineage | null | undefined): React.ReactNode {
+  if (!lineage) return null;
+  const bt = lineage.backtest_roi_pct;
+  if (bt == null) return <span className="pg-bt-badge pg-bt-badge--none">No Backtest</span>;
+  const isPositive = bt > 0;
+  const cls = isPositive ? 'pg-bt-badge--pos' : 'pg-bt-badge--neg';
+  return (
+    <span className={`pg-bt-badge ${cls}`}>
+      BT: {bt > 0 ? '+' : ''}{bt.toFixed(1)}%
+      {lineage.backtest_sharpe != null && ` | SR ${lineage.backtest_sharpe.toFixed(2)}`}
+    </span>
+  );
+}
+
 interface PortfolioGridProps {
   portfolios: PortfolioSnapshot[] | undefined;
   placeholders: PortfolioSnapshot[] | undefined;
+  lineages?: Lineage[];
+  families?: Family[];
 }
 
 function pulseClass(status: string): string {
@@ -41,7 +57,25 @@ function venueLabel(portfolio: PortfolioSnapshot): string {
   return 'generic';
 }
 
-export function PortfolioGrid({ portfolios, placeholders }: PortfolioGridProps) {
+export function PortfolioGrid({ portfolios, placeholders, lineages, families }: PortfolioGridProps) {
+  const lineageById = useMemo(() => {
+    const m = new Map<string, Lineage>();
+    for (const l of lineages ?? []) m.set(l.lineage_id, l);
+    return m;
+  }, [lineages]);
+  const familyById = useMemo(() => {
+    const m = new Map<string, Family>();
+    for (const f of families ?? []) m.set(f.family_id, f);
+    return m;
+  }, [families]);
+  function resolveLineageForPortfolio(p: PortfolioSnapshot): Lineage | null {
+    const famId = p.candidate_families?.[0];
+    if (!famId) return null;
+    const fam = familyById.get(famId);
+    const lid = fam?.champion_lineage_id;
+    if (!lid) return null;
+    return lineageById.get(lid) ?? null;
+  }
   const sorted = useMemo(() => {
     const all = [...(portfolios ?? []), ...(placeholders ?? [])];
     return all.sort((a, b) => {
@@ -145,6 +179,10 @@ export function PortfolioGrid({ portfolios, placeholders }: PortfolioGridProps) 
                   <span className="pg-card__metric-value">{p.trade_count}</span>
                 </div>
               </div>
+              {(() => {
+                const badge = backtestBadge(resolveLineageForPortfolio(p));
+                return badge ? <div className="pg-card__bt-row">{badge}</div> : null;
+              })()}
 
               {p.error && (
                 <div className="pg-card__error">{p.error}</div>

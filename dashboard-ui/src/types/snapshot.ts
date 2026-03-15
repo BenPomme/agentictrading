@@ -151,6 +151,9 @@ export interface Lineage {
   current_stage: string;
   roi_pct: number;
   monthly_roi_pct?: number;
+  backtest_roi_pct?: number | null;
+  backtest_sharpe?: number | null;
+  backtest_gate_status?: string | null;
   trade_count: number;
   paper_days: number;
   assessment: Assessment;
@@ -207,6 +210,8 @@ export interface ModelRanking {
   current_stage: string;
   ranking_score: number;
   paper_roi_pct: number;
+  backtest_roi_pct?: number | null;
+  backtest_sharpe?: number | null;
   paper_realized_pnl: number;
   paper_closed_trade_count: number;
   paper_win_rate: number;
@@ -478,7 +483,8 @@ export interface ChartPayload {
   currency: string;
   current_balance: number;
   starting_balance: number;
-  balance_points: { ts: string; balance: number }[];
+  points?: { ts: string; balance: number }[];
+  balance_points?: { ts: string; balance: number }[];
   trades: ChartTrade[];
 }
 

@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import config
 
@@ -18,6 +19,18 @@ SLIPPAGE_CRITICAL_BPS = 15.0
 REJECTION_WARNING_RATE = 0.8
 REJECTION_WARNING_COUNT = 25
 NO_TRADE_SCAN_MINIMUM = 25
+
+
+_US_EASTERN = ZoneInfo("America/New_York")
+
+
+def is_stock_market_open_now() -> bool:
+    """True when US equities can trade (Mon-Fri 09:30-16:00 ET)."""
+    now_et = datetime.now(_US_EASTERN)
+    if now_et.weekday() >= 5:
+        return False
+    from datetime import time as dtime
+    return dtime(9, 30) <= now_et.time() <= dtime(16, 0)
 
 
 def _validation_profile() -> str:
@@ -352,6 +365,7 @@ def build_portfolio_execution_evidence(
     root: str | None = None,
     trade_limit: int = 20,
     event_limit: int = 20,
+    market_schedule: Optional[str] = None,
 ) -> Dict[str, Any]:
     requested_target_id = str(requested_target or portfolio_id)
     runtime_alias = parse_runtime_portfolio_alias(str(portfolio_id))
@@ -432,19 +446,24 @@ def build_portfolio_execution_evidence(
     )
     last_training_activity_age_hours = _age_hours(training.get("last_training_activity_at"))
 
+    market_closed_idle = (
+        market_schedule == "stock_market" and not is_stock_market_open_now()
+    )
+
     issues: List[Dict[str, str]] = []
     if error:
         issues.append(_issue("critical", "runtime_error", error))
     if blockers:
         issues.append(_issue("warning", "readiness_blocked", ", ".join(blockers[:4])))
     th = _validation_thresholds()
-    if heartbeat_age is not None and heartbeat_age >= th["heartbeat_stale_critical_sec"]:
-        issues.append(_issue("critical", "heartbeat_stale", f"heartbeat age {heartbeat_age:.1f}s"))
-    elif heartbeat_age is not None and heartbeat_age >= th["heartbeat_stale_warning_sec"]:
-        issues.append(_issue("warning", "heartbeat_slow", f"heartbeat age {heartbeat_age:.1f}s"))
+    if not market_closed_idle:
+        if heartbeat_age is not None and heartbeat_age >= th["heartbeat_stale_critical_sec"]:
+            issues.append(_issue("critical", "heartbeat_stale", f"heartbeat age {heartbeat_age:.1f}s"))
+        elif heartbeat_age is not None and heartbeat_age >= th["heartbeat_stale_warning_sec"]:
+            issues.append(_issue("warning", "heartbeat_slow", f"heartbeat age {heartbeat_age:.1f}s"))
     if quality["drawdown_halt_active"]:
         issues.append(_issue("critical", "drawdown_halt_active", "risk controls halted execution"))
-    if quality["stale_quote_halts"] > 0:
+    if not market_closed_idle and quality["stale_quote_halts"] > 0:
         issues.append(_issue("warning", "stale_quote_halts", f"{quality['stale_quote_halts']} stale quote halts"))
     if quality["rejection_count"] >= th["rejection_warning_count"] and quality["rejection_rate"] >= th["rejection_warning_rate"]:
         issues.append(_issue("warning", "excessive_rejections", f"{quality['rejection_count']} rejections at rate {quality['rejection_rate']:.2f}"))
@@ -474,9 +493,9 @@ def build_portfolio_execution_evidence(
         and account_trade_count == 0
         and _safe_int(state.get("scan_count") or state.get("signal_count") or state.get("opportunity_count")) >= th["no_trade_scan_minimum"]
     )
-    if no_trade_context:
+    if no_trade_context and not market_closed_idle:
         issues.append(_issue("warning", "no_trade_syndrome", "runner is scanning but not converting into paper trades"))
-    if quality["zero_simulated_fills"]:
+    if quality["zero_simulated_fills"] and not market_closed_idle:
         issues.append(_issue("warning", "zero_simulated_fills", "execution quality reports zero simulated fills"))
     if training["leader_model_id"] and not training["leader_strict_gate_pass"]:
         issues.append(_issue("warning", "leader_not_strict_pass", f"leader {training['leader_model_id']} is not strict-pass"))
@@ -584,6 +603,8 @@ def build_portfolio_execution_evidence(
         "recent_trade_count": len(trades),
         "recent_event_count": len(events),
         "has_execution_signal": bool(running or trades or events),
+        "market_closed_idle": market_closed_idle,
+        "market_schedule": market_schedule or "always_on",
         "health_status": health_status,
         "issues": sorted(issues, key=lambda item: severity_order.get(item["severity"], 0), reverse=True),
         "issue_codes": issue_codes,
@@ -613,9 +634,16 @@ def build_portfolio_execution_evidence(
     }
 
 
-def summarize_execution_targets(targets: Iterable[str], *, root: str | None = None) -> Dict[str, Any]:
+def summarize_execution_targets(
+    targets: Iterable[str],
+    *,
+    root: str | None = None,
+    market_schedule: Optional[str] = None,
+) -> Dict[str, Any]:
     target_rows = [
-        build_portfolio_execution_evidence(target, requested_target=str(target), root=root)
+        build_portfolio_execution_evidence(
+            target, requested_target=str(target), root=root, market_schedule=market_schedule,
+        )
         for target in list(targets)
     ]
     issue_codes = list(
@@ -651,6 +679,7 @@ def summarize_execution_targets(targets: Iterable[str], *, root: str | None = No
         summary_parts.append(", ".join(issue_codes[:4]))
     if recommendation_context:
         summary_parts.append(recommendation_context[0])
+    any_market_closed = any(bool(row.get("market_closed_idle")) for row in target_rows)
     return {
         "targets": target_rows,
         "running_target_count": sum(1 for row in target_rows if row.get("running")),
@@ -664,4 +693,6 @@ def summarize_execution_targets(targets: Iterable[str], *, root: str | None = No
         "recommendation_context": recommendation_context,
         "summary": " | ".join(summary_parts),
         "has_execution_signal": any(bool(row.get("has_execution_signal")) for row in target_rows),
+        "market_closed_idle": any_market_closed,
+        "market_schedule": market_schedule or "always_on",
     }

@@ -52,6 +52,11 @@ _KNOWN_PORTFOLIOS: Dict[str, RuntimePortfolioSpec] = {
         "Polymarket Quantum-Fold",
         os.getenv("POLYMARKET_QF_ENABLED", "true").lower() == "true",
     ),
+    "alpaca_paper": RuntimePortfolioSpec(
+        "alpaca_paper",
+        "Alpaca Paper (Stocks/ETFs)",
+        os.getenv("ALPACA_PAPER_ENABLED", "true").lower() == "true",
+    ),
 }
 
 

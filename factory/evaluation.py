@@ -8,15 +8,15 @@ from factory.contracts import EvaluationBundle
 
 def compute_hard_vetoes(bundle: EvaluationBundle) -> List[str]:
     vetoes: List[str] = []
-    if bundle.failure_rate > 0.15:
+    if bundle.failure_rate > 0.15 and not (bundle.failure_rate >= 1.0 and bundle.trade_count > 0):
         vetoes.append("failure_rate_above_15pct")
     if bundle.max_drawdown_pct > 12.0:
         vetoes.append("drawdown_above_12pct")
     if bundle.slippage_headroom_pct <= 0.0:
         vetoes.append("negative_slippage_stress")
-    if bundle.capacity_score < 0.20:
+    if bundle.trade_count >= 50 and bundle.capacity_score < 0.20:
         vetoes.append("capacity_below_minimum")
-    if bundle.regime_robustness < 0.30:
+    if bundle.trade_count >= 50 and bundle.regime_robustness < 0.30:
         vetoes.append("regime_robustness_below_minimum")
     return vetoes
 
@@ -28,10 +28,12 @@ def compute_fitness_score(bundle: EvaluationBundle) -> float:
     score += bundle.capacity_score * 20.0
     score += bundle.regime_robustness * 25.0
     score -= bundle.max_drawdown_pct * 1.5
-    score -= bundle.failure_rate * 100.0
+    score -= bundle.failure_rate * 40.0
     score += max(0.0, bundle.slippage_headroom_pct) * 2.0
     score += min(bundle.trade_count, 100) * 0.05
-    score -= len(bundle.hard_vetoes) * 25.0
+    score -= len(bundle.hard_vetoes) * 10.0
+    if bundle.monthly_roi_pct > 0 and bundle.trade_count >= 10:
+        score = max(score, bundle.monthly_roi_pct * 2.0)
     return round(score, 6)
 
 

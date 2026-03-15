@@ -60,6 +60,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[factory-loop] OPENAI_API_KEY configured: {bool(_api_key)} (len={len(_api_key)})", flush=True)
     print(f"[factory-loop] Provider order: {os.getenv('FACTORY_AGENT_PROVIDER_ORDER', 'codex,deterministic')}", flush=True)
 
+    # Log market hours status
+    try:
+        from factory.orchestrator import is_stock_market_open
+
+        print(f"[factory-loop] Stock market open: {is_stock_market_open()}", flush=True)
+    except Exception:
+        pass
+
     orchestrator = FactoryOrchestrator(loop_root)
     log_path = _resolve_log_path(args.log_path)
     cycle_limit = max(0, int(args.max_cycles))
@@ -78,6 +86,16 @@ def main(argv: list[str] | None = None) -> int:
 
         started_at = time.time()
         cycle_started = _utc_now()
+
+        # Log market hours each cycle
+        try:
+            from factory.orchestrator import is_stock_market_open
+
+            market_status = "OPEN" if is_stock_market_open() else "CLOSED"
+            print(f"[factory-loop] Cycle {cycles_completed + 1} | Market: {market_status}", flush=True)
+        except Exception:
+            pass
+
         try:
             state = orchestrator.run_cycle()
             research_summary = dict(state.get("research_summary") or {})
@@ -107,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if payload["status"] == "ok":
                 print(
-                    "[factory-loop] {ts} cycle={cycle} status={factory_status} readiness={readiness_status} "
+                    "[factory-loop] {ts} cycle={cycle_count} status={factory_status} readiness={readiness_status} "
                     "families={family_count} lineages={lineage_count} positives={positive_model_count} "
                     "escalations={operator_escalation_count} duration={duration_seconds}s".format(**payload),
                     flush=True,

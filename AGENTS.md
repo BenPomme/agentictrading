@@ -20,39 +20,43 @@ In standalone mode, paper execution runs via embedded runners. An external execu
 
 ## Learned User Preferences
 
-- Be fully autonomous: do not ask the user to restart dashboards, servers, or processes -- do it yourself
-- Always verify work visually using browser tools (navigate to dashboard, take screenshots, inspect DOM) before claiming something works
+- Be fully autonomous: do not ask the user to restart dashboards, servers, or processes -- do it yourself; execute plans fully without prompting for manual steps
+- Always verify work visually using browser tools (navigate to dashboard, take screenshots, inspect DOM) before claiming something works -- also check logs and live behavior
 - Use available skills and MCPs proactively instead of doing things manually
-- Show progress frequently -- the user dislikes silent long-running work with no visibility
-- Use cheap/local agents and models for simple tasks (classification, formatting, tweaks); reserve expensive models only for tasks requiring serious reasoning
-- Expensive models (gpt-5.4, gpt-5.3, o3) should be used no more than 5-10% of total agent runs; the cost guard enforces this automatically
-- When Codex CLI quota is exhausted, gracefully fall back to the OpenAI API; never let quota exhaustion block the factory loop or paper trading
-- The user works with Codex CLI in parallel sessions; always check for uncommitted work on `main` before assuming the worktree is current
+- Show progress frequently -- the user dislikes silent long-running work with no visibility; appearing idle triggers frustration
+- Delegate routine tasks to cheap subagents; reserve expensive models (gpt-5.4, o3, Opus 4.6) for critical reasoning and final review only
+- When Codex CLI quota is exhausted, gracefully fall back to the OpenAI API; learning and paper trading must continue even without Codex credits and resume automatically when credits return
+- The user works with Codex CLI in parallel sessions; always check for uncommitted work on `main` before assuming the worktree is current; scan Codex work and build on top of it
 - Preserve system state across sessions: if ideas were processed, models were trading, feeds were healthy -- that state must not regress
-- Keep this repo self-contained; no external repo dependencies required for standalone operation
-- Update `docs/ROADMAP.md` as work lands -- it is the canonical planning document
-- Do not add unnecessary HubSpot, marketing, or unrelated MCP servers to the Codex config
+- Keep this repo self-contained; paper trading and execution must run inside this repo, not the old Arbitrage system; never create runtime dependencies on external repos
+- Update `docs/ROADMAP.md` and `AGENTS.md` as work lands so future sessions can pick up context expertly
 - Start with a plan for complex multi-step work; execute the plan systematically
-- Delegate mechanical/routine tasks to cheaper subagents; handle only critical/hard tasks directly
-- All factory and research data should be version-controlled (data/ is tracked in git)
+- Commit directly to `main` and push to GitHub when the user says "commit to main"
+- All fixes and improvements must be generic/systemic, not family-specific patches -- changes to fitness, retirement, promotion apply to ALL families
+- Never retire a model before it has traded; if no backtest data is available, paper trade first to generate data -- retiring untested models is always wrong
+- Factory agents must understand venue schedules: stock-market models cannot trade on weekends/after-hours; never penalize, review, tweak, or retire a model for being idle when its market is closed
+- Do not repeat instructions the user already gave earlier in the session; track and remember all stated rules within a conversation
 
 ## Learned Workspace Facts
 
-- Remote: `https://github.com/BenPomme/agentictrading.git`
-- Local main repo: `/Users/benjaminpommeraud/Documents/AgenticTrading`
-- bng worktree: `/Users/benjaminpommeraud/.cursor/worktrees/AgenticTrading/bng`
-- Execution mode: standalone embedded (FACTORY_EMBEDDED_EXECUTION_ENABLED=true)
-- Dashboard: `http://127.0.0.1:8788` served by `scripts/factory_dashboard.py` (React build from `dashboard-ui/dist`)
-- Factory loop: `scripts/factory_loop.py` (15-minute cycle interval by default)
-- `.env` is gitignored and must exist in the repo root for the dashboard and factory loop to read config
-- `.env` must contain `PORTFOLIO_STATE_ROOT`, `OPENAI_API_KEY`, `FACTORY_AGENT_PROVIDER_ORDER`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`
-- Agent provider chain: `codex,openai_api,deterministic` (Codex CLI first, then direct OpenAI API fallback, then empty deterministic)
-- Cost guard: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10` caps frontier/deep model usage at 10% of recent runs
-- `data/` directory contains all local data (portfolios, Yahoo OHLCV, Alpaca, factory state) — no external symlinks
-- Yahoo data: 501 Parquet files in `data/yahoo/ohlcv/` (5yr daily OHLCV for S&P 500 + ETFs + VIX + Treasuries)
-- Alpaca data: stock quotes/bars in `data/alpaca/` (free tier, no SIP bars)
-- Portfolio runners run via embedded execution (`factory.local_runner_main`) in standalone mode
-- HMM regime-adaptive family is wired into experiment runner and uses Yahoo OHLCV data
+- Remote: `https://github.com/BenPomme/agentictrading.git`; main repo at `/Users/benjaminpommeraud/Documents/AgenticTrading`, bng worktree at `.cursor/worktrees/AgenticTrading/bng`
+- Standalone embedded execution mode; dashboard at `http://127.0.0.1:8788` (React build from `dashboard-ui/dist`); factory loop at 15-minute intervals
+- `.env` is gitignored; must contain `OPENAI_API_KEY`, `FACTORY_AGENT_PROVIDER_ORDER`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`; when searching for files like `.env`, search across branches and repos, not only the current worktree
+- Agent provider chain: `codex,openai_api,deterministic`; Codex model names (e.g. `gpt-5.2-codex`) are automatically stripped before OpenAI API fallback
+- Cost guard: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10`; OpenAI API fallback uses `gpt-4.1-nano`/`gpt-4.1-mini`/`gpt-4.1`/`o4-mini`/`o3`
+- `data/` contains all local data; large blobs (yahoo, alpaca, polymarket, agent_runs, backtest_results) are gitignored
+- Data sources: Yahoo (503 Parquet files, 5yr OHLCV), Alpaca (free tier, no SIP bars), Binance (50 klines CSVs, 1yr hourly), Betfair, Polymarket (CLOB history pipeline)
+- Market-hours scheduling: stock families (yahoo*, alpaca*) paper-trade 9:30-16:00 ET only; crypto/betting families trade 24/7; factory agent reviews, debug, tweaks, and retirement are all suppressed for stock-market lineages when the market is closed -- heartbeat_stale/no_trade_syndrome are expected idle, not bugs
+- Automated paper trading: 5 embedded runners managed by `EmbeddedExecutionManager` -- `contrarian_legacy` (8hr funding), `cascade_alpha` (8hr funding), `alpaca_paper` (1hr HMM, market-hours only), `betfair_core` (5min generic), `polymarket_quantum_fold` (5min generic); P&L charts update per runner cycle interval, not in real-time
+- Data refresh scheduler: `scripts/data_refresh_scheduler.py` daemon runs Yahoo (6hr), Alpaca (6hr), and Binance funding (4hr) refreshes in background
+- Backtest engine (`backtest/` module): Optuna TPE + walk-forward; backtest-positive gate before paper promotion (Polymarket exempt)
+- Fitness formula (evaluation.py): profit floor ensures models with positive ROI and 10+ trades never score below `roi * 2.0`; hard vetoes reduced to -10 each; failure_rate weight reduced to 40; capacity/regime vetoes skipped for models with <50 trades
+- Retirement rules: untested models (no trades) get a paper trial (7 days, configurable) instead of being retired; only retire after paper trial if model has traded and results are negative; 3 consecutive negative evals or expired paper trial triggers retirement; learning recorded in goldfish memory
+- TASK_LOCAL bypasses agent runtime for pure computation (backtest, optimization) -- no LLM tokens spent
+- Auto-optimization: `_trigger_auto_optimization()` in orchestrator spawns `scripts/optimize_all_champions.py` once/day per family (TASK_LOCAL subprocess)
+- Agent cost downgrades: post_eval_critique→TASK_STANDARD; debug/maintenance/tweak escalation tightened; 40-60% cost reduction per cycle
+- Dashboard P&L charts: API returns `points` key (not `balance_points`); charts only render when `balance_history.jsonl` has data; chart refresh cadence matches runner cycle interval (5min for generic, 1hr for HMM, 8hr for funding)
+- Idea-to-model pipeline: `experiment_runner.run()` and `orchestrator._collect_evidence()` must have a generic fallback for new families; hardcoded family dispatch lists cause new ideas to get stuck at `goldfish_run` with `missing_*_evidence` blockers
 
 ## Integration Contract
 
@@ -97,6 +101,30 @@ Run batch backtests on Yahoo data:
 python3 scripts/batch_backtest.py --param-grid --tickers "SPY,QQQ,AAPL,MSFT"
 ```
 
+Optuna TPE optimization (HMM on Yahoo):
+
+```bash
+python3 scripts/batch_backtest.py --optimize --n-trials 50
+```
+
+Optuna optimization for Binance families:
+
+```bash
+python3 scripts/batch_backtest.py --optimize --family binance_funding_contrarian --n-trials 30
+```
+
+Optimize all champion families at once:
+
+```bash
+python3 scripts/optimize_all_champions.py --n-trials 50
+```
+
+Polymarket historical data collection:
+
+```bash
+python3 scripts/fetch_polymarket_history.py --max-markets 200
+```
+
 Refresh Yahoo data (incremental daily):
 
 ```bash
@@ -107,6 +135,18 @@ Refresh Alpaca data:
 
 ```bash
 python3 scripts/refresh_alpaca_data.py
+```
+
+Refresh Binance funding rates:
+
+```bash
+python3 scripts/refresh_binance_funding.py
+```
+
+Start the data refresh scheduler (daemon):
+
+```bash
+python3 scripts/data_refresh_scheduler.py
 ```
 
 Bulk download Yahoo data (one-time, 5 years):
@@ -164,6 +204,9 @@ The factory enforces a tiered cost model for all agent runs:
 - **Family bootstrap exempt**: `generate_family_proposal` always uses `TASK_FRONTIER` — creating new strategy families needs the best model.
 - **Provider chain**: `codex -> openai_api -> deterministic`. Each provider is tried in order; the first success wins. The `codex` provider calls the Codex CLI; `openai_api` calls `https://api.openai.com/v1/chat/completions` directly with the API key from `.env`.
 - **Proposal model default**: Changed from `gpt-5.4` to `gpt-5.2-codex` to avoid burning expensive budget on routine proposals.
+- **Task class downgrades (2026-03-14)**: `post_eval_critique` → `TASK_STANDARD` (gpt-4.1-mini). Debug escalation requires BOTH critical health AND repeated debug for TASK_HARD. Maintenance only escalates to TASK_HARD for replace/retire actions. Tweak requires `tweak_count >= 2` for TASK_HARD, `>= 1` for TASK_STANDARD, else TASK_CHEAP. Estimated 40-60% cost reduction per cycle.
+- **Auto-optimization**: `_trigger_auto_optimization()` spawns `optimize_all_champions.py` as a background subprocess (TASK_LOCAL, no tokens). Runs once per family per day, tracked via `data/factory/state/last_auto_optimize.json`.
+- **Auto-promotion**: `_promote_optimized_lineages()` re-evaluates champions after optimization results land.
 
 ## Data Pipeline
 
@@ -197,7 +240,8 @@ If starting a new session in this repo:
 - check for uncommitted Codex CLI work on `main` before starting
 - verify the dashboard is running at http://127.0.0.1:8788 (start it if not)
 - verify the factory loop is running (`ps aux | grep factory_loop`)
-- verify embedded runners are alive if applicable
+- verify embedded runners are alive (`ps aux | grep local_runner_main`); check heartbeat files for `skipped: market_closed` on weekends
+- verify data refresh scheduler is running (`ps aux | grep data_refresh_scheduler`)
 - read `docs/ROADMAP.md` for current priorities and recent completions
 - inspect the dashboard visually with browser tools to confirm system health
 - check agent run success rate: `ls -lt data/factory/agent_runs/ | head` and verify recent runs show `openai_api` provider with `success: true`

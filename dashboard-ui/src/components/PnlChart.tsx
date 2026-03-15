@@ -50,7 +50,7 @@ export function PnlChart({ portfolioId }: PnlChartProps) {
     return <div className="pnl-chart__loading">Loading chart…</div>;
   }
 
-  const balancePoints = (data.balance_points ?? []).map(p => ({
+  const balancePoints = (data.points ?? data.balance_points ?? []).map((p: { ts: string; balance: number }) => ({
     x: new Date(p.ts).getTime(),
     y: p.balance,
   }));
@@ -163,7 +163,7 @@ export function PnlChart({ portfolioId }: PnlChartProps) {
 function findBalanceAt(data: ChartPayload, ts: string): number {
   const t = new Date(ts).getTime();
   let closest = data.starting_balance;
-  for (const p of data.balance_points ?? []) {
+  for (const p of (data.points ?? data.balance_points ?? [])) {
     if (new Date(p.ts).getTime() <= t) closest = p.balance;
     else break;
   }

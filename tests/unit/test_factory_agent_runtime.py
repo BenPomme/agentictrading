@@ -12,6 +12,7 @@ from factory.agent_runtime import (
     TASK_CHEAP,
     TASK_FRONTIER,
     TASK_HARD,
+    TASK_LOCAL,
     TASK_STANDARD,
     AgentRunResult,
     RealResearchAgentRuntime,
@@ -186,6 +187,32 @@ def test_task_router_selects_expected_models_and_escalation(monkeypatch, tmp_pat
         [],
         {"health_status": "warning", "issue_codes": ["stalled_model"]},
     ) == TASK_HARD
+
+
+def test_task_local_bypasses_agent_runtime(monkeypatch, tmp_path):
+    """TASK_LOCAL bypasses all LLM providers; pure computation, no tokens."""
+    monkeypatch.setattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)
+    monkeypatch.setattr(config, "FACTORY_AGENT_ENABLED_FAMILIES", "binance_funding_contrarian")
+    monkeypatch.setattr(config, "FACTORY_AGENT_LOG_DIR", str(tmp_path / "agent_runs"))
+    runtime = RealResearchAgentRuntime(tmp_path)
+
+    result = runtime._run_structured(
+        task_type="backtest",
+        task_class=TASK_LOCAL,
+        family_id="binance_funding_contrarian",
+        lineage_id="l1",
+        prompt="",
+        prompt_payload={},
+        schema={},
+    )
+
+    assert result.success is True
+    assert result.provider == "local"
+    assert result.model == "none"
+    assert result.model_class == TASK_LOCAL
+    assert result.reasoning_effort == "none"
+    assert result.fallback_used is False
+    assert result.result_payload.get("output") == "Task executed locally without LLM"
 
 
 def test_enabled_families_gate_real_agent_runtime(monkeypatch, tmp_path):

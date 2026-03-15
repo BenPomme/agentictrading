@@ -665,3 +665,4 @@ def _compact_title_fragment(value: str) -> str:
     if not words:
         return "Adaptive"
     return "".join(word.capitalize() for word in words[:2])
+

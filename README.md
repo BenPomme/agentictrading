@@ -108,15 +108,56 @@ Every real agent call writes a JSON artifact under `data/factory/agent_runs/`, a
 | Betfair | Sports/event data | `data/betfair/` | Built-in connector |
 | Polymarket | Prediction market data | `data/polymarket/` | Built-in connector |
 
-### Batch Backtesting
+### Batch Backtesting & Optuna Optimization
 
 Run systematic backtests outside the factory loop:
 
 ```bash
+# Grid search (exhaustive)
 python3 scripts/batch_backtest.py --param-grid --tickers "SPY,QQQ,AAPL,MSFT,NVDA"
+
+# Optuna TPE optimization (much faster, Bayesian)
+python3 scripts/batch_backtest.py --optimize --n-trials 50 --tickers "SPY,QQQ"
 ```
 
-Supports configurable train/test splits, parameter grid search, and JSON result output.
+Optimize all champion families at once (auto-discovers data):
+
+```bash
+python3 scripts/optimize_all_champions.py --n-trials 50
+python3 scripts/optimize_all_champions.py --families binance_funding_contrarian --force
+```
+
+The `backtest/` module (ported from stockpred) provides walk-forward backtesting, Optuna TPE optimization, and stability scoring — all running locally without LLM tokens. The factory auto-triggers optimization daily for families lacking results via `_trigger_auto_optimization()`.
+
+### Polymarket Data Collection
+
+```bash
+python3 scripts/fetch_polymarket_history.py --max-markets 200 --interval 1h
+```
+
+Fetches price history from the Polymarket CLOB API and stores as Parquet in `data/polymarket/prices_history/`. Run daily to accumulate history for future backtesting.
+
+### Market-Hours Scheduling
+
+The factory is market-hours aware:
+- Stock families (`hmm_regime_adaptive`) paper-test only during US market hours (Mon-Fri 9:30-16:00 ET)
+- Always-on families (crypto, betting, prediction) get priority during off-hours and weekends
+- Config: `FACTORY_STOCK_MARKET_TZ`, `FACTORY_STOCK_MARKET_OPEN`, `FACTORY_STOCK_MARKET_CLOSE`
+
+### Backtest-Positive Gate
+
+No model reaches paper trading without positive backtest ROI:
+- Yahoo/Binance: full gate (ROI > 0 + optimization required)
+- Betfair: relaxed (walkforward evidence only)
+- Polymarket: exempt until historical data accumulates
+- Dashboard shows backtest ROI badge on each model card
+
+### Lineage Retirement
+
+Lineages that never achieve positive results are retired aggressively:
+- `FACTORY_MAX_LOSS_STREAK=3` consecutive negative evaluations
+- `FACTORY_BACKTEST_TTL_HOURS=48` stuck in backtest without positive results
+- Learning is recorded in goldfish memory before retirement
 
 The default real-agent family allowlist is:
 

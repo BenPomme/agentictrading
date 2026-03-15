@@ -219,10 +219,7 @@ def annotate_idea_statuses(ideas: Iterable[Dict[str, Any]], lineages: Iterable[D
         related = [item for item in lineage_rows if item.get("source_idea_id") == row.get("idea_id")]
         incubated = any(str(item.get("creation_kind") or "").strip() == "new_model" for item in related)
         if not related:
-            if row.get("family_candidates"):
-                status = "adapted"
-            else:
-                status = "new"
+            status = "new"
         elif any(item.get("current_stage") in {"canary_ready", "live_ready", "approved_live"} for item in related):
             status = "promoted"
         elif incubated:

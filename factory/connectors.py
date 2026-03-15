@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List
+from typing import Any, Dict, Iterable, List
 
 from factory.contracts import ConnectorSnapshot
 
@@ -53,6 +53,10 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
     root = Path(project_root)
     factory_data_root = root / "data"
 
+    from factory.data_loader import resolve_data_root
+    betfair_data = resolve_data_root(root, "betfair")
+    polymarket_data = resolve_data_root(root, "polymarket")
+
     return [
         FileConnectorAdapter(
             connector_id="binance_core",
@@ -79,7 +83,7 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
                 "information_books",
             ],
             paths=[
-                factory_data_root / "candidates",
+                betfair_data / "candidates",
                 factory_data_root / "prediction",
                 factory_data_root / "state",
                 factory_data_root / "portfolios" / "betfair_core",
@@ -97,6 +101,18 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
             paths=[
                 factory_data_root / "portfolios" / "polymarket_quantum_fold",
                 factory_data_root / "portfolios" / "betfair_core" / "runtime" / "polymarket_binary_research_state.json",
+            ],
+        ),
+        FileConnectorAdapter(
+            connector_id="polymarket_history",
+            venue="polymarket",
+            data_products=[
+                "prices_history",
+                "markets_metadata",
+            ],
+            paths=[
+                polymarket_data / "polymarket" / "prices_history",
+                factory_data_root / "polymarket" / "markets_metadata.json",
             ],
         ),
         FileConnectorAdapter(
@@ -130,3 +146,61 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
             ],
         ),
     ]
+
+
+def backtest_data_depth(project_root: str | Path) -> Dict[str, Dict[str, Any]]:
+    """Report historical data depth per venue for backtest gate decisions."""
+    root = Path(project_root)
+    depths: Dict[str, Dict[str, Any]] = {}
+
+    from factory.data_loader import resolve_data_root
+
+    # Yahoo stocks
+    yahoo_dir = root / "data" / "yahoo" / "ohlcv"
+    if yahoo_dir.exists():
+        parquet_files = list(yahoo_dir.glob("*.parquet"))
+        depths["yahoo"] = {
+            "file_count": len(parquet_files),
+            "sufficient_for_backtest": len(parquet_files) > 10,
+            "estimated_years": 5,
+        }
+
+    # Binance
+    binance_dir = root / "data" / "funding_history"
+    if binance_dir.exists():
+        files = list(binance_dir.glob("*"))
+        depths["binance"] = {
+            "file_count": len(files),
+            "sufficient_for_backtest": len(files) > 5,
+            "estimated_years": 6,
+        }
+
+    # Betfair -- resolve through EXECUTION_REPO_ROOT if local is empty
+    betfair_data = resolve_data_root(root, "betfair")
+    betfair_dir = betfair_data / "candidates"
+    if betfair_dir.exists():
+        files = list(betfair_dir.rglob("*"))
+        depths["betfair"] = {
+            "file_count": len(files),
+            "sufficient_for_backtest": len(files) > 3,
+            "estimated_months": 6,
+        }
+
+    # Polymarket -- resolve through EXECUTION_REPO_ROOT if local is empty
+    poly_data = resolve_data_root(root, "polymarket")
+    poly_dir = poly_data / "polymarket" / "prices_history"
+    if poly_dir.exists():
+        parquet_files = list(poly_dir.glob("*.parquet"))
+        depths["polymarket"] = {
+            "file_count": len(parquet_files),
+            "sufficient_for_backtest": len(parquet_files) > 50,
+            "estimated_months": 0,
+        }
+    else:
+        depths["polymarket"] = {
+            "file_count": 0,
+            "sufficient_for_backtest": False,
+            "estimated_months": 0,
+        }
+
+    return depths

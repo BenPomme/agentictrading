@@ -1,6 +1,12 @@
+"""Factory experiment runner: backtests and optimizations bypass agent runtime.
+
+Backtest/optimization tasks run model code directly (e.g. HMMRegimeModel.backtest(),
+walk_forward_backtest). No LLM or factory/agent_runtime.py involvement.
+"""
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -35,6 +41,8 @@ from factory.experiment_sources import (
     pooled_examples,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _safe_slug(value: str) -> str:
     return value.replace(":", "__").replace("/", "__")
@@ -66,45 +74,137 @@ class FactoryExperimentRunner:
         genome: StrategyGenome,
         experiment: ExperimentSpec,
     ) -> Dict[str, Any]:
-        if lineage.family_id == "binance_cascade_regime":
-            return self._run_cascade_experiment(
+        # New: route through generic backtest if genome has model_code_path
+        model_code_path = str((genome.parameters or {}).get("model_code_path") or "").strip()
+        model_class_name = str((genome.parameters or {}).get("model_class_name") or "").strip()
+        if model_code_path and model_class_name:
+            return self._run_model_code_experiment(
                 lineage=lineage,
                 genome=genome,
                 experiment=experiment,
+                model_code_path=model_code_path,
+                model_class_name=model_class_name,
             )
-        if lineage.family_id == "binance_funding_contrarian":
+        return self._run_generic_experiment(
+            lineage=lineage,
+            genome=genome,
+            experiment=experiment,
+        )
+
+    def _run_generic_experiment(
+        self,
+        *,
+        lineage: LineageRecord,
+        genome: StrategyGenome,
+        experiment: ExperimentSpec,
+    ) -> Dict[str, Any]:
+        """Venue-based fallback for families without a dedicated experiment handler.
+
+        Routes to the closest existing backtester based on target_venues so that
+        idea-seeded families can generate evaluation bundles and progress through
+        the promotion pipeline instead of being stuck as "unsupported".
+        """
+        venues = set(getattr(lineage, "target_venues", None) or [])
+        if "binance" in venues:
             return self._run_funding_experiment(
                 lineage=lineage,
                 genome=genome,
                 experiment=experiment,
             )
-        if lineage.family_id == "betfair_information_lag":
+        if venues & {"yahoo_stocks", "alpaca_stocks", "yahoo", "alpaca"}:
+            return self._run_hmm_regime_experiment(
+                lineage=lineage,
+                genome=genome,
+                experiment=experiment,
+            )
+        if "betfair" in venues:
             return self._run_candidate_signal_experiment(
                 lineage=lineage,
                 genome=genome,
                 experiment=experiment,
                 family_mode="information_lag",
             )
-        if lineage.family_id == "betfair_prediction_value_league":
-            return self._run_prediction_walkforward(
-                lineage=lineage,
-                genome=genome,
-                experiment=experiment,
-            )
-        if lineage.family_id == "polymarket_cross_venue":
+        if "polymarket" in venues:
             return self._run_candidate_signal_experiment(
                 lineage=lineage,
                 genome=genome,
                 experiment=experiment,
                 family_mode="cross_venue",
             )
-        if lineage.family_id == "hmm_regime_adaptive":
-            return self._run_hmm_regime_experiment(
-                lineage=lineage,
-                genome=genome,
-                experiment=experiment,
+        return {"mode": "unsupported_no_venue_match", "bundles": [], "artifact_summary": None}
+
+    def _run_model_code_experiment(
+        self,
+        *,
+        lineage,
+        genome,
+        experiment,
+        model_code_path: str,
+        model_class_name: str,
+    ) -> Dict[str, Any]:
+        """Run backtest using LLM-generated model code."""
+        from factory.generic_backtest import run_generic_backtest, backtest_result_to_evaluation_bundle
+
+        try:
+            result = run_generic_backtest(
+                model_code_path=model_code_path,
+                class_name=model_class_name,
+                genome_params=dict(genome.parameters or {}),
+                project_root=self.project_root,
+                train_frac=0.7,
+                initial_capital=10_000.0,
             )
-        return {"mode": "unsupported", "bundles": [], "artifact_summary": None}
+        except Exception as e:
+            logger.warning("Model code backtest failed for %s: %s", lineage.lineage_id, e)
+            return {
+                "mode": "model_code_backtest_failed",
+                "error": str(e),
+                "bundles": [],
+                "artifact_summary": None,
+            }
+
+        bundle_dict = backtest_result_to_evaluation_bundle(
+            result=result,
+            lineage_id=lineage.lineage_id,
+            family_id=lineage.family_id,
+            stage="walkforward",
+        )
+
+        # Also create a stress bundle with tighter params
+        try:
+            stress_result = run_generic_backtest(
+                model_code_path=model_code_path,
+                class_name=model_class_name,
+                genome_params=dict(genome.parameters or {}),
+                project_root=self.project_root,
+                train_frac=0.8,
+                initial_capital=10_000.0,
+            )
+            stress_bundle = backtest_result_to_evaluation_bundle(
+                result=stress_result,
+                lineage_id=lineage.lineage_id,
+                family_id=lineage.family_id,
+                stage="stress",
+            )
+        except Exception:
+            stress_bundle = dict(bundle_dict)
+            stress_bundle["stage"] = "stress"
+
+        return {
+            "mode": "model_code_backtest",
+            "model_name": result.model_name,
+            "data_source": result.data_source,
+            "total_return_pct": result.total_return_pct,
+            "monthly_roi_pct": result.monthly_roi_pct,
+            "sharpe_ratio": result.sharpe_ratio,
+            "total_trades": result.total_trades,
+            "bundles": [bundle_dict, stress_bundle],
+            "artifact_summary": {
+                "model_code_path": model_code_path,
+                "class_name": model_class_name,
+                "duration_days": result.duration_days,
+            },
+        }
 
     def _execution_refresh_request(
         self,
@@ -1702,7 +1802,11 @@ class FactoryExperimentRunner:
         quality_payload = self._load_json_object(quality_path)
         settled_history = list(quality_payload.get("settled_history") or [])
         if trade_rows:
-            win_count = sum(1 for row in trade_rows if float(row.get("pnl_pct", 0.0) or 0.0) > 0.0)
+            win_count = sum(
+                1 for row in trade_rows
+                if float(row.get("pnl_pct", 0.0) or 0.0) > 0.0
+                or (row.get("pnl_pct") is None and float(row.get("realized_pnl", 0.0) or 0.0) > 0.0)
+            )
             failure_rate = round(1.0 - (win_count / max(1, len(trade_rows))), 4)
             regime_robustness = round(win_count / max(1, len(trade_rows)), 4)
             drawdown_pct = self._trade_log_drawdown_pct(trade_rows)
@@ -2175,13 +2279,15 @@ class FactoryExperimentRunner:
         )
         if cache_key in self._candidate_signal_cache:
             return self._candidate_signal_cache[cache_key]
-        candidate_dir = self.project_root / "data" / "candidates"
+        from factory.data_loader import resolve_data_root
+        betfair_data_root = resolve_data_root(self.project_root, "betfair")
+        candidate_dir = betfair_data_root / "candidates"
         candidate_files = sorted(candidate_dir.glob("*.jsonl"))[-3:]
         if not candidate_files:
             return None
-        clv_dir = self.project_root / "data" / "clv"
+        clv_dir = betfair_data_root / "clv"
         clv_files = sorted(clv_dir.glob("*.jsonl"))[-3:]
-        qa_rows = self._load_jsonl_rows(self.project_root / "data" / "qa" / "decisions.jsonl")[-20:]
+        qa_rows = self._load_jsonl_rows(betfair_data_root / "qa" / "decisions.jsonl")[-20:]
         fresh_rate = 0.0
         if qa_rows:
             fresh_rate = sum(

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import sys
 from collections import defaultdict, deque
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import config
 from factory.agent_runtime import (
@@ -49,6 +52,43 @@ from factory.runtime_lanes import decide_runtime_lane_policy, runtime_lane_selec
 from factory.runtime_mode import current_agentic_factory_runtime_mode
 from factory.state_store import PortfolioStateStore
 from factory.strategy_inventor import ScientificAgentProposal, ScientificFamilyProposal, ScientificStrategyInventor
+
+
+logger = logging.getLogger(__name__)
+
+_US_EASTERN = ZoneInfo("America/New_York")
+_STOCK_MARKET_OPEN_HOUR = 9
+_STOCK_MARKET_OPEN_MIN = 30
+_STOCK_MARKET_CLOSE_HOUR = 16
+_STOCK_MARKET_CLOSE_MIN = 0
+
+
+def is_stock_market_open() -> bool:
+    """Return True if US stock market is currently open (Mon-Fri 9:30-16:00 ET)."""
+    now_et = datetime.now(_US_EASTERN)
+    if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    market_open = now_et.replace(
+        hour=_STOCK_MARKET_OPEN_HOUR,
+        minute=_STOCK_MARKET_OPEN_MIN,
+        second=0,
+        microsecond=0,
+    )
+    market_close = now_et.replace(
+        hour=_STOCK_MARKET_CLOSE_HOUR,
+        minute=_STOCK_MARKET_CLOSE_MIN,
+        second=0,
+        microsecond=0,
+    )
+    return market_open <= now_et < market_close
+
+
+def venue_schedule_class(family_spec: dict) -> str:
+    """Classify a family as 'stock_market' or 'always_on' based on target venues."""
+    venues = {str(v).lower() for v in (family_spec.get("target_venues") or [])}
+    if any(v.startswith("yahoo") or v.startswith("alpaca") for v in venues):
+        return "stock_market"
+    return "always_on"
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -340,8 +380,104 @@ class FactoryOrchestrator:
         )
         return family
 
+    def _design_model_for_family(
+        self,
+        family: FactoryFamily,
+        idea: Dict[str, Any],
+        proposal: Any,
+    ) -> bool:
+        """Call model_design agent to generate model_code.py. Returns True on success."""
+        for attempt in range(2):
+            design_result = self.agent_runtime.design_model(
+                idea=idea,
+                family_id=family.family_id,
+                target_venues=list(family.target_venues),
+                thesis=family.thesis,
+                cycle_count=self._cycle_count,
+            )
+            model_code = None
+            class_name = None
+            if design_result is not None and design_result.success:
+                payload = dict(design_result.result_payload)
+                model_code = str(payload.get("model_code") or "").strip()
+                class_name = str(payload.get("class_name") or "").strip()
+
+            if not model_code or not class_name:
+                logger.warning(
+                    "design_model attempt %d for %s returned no code, retrying",
+                    attempt + 1, family.family_id,
+                )
+                continue
+
+            from factory.model_sandbox import validate_code
+            val_errors = validate_code(model_code)
+            if val_errors:
+                logger.warning(
+                    "Model code for %s failed validation (attempt %d): %s",
+                    family.family_id, attempt + 1, val_errors,
+                )
+                continue
+
+            models_dir = self.project_root / "data" / "factory" / "models" / family.champion_lineage_id
+            models_dir.mkdir(parents=True, exist_ok=True)
+            code_path = models_dir / "model_code.py"
+            code_path.write_text(model_code, encoding="utf-8")
+
+            champion = self.registry.load_lineage(family.champion_lineage_id)
+            if champion is not None:
+                genome = self.registry.load_genome(champion.lineage_id)
+                if genome is not None:
+                    genome.parameters["model_code_path"] = str(code_path)
+                    genome.parameters["model_class_name"] = class_name
+                    self.registry.save_genome(champion.lineage_id, genome)
+            return True
+
+        logger.error(
+            "design_model FAILED for %s after 2 attempts -- family will NOT be created with template code",
+            family.family_id,
+        )
+        return False
+
+    def _mutate_model_code(
+        self,
+        *,
+        parent_genome: StrategyGenome,
+        lineage_id: str,
+        family: FactoryFamily,
+        backtest_results: Dict[str, Any],
+    ) -> tuple:
+        """Mutate model code via CHEAP/STANDARD agent. Returns (model_code, class_name)."""
+        code_path = str(parent_genome.parameters.get("model_code_path") or "")
+        class_name = str(parent_genome.parameters.get("model_class_name") or "")
+        if not code_path or not Path(code_path).exists():
+            return None, None
+
+        current_code = Path(code_path).read_text(encoding="utf-8")
+        tweak_count = int(parent_genome.parameters.get("tweak_count", 0))
+
+        mutate_result = self.agent_runtime.mutate_model(
+            family_id=family.family_id,
+            lineage_id=lineage_id,
+            current_model_code=current_code,
+            class_name=class_name,
+            backtest_results=backtest_results,
+            thesis=family.thesis,
+            tweak_count=tweak_count,
+        )
+
+        if mutate_result is not None and mutate_result.success:
+            payload = dict(mutate_result.result_payload)
+            new_code = str(payload.get("model_code") or "").strip()
+            new_class = str(payload.get("class_name") or class_name).strip()
+            if new_code:
+                from factory.model_sandbox import validate_code
+                if not validate_code(new_code):
+                    return new_code, new_class
+                logger.warning("Mutated code failed validation for %s", lineage_id)
+
+        return None, None
+
     def _new_family_candidate_ideas(self) -> List[Dict[str, Any]]:
-        existing_families = {family.family_id for family in self.registry.families()}
         used_idea_ids = {
             str(family.source_idea_id or "").strip()
             for family in self.registry.families()
@@ -353,29 +489,8 @@ class FactoryOrchestrator:
             idea_id = str(row.get("idea_id") or "").strip()
             if not idea_id or idea_id in used_idea_ids:
                 continue
-            if str(row.get("status") or "") not in {"new", "adapted"}:
+            if str(row.get("status") or "") not in {"new"}:
                 continue
-            family_candidates = [str(item) for item in (row.get("family_candidates") or []) if str(item).strip()]
-            if family_candidates and any(item in existing_families for item in family_candidates):
-                novelty_haystack = " ".join(
-                    [
-                        str(row.get("title") or ""),
-                        str(row.get("summary") or ""),
-                        " ".join(str(item) for item in (row.get("tags") or [])),
-                    ]
-                ).lower()
-                novelty_markers = {
-                    "entropy",
-                    "ladder",
-                    "novel",
-                    "incubator",
-                    "cross venue",
-                    "hybrid",
-                    "reflex",
-                    "new family",
-                }
-                if not any(marker in novelty_haystack for marker in novelty_markers):
-                    continue
             candidates.append(dict(row))
         return candidates
 
@@ -453,6 +568,9 @@ class FactoryOrchestrator:
                 incubation_cycle_created=self._cycle_count,
                 incubation_notes=list(proposal.incubation_notes),
             )
+            if not self._design_model_for_family(family, idea, proposal):
+                logger.warning("Skipping family %s -- model design failed", family.family_id)
+                continue
             champion = self.registry.load_lineage(family.champion_lineage_id)
             if champion is not None:
                 lineages_by_family.setdefault(family.family_id, []).append(champion)
@@ -468,89 +586,78 @@ class FactoryOrchestrator:
     def bootstrap(self) -> None:
         if self.registry.families():
             return
-        family_specs = [
-            {
-                "family_id": "binance_funding_contrarian",
-                "label": "Binance Funding Contrarian",
-                "thesis": "Exploit funding extremes, regime shifts, and cross-science features to improve directional funding trades.",
-                "target_portfolios": ["hedge_validation", "hedge_research", "contrarian_legacy"],
-                "target_venues": ["binance"],
-                "connectors": ["binance_core"],
-                "budget_bucket": "incumbent",
-                "budget_weight_pct": 14.0,
-                "role": LineageRole.CHAMPION.value,
-                "explainer": "Uses funding, basis, open interest, and regime features to rank contrarian directional setups.",
-            },
-            {
-                "family_id": "binance_cascade_regime",
-                "label": "Binance Cascade/Regime",
-                "thesis": "Detect fragile market states and liquidation cascades early enough to survive and exploit dislocations.",
-                "target_portfolios": ["cascade_alpha"],
-                "target_venues": ["binance"],
-                "connectors": ["binance_core"],
-                "budget_bucket": "adjacent",
-                "budget_weight_pct": 18.0,
-                "role": LineageRole.CHAMPION.value,
-                "explainer": "Uses liquidation, depth collapse, and regime features for short-horizon cascade alpha.",
-            },
-            {
-                "family_id": "betfair_prediction_value_league",
-                "label": "Betfair Prediction/Value League",
-                "thesis": "Evolve parallel probability models and policy gates until the best value-betting league earns execution rights.",
-                "target_portfolios": ["betfair_core"],
-                "target_venues": ["betfair"],
-                "connectors": ["betfair_core"],
-                "budget_bucket": "incumbent",
-                "budget_weight_pct": 16.0,
-                "role": LineageRole.CHAMPION.value,
-                "explainer": "Compares prediction, calibration, and policy-gated value-betting lineages on the same snapshots.",
-            },
-            {
-                "family_id": "betfair_information_lag",
-                "label": "Betfair Information-Lag Books",
-                "thesis": "Cross external event signals, time-zone maintenance patterns, and book synchronization delays to find stale pricing.",
-                "target_portfolios": ["betfair_execution_book", "betfair_suspension_lag", "betfair_crossbook_consensus", "betfair_timezone_decay"],
-                "target_venues": ["betfair", "polymarket"],
-                "connectors": ["betfair_core", "polymarket_core"],
-                "budget_bucket": "moonshot",
-                "budget_weight_pct": 22.0,
-                "role": LineageRole.CHAMPION.value,
-                "explainer": "Tracks related-market lag and cross-book stale pricing patterns before they are trusted for execution.",
-            },
-            {
-                "family_id": "polymarket_cross_venue",
-                "label": "Polymarket Cross-Venue Signals",
-                "thesis": "Use Polymarket microstructure and cross-venue event matching to produce robust paper-only signal layers.",
-                "target_portfolios": ["polymarket_quantum_fold", "polymarket_binary_research"],
-                "target_venues": ["polymarket", "betfair"],
-                "connectors": ["polymarket_core", "betfair_core"],
-                "budget_bucket": "adjacent",
-                "budget_weight_pct": 30.0,
-                "role": LineageRole.CHAMPION.value,
-                "explainer": "Runs signal leagues on Polymarket quotes and cross-venue confirmations to rank paper-only opportunities.",
-            },
-            {
-                "family_id": "hmm_regime_adaptive",
-                "label": "HMM Regime-Adaptive",
-                "thesis": "Instrument-agnostic regime detection via HMM on returns/vol/volume. Regime-aware sizing reduces drawdowns and improves risk-adjusted returns.",
-                "target_portfolios": ["hedge_validation", "hedge_research"],
-                "target_venues": ["yahoo", "multi"],
-                "connectors": ["yahoo_stocks"],
-                "budget_bucket": "moonshot",
-                "budget_weight_pct": 10.0,
-                "role": LineageRole.CHAMPION.value,
-                "explainer": "HMM regime detection on Yahoo OHLCV with adaptive position sizing.",
-            },
-        ]
-        for spec in family_specs:
-            self._seed_family_from_spec(
-                spec,
-                family_origin="seeded_family",
+
+        ideas = all_ideas(self.project_root)
+        if not ideas:
+            logger.warning("No ideas found for bootstrap. Add ideas to IDEAS.md first.")
+            return
+
+        seeded_count = 0
+        max_bootstrap = min(len(ideas), 4)
+        research_portfolio_id = str(getattr(config, "RESEARCH_FACTORY_PORTFOLIO_ID", "research_factory"))
+
+        for idea in ideas[:max_bootstrap]:
+            existing_family_ids = [f.family_id for f in self.registry.families()]
+            real_result = self.agent_runtime.generate_family_proposal(
+                idea=idea,
+                existing_family_ids=existing_family_ids,
+                cycle_count=0,
+                proposal_index=seeded_count + 1,
+                research_portfolio_id=research_portfolio_id,
+                active_incubation_count=0,
             )
+            if real_result is not None and real_result.success and real_result.provider != "deterministic":
+                proposal = apply_real_family_proposal(
+                    result=real_result,
+                    idea=idea,
+                    existing_family_ids=existing_family_ids,
+                    cycle_count=0,
+                    proposal_index=seeded_count + 1,
+                    research_portfolio_id=research_portfolio_id,
+                )
+            else:
+                proposal = self.strategy_inventor.generate_family_proposal(
+                    idea=idea,
+                    existing_family_ids=existing_family_ids,
+                    cycle_count=0,
+                    proposal_index=seeded_count + 1,
+                    research_portfolio_id=research_portfolio_id,
+                )
+
+            family = self._seed_family_from_spec(
+                {
+                    "family_id": proposal.family_id,
+                    "label": proposal.label,
+                    "thesis": proposal.thesis,
+                    "target_portfolios": list(proposal.target_portfolios),
+                    "target_venues": list(proposal.target_venues),
+                    "connectors": list(proposal.primary_connector_ids),
+                    "budget_bucket": "moonshot",
+                    "budget_weight_pct": 8.0,
+                    "role": LineageRole.CHAMPION.value,
+                    "explainer": proposal.explainer,
+                },
+                family_origin=proposal.origin,
+                source_idea_id=proposal.source_idea_id,
+                incubation_status="incubating",
+                incubation_cycle_created=0,
+                incubation_notes=list(proposal.incubation_notes),
+            )
+
+            if self._design_model_for_family(family, idea, proposal):
+                seeded_count += 1
+                logger.info("Bootstrap: created family %s from idea %s", family.family_id, idea.get("title", "?"))
+            else:
+                logger.warning("Bootstrap: design failed for idea %s, skipping", idea.get("title", "?"))
+
+        if seeded_count == 0:
+            logger.error("Bootstrap failed to create any families from ideas.")
+            return
+
         self.registry.write_journal(
             FactoryJournal(
-                active_goal="Build a reproducible strategy factory with shadow, paper, and approval-gated live promotion.",
-                recent_actions=["[bootstrap] Seeded default factory families and champion lineages."],
+                active_goal="Build a reproducible strategy factory with LLM-designed models and approval-gated promotion.",
+                recent_actions=[f"[bootstrap] Created {seeded_count} families from IDEAS.md via LLM model design."],
             )
         )
 
@@ -825,6 +932,33 @@ class FactoryOrchestrator:
             }
         genome.parameters["creation_kind"] = creation_kind
         genome.parameters["source_idea_id"] = proposal.source_idea_id if proposal else None
+        parent_code_path = str(parent_genome.parameters.get("model_code_path") or "")
+        if parent_code_path and Path(parent_code_path).exists():
+            last_eval = {}
+            try:
+                last_eval_id = parent_lineage.last_evaluation_id
+                if last_eval_id:
+                    eval_data = self.registry.load_evaluation(last_eval_id)
+                    if eval_data:
+                        last_eval = eval_data.to_dict()
+            except Exception:
+                pass
+            new_code, new_class = self._mutate_model_code(
+                parent_genome=parent_genome,
+                lineage_id=lineage_id,
+                family=family,
+                backtest_results=last_eval,
+            )
+            if new_code and new_class:
+                new_model_dir = self.project_root / "data" / "factory" / "models" / lineage_id
+                new_model_dir.mkdir(parents=True, exist_ok=True)
+                new_code_path = new_model_dir / "model_code.py"
+                new_code_path.write_text(new_code, encoding="utf-8")
+                genome.parameters["model_code_path"] = str(new_code_path)
+                genome.parameters["model_class_name"] = new_class
+            else:
+                genome.parameters["model_code_path"] = parent_code_path
+                genome.parameters["model_class_name"] = str(parent_genome.parameters.get("model_class_name") or "")
         hypothesis = ResearchHypothesis(
             hypothesis_id=hypothesis_id,
             family_id=family.family_id,
@@ -1296,6 +1430,8 @@ class FactoryOrchestrator:
             return None
         if not lineage.active:
             return None
+        if execution_evidence.get("market_closed_idle"):
+            return None
         if lineage.current_stage not in {
             PromotionStage.PAPER.value,
             PromotionStage.CANARY_READY.value,
@@ -1331,6 +1467,8 @@ class FactoryOrchestrator:
         if not bool(getattr(config, "FACTORY_AGENT_REVIEW_ENABLED", True)):
             return None
         if not lineage.active:
+            return None
+        if execution_evidence.get("market_closed_idle"):
             return None
         if lineage.current_stage not in {
             PromotionStage.PAPER.value,
@@ -1890,6 +2028,18 @@ class FactoryOrchestrator:
             return "shadow"
         return "queued"
 
+    def _should_skip_paper_dispatch(self, lineage: LineageRecord) -> bool:
+        """Skip paper/shadow dispatch for stock-market families outside market hours."""
+        if lineage.current_stage not in {PromotionStage.PAPER.value, PromotionStage.SHADOW.value}:
+            return False
+        family = self.registry.load_family(lineage.family_id)
+        if family is None:
+            return False
+        spec = {"target_venues": list(family.target_venues)}
+        if venue_schedule_class(spec) == "stock_market" and not is_stock_market_open():
+            return True
+        return False
+
     def _queue_priority(self, lineage: LineageRecord) -> int:
         base = {
             LineageRole.CHAMPION.value: 10,
@@ -1903,6 +2053,23 @@ class FactoryOrchestrator:
             base = min(base, 16)
         if not lineage.active:
             base += 50
+
+        # Market-hours scheduling boost
+        family = self.registry.load_family(lineage.family_id)
+        if family is not None:
+            spec = {"target_venues": list(family.target_venues)}
+            sched_class = venue_schedule_class(spec)
+            market_open = is_stock_market_open()
+            if sched_class == "stock_market":
+                if market_open:
+                    base -= 20  # priority boost during market hours
+                else:
+                    # Stock families deprioritized outside market hours
+                    base += 30
+            else:  # always_on
+                if not market_open:
+                    base -= 20  # priority boost outside market hours
+
         return base
 
     def _refresh_queue_entries(self, entries: List[ExperimentQueueEntry]) -> List[ExperimentQueueEntry]:
@@ -2358,6 +2525,208 @@ class FactoryOrchestrator:
             ),
         )
 
+    def _trigger_auto_optimization(
+        self,
+        families: List[FactoryFamily],
+        recent_actions: List[Dict[str, Any]],
+    ) -> None:
+        """Spawn background Optuna optimization for families lacking backtest results.
+
+        Runs once per family per day via a timestamp file. Pure computation (TASK_LOCAL).
+        """
+        import subprocess as _sp
+
+        results_root = self.project_root / "data" / "backtest_results"
+        stamp_dir = self.project_root / "data" / "factory" / "state"
+        stamp_dir.mkdir(parents=True, exist_ok=True)
+        stamp_path = stamp_dir / "last_auto_optimize.json"
+
+        stamps: Dict[str, str] = {}
+        if stamp_path.exists():
+            try:
+                stamps = json.loads(stamp_path.read_text(encoding="utf-8"))
+            except Exception:
+                stamps = {}
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        optimizable = {"hmm_regime_adaptive", "binance_funding_contrarian", "binance_cascade_regime"}
+        families_to_optimize = []
+
+        for family in families:
+            if family.family_id not in optimizable:
+                continue
+            if stamps.get(family.family_id) == today:
+                continue
+            family_dir = results_root / family.family_id
+            if family_dir.exists() and len(list(family_dir.glob("*_optuna_results.json"))) > 0:
+                stamps[family.family_id] = today
+                continue
+            families_to_optimize.append(family.family_id)
+
+        if not families_to_optimize:
+            return
+
+        for fam_id in families_to_optimize:
+            try:
+                cmd = [
+                    sys.executable,
+                    str(self.project_root / "scripts" / "optimize_all_champions.py"),
+                    "--families", fam_id,
+                    "--n-trials", "30",
+                ]
+                _sp.Popen(
+                    cmd,
+                    stdout=_sp.DEVNULL,
+                    stderr=_sp.DEVNULL,
+                    cwd=str(self.project_root),
+                )
+                stamps[fam_id] = today
+                _append_recent_action(
+                    recent_actions,
+                    f"[cycle {self._cycle_count}] Spawned background optimization for {fam_id}.",
+                )
+                logger.info("Spawned optimization subprocess for %s", fam_id)
+            except Exception as exc:
+                logger.warning("Failed to spawn optimization for %s: %s", fam_id, exc)
+
+        stamp_path.write_text(json.dumps(stamps, indent=2), encoding="utf-8")
+
+    def _promote_optimized_lineages(
+        self,
+        families: List[FactoryFamily],
+        recent_actions: List[Dict[str, Any]],
+    ) -> None:
+        """Re-evaluate lineages stuck in early stages after optimization results land."""
+        results_root = self.project_root / "data" / "backtest_results"
+
+        for family in families:
+            family_dir = results_root / family.family_id
+            if not family_dir.exists():
+                continue
+            optuna_files = list(family_dir.glob("*_optuna_results.json"))
+            if not optuna_files:
+                continue
+
+            best_roi = 0.0
+            best_params: Dict[str, Any] = {}
+            for fp in optuna_files:
+                try:
+                    data = json.loads(fp.read_text(encoding="utf-8"))
+                    roi = float((data.get("best_metrics") or {}).get("total_return_pct", data.get("best_score", 0)) or 0)
+                    if roi > best_roi:
+                        best_roi = roi
+                        best_params = data.get("best_params", {})
+                except Exception:
+                    continue
+
+            if best_roi <= 0:
+                continue
+
+            lineages = [l for l in self.registry.lineages() if l.family_id == family.family_id]
+            champion = None
+            for lin in lineages:
+                if lin.role == "champion" and lin.active:
+                    champion = lin
+                    break
+
+            if champion is not None:
+                latest_evals = self.registry.latest_evaluation_by_stage(champion.lineage_id)
+                champ_fitness = max(
+                    (float(getattr(b, "fitness_score", 0) or 0) for b in latest_evals.values()),
+                    default=0.0,
+                )
+                if champ_fitness <= 0:
+                    _append_recent_action(
+                        recent_actions,
+                        f"[cycle {self._cycle_count}] Optimization found positive ROI ({best_roi:.1f}%) for {family.family_id}; "
+                        f"champion {champion.lineage_id[:20]} has fitness {champ_fitness:.2f}.",
+                    )
+
+    def _backtest_positive_gate(self, lineage: LineageRecord, family: FactoryFamily) -> tuple[bool, str]:
+        """Check if a lineage passes the backtest-positive gate for paper promotion.
+
+        Returns (passes, reason).
+        """
+        spec = {"target_venues": list(family.target_venues)}
+        sched_class = venue_schedule_class(spec)
+        venues_set = {str(v).lower() for v in family.target_venues}
+
+        # Polymarket: exempt from backtest gate (no historical data yet)
+        if "polymarket" in venues_set and len(venues_set) <= 2:
+            return (True, "polymarket_exempt_no_backtest_data")
+
+        # Check walkforward evidence
+        latest_by_stage = self.registry.latest_evaluation_by_stage(lineage.lineage_id)
+        walkforward_bundle = latest_by_stage.get("walkforward")
+        if walkforward_bundle is None:
+            has_any_trades = any(
+                int(getattr(b, "trade_count", 0) or 0) > 0
+                for b in latest_by_stage.values()
+            )
+            if not has_any_trades:
+                return (True, "no_walkforward_paper_trial_allowed")
+            return (False, "no_walkforward_evidence")
+
+        stress_positive = bool(
+            getattr(walkforward_bundle, "stress_positive", False)
+            if hasattr(walkforward_bundle, "stress_positive")
+            else (walkforward_bundle.metrics or {}).get("stress_positive", False)
+        )
+
+        # Betfair: relaxed gate (limited historical data)
+        if "betfair" in venues_set:
+            if walkforward_bundle is not None:
+                return (True, "betfair_relaxed_walkforward_only")
+            return (False, "betfair_no_walkforward")
+
+        # Full gate for Yahoo/Binance families
+        fitness = float(
+            getattr(walkforward_bundle, "fitness_score", 0)
+            if hasattr(walkforward_bundle, "fitness_score")
+            else (walkforward_bundle.metrics or {}).get("fitness_score", 0) or 0
+        )
+        if fitness <= 0:
+            return (False, f"negative_fitness_score_{fitness:.4f}")
+
+        # Check for batch backtest results
+        backtest_results_dir = self.project_root / "data" / "backtest_results" / family.family_id
+        if backtest_results_dir.exists():
+            result_files = list(backtest_results_dir.glob("*.json"))
+            if result_files:
+                for rf in result_files:
+                    try:
+                        data = json.loads(rf.read_text(encoding="utf-8"))
+                        test_metrics = data.get("test_metrics") or data.get("best_metrics") or {}
+                        test_roi = float(
+                            test_metrics.get("total_return_pct", test_metrics.get("total_return", 0)) or 0
+                        )
+                        if test_roi > 0:
+                            return (True, f"backtest_positive_roi_{test_roi:.2f}pct")
+                    except Exception:
+                        continue
+                return (False, "all_backtest_results_negative")
+
+        # No backtest results yet -- check if optimization results exist
+        opt_path = self.project_root / "data" / "backtest_results" / family.family_id / "optimized_params.json"
+        if opt_path.exists():
+            try:
+                opt_data = json.loads(opt_path.read_text(encoding="utf-8"))
+                best_return = float((opt_data.get("best_metrics") or {}).get("total_return_pct", 0) or 0)
+                if best_return > 0:
+                    return (True, f"optimization_positive_roi_{best_return:.2f}pct")
+                return (False, f"optimization_negative_roi_{best_return:.2f}pct")
+            except Exception:
+                pass
+
+        has_any_trades = any(
+            int(getattr(b, "trade_count", 0) or 0) > 0
+            for b in latest_by_stage.values()
+        )
+        if not has_any_trades:
+            return (True, "no_data_paper_trial_allowed")
+
+        return (False, "no_backtest_or_optimization_results")
+
     def _retire_or_update_lineages(
         self,
         family: FactoryFamily,
@@ -2422,6 +2791,18 @@ class FactoryOrchestrator:
                     f"[cycle {self._cycle_count}] Deferred tweak/retirement for {lineage.lineage_id} until execution validation is present.",
                 )
                 continue
+            # Backtest-positive gate: block paper/shadow promotion for negative backtest
+            if lineage.current_stage in {PromotionStage.WALKFORWARD.value, PromotionStage.STRESS.value}:
+                gate_pass, gate_reason = self._backtest_positive_gate(lineage, family)
+                if not gate_pass:
+                    if not any(str(b).startswith("backtest_gate:") for b in lineage.blockers):
+                        lineage.blockers = list(dict.fromkeys(list(lineage.blockers) + [f"backtest_gate:{gate_reason}"]))
+                        self.registry.save_lineage(lineage)
+                        _append_recent_action(
+                            recent_actions,
+                            f"[cycle {self._cycle_count}] Backtest gate blocked {lineage.lineage_id}: {gate_reason}",
+                        )
+                    continue
             monthly_roi = float(row.get("monthly_roi_pct", 0.0) or 0.0)
             hard_vetoes = list(row.get("hard_vetoes") or [])
             score = float(row.get("fitness_score", 0.0) or 0.0)
@@ -2478,6 +2859,162 @@ class FactoryOrchestrator:
         family.retired_lineage_ids = sorted(retired_ids)
         family.shadow_challenger_ids = [lineage_id for lineage_id in family.shadow_challenger_ids if lineage_id not in retired_ids]
         family.paper_challenger_ids = [lineage_id for lineage_id in family.paper_challenger_ids if lineage_id not in retired_ids]
+        self.registry.save_family(family)
+
+    def _retire_by_loss_streak(
+        self,
+        family: FactoryFamily,
+        ranked_rows: List[Dict[str, Any]],
+        *,
+        recent_actions: List[str],
+    ) -> None:
+        """Retire lineages with consecutive negative evaluations."""
+        max_streak = int(getattr(config, "FACTORY_MAX_LOSS_STREAK", 3))
+        retired_ids = set(family.retired_lineage_ids)
+
+        for row in ranked_rows:
+            lineage = self.registry.load_lineage(str(row["lineage_id"]))
+            if lineage is None or not lineage.active:
+                continue
+            # Don't retire champions via loss streak
+            if lineage.lineage_id == family.champion_lineage_id:
+                continue
+
+            loss_streak = int(lineage.loss_streak or 0)
+            if loss_streak >= max_streak:
+                lineage.active = False
+                lineage.retired_at = utc_now_iso()
+                lineage.iteration_status = "retired"
+                lineage.retirement_reason = f"loss_streak_{loss_streak}_exceeded_max_{max_streak}"
+                lineage.blockers = list(dict.fromkeys(
+                    list(lineage.blockers) + [lineage.retirement_reason]
+                ))
+                self._record_learning_memory(
+                    lineage, row,
+                    reason="retired_never_positive",
+                )
+                retired_ids.add(lineage.lineage_id)
+                self.registry.save_lineage(lineage)
+                _append_recent_action(
+                    recent_actions,
+                    f"[cycle {self._cycle_count}] Retired {lineage.lineage_id}: loss streak {loss_streak} >= {max_streak}",
+                )
+
+        family.retired_lineage_ids = sorted(retired_ids)
+        family.shadow_challenger_ids = [lid for lid in family.shadow_challenger_ids if lid not in retired_ids]
+        family.paper_challenger_ids = [lid for lid in family.paper_challenger_ids if lid not in retired_ids]
+        self.registry.save_family(family)
+
+    def _retire_by_backtest_ttl(
+        self,
+        family: FactoryFamily,
+        *,
+        recent_actions: List[str],
+    ) -> None:
+        """Retire lineages stuck in backtest stages too long without positive results.
+
+        Models that have never traded are promoted to paper trial instead of
+        being retired -- you cannot judge a model that has never executed.
+        """
+        ttl_hours = float(getattr(config, "FACTORY_BACKTEST_TTL_HOURS", 48))
+        paper_trial_days = float(getattr(config, "FACTORY_PAPER_TRIAL_DAYS", 7))
+        retired_ids = set(family.retired_lineage_ids)
+        now = datetime.now(timezone.utc)
+
+        for lineage in self.registry.lineages():
+            if lineage.family_id != family.family_id or not lineage.active:
+                continue
+            if lineage.current_stage not in {
+                PromotionStage.GOLDFISH_RUN.value,
+                PromotionStage.WALKFORWARD.value,
+            }:
+                continue
+
+            created_dt = _parse_iso_dt(lineage.created_at)
+            if created_dt is None:
+                continue
+
+            age_hours = (now - created_dt).total_seconds() / 3600
+            if age_hours < ttl_hours:
+                continue
+
+            gate_pass, gate_reason = self._backtest_positive_gate(lineage, family)
+            if gate_pass:
+                continue
+
+            eval_by_stage = self.registry.latest_evaluation_by_stage(lineage.lineage_id)
+            has_traded = any(
+                int(getattr(b, "trade_count", 0) or 0) > 0
+                for b in eval_by_stage.values()
+            )
+
+            if not has_traded:
+                lineage.current_stage = PromotionStage.PAPER.value
+                lineage.iteration_status = "paper_trial_no_backtest"
+                lineage.blockers = list(dict.fromkeys(
+                    list(lineage.blockers) + [f"paper_trial:{gate_reason}"]
+                ))
+                self.registry.save_lineage(lineage)
+                _append_recent_action(
+                    recent_actions,
+                    f"[cycle {self._cycle_count}] Promoted {lineage.lineage_id} to paper trial (no backtest data, no trades yet)",
+                )
+                continue
+
+            lineage.active = False
+            lineage.retired_at = utc_now_iso()
+            lineage.iteration_status = "retired"
+            lineage.retirement_reason = f"backtest_ttl_{age_hours:.0f}h_exceeded_{ttl_hours:.0f}h"
+            lineage.blockers = list(dict.fromkeys(
+                list(lineage.blockers) + [lineage.retirement_reason]
+            ))
+            retired_ids.add(lineage.lineage_id)
+            self.registry.save_lineage(lineage)
+            _append_recent_action(
+                recent_actions,
+                f"[cycle {self._cycle_count}] Retired {lineage.lineage_id}: backtest TTL {age_hours:.0f}h > {ttl_hours:.0f}h without positive results",
+            )
+
+        paper_trial_ttl_hours = paper_trial_days * 24
+        for lineage in self.registry.lineages():
+            if lineage.family_id != family.family_id or not lineage.active:
+                continue
+            if lineage.current_stage != PromotionStage.PAPER.value:
+                continue
+            if lineage.iteration_status != "paper_trial_no_backtest":
+                continue
+            created_dt = _parse_iso_dt(lineage.created_at)
+            if created_dt is None:
+                continue
+            age_hours = (now - created_dt).total_seconds() / 3600
+            if age_hours < paper_trial_ttl_hours:
+                continue
+            eval_by_stage = self.registry.latest_evaluation_by_stage(lineage.lineage_id)
+            has_traded = any(
+                int(getattr(b, "trade_count", 0) or 0) > 0
+                for b in eval_by_stage.values()
+            )
+            if has_traded:
+                gate_pass, _ = self._backtest_positive_gate(lineage, family)
+                if gate_pass:
+                    lineage.iteration_status = "paper_trial_graduated"
+                    lineage.blockers = [b for b in lineage.blockers if not b.startswith("paper_trial:")]
+                    self.registry.save_lineage(lineage)
+                    continue
+            lineage.active = False
+            lineage.retired_at = utc_now_iso()
+            lineage.iteration_status = "retired"
+            lineage.retirement_reason = f"paper_trial_expired_{age_hours:.0f}h"
+            retired_ids.add(lineage.lineage_id)
+            self.registry.save_lineage(lineage)
+            _append_recent_action(
+                recent_actions,
+                f"[cycle {self._cycle_count}] Retired {lineage.lineage_id}: paper trial expired after {age_hours:.0f}h",
+            )
+
+        family.retired_lineage_ids = sorted(retired_ids)
+        family.shadow_challenger_ids = [lid for lid in family.shadow_challenger_ids if lid not in retired_ids]
+        family.paper_challenger_ids = [lid for lid in family.paper_challenger_ids if lid not in retired_ids]
         self.registry.save_family(family)
 
     def _connector_snapshots(self) -> List[Dict[str, Any]]:
@@ -2542,7 +3079,8 @@ class FactoryOrchestrator:
         }
 
     def _execution_validation_snapshot(self, lineage: LineageRecord) -> Dict[str, Any]:
-        snapshot = summarize_execution_targets(lineage.target_portfolios)
+        schedule = venue_schedule_class({"target_venues": lineage.target_venues})
+        snapshot = summarize_execution_targets(lineage.target_portfolios, market_schedule=schedule)
         rankings = family_model_rankings(lineage.family_id)
         if not rankings.empty:
             snapshot["family_rankings"] = [
@@ -4247,7 +4785,19 @@ class FactoryOrchestrator:
     def _collect_evidence(self, lineage: LineageRecord) -> List[EvaluationBundle]:
         bundles: List[EvaluationBundle] = []
         experiment_result = self._run_experiment(lineage)
-        experiment_bundles = list(experiment_result.get("bundles") or [])
+        raw_bundles = list(experiment_result.get("bundles") or [])
+        experiment_bundles: List[EvaluationBundle] = []
+        for item in raw_bundles:
+            if isinstance(item, EvaluationBundle):
+                experiment_bundles.append(item)
+            elif isinstance(item, dict):
+                try:
+                    from dataclasses import fields as dc_fields
+                    known = {f.name for f in dc_fields(EvaluationBundle)}
+                    filtered = {k: v for k, v in item.items() if k in known}
+                    experiment_bundles.append(EvaluationBundle(**filtered))
+                except Exception:
+                    logger.warning("Could not coerce bundle dict for %s: %s", lineage.lineage_id, list(item.keys())[:5])
         experiment_by_stage = {bundle.stage: bundle for bundle in experiment_bundles}
         if lineage.family_id == "binance_funding_contrarian":
             bundles.extend(experiment_bundles)
@@ -4394,6 +4944,8 @@ class FactoryOrchestrator:
                         ),
                     ]
                 )
+        else:
+            bundles.extend(experiment_bundles)
         if lineage.family_id not in {
             "betfair_prediction_value_league",
             "binance_funding_contrarian",
@@ -4577,11 +5129,17 @@ class FactoryOrchestrator:
         maintenance_reviews_run = 0
         maintenance_review_cap = max(0, int(getattr(config, "FACTORY_MAINTENANCE_AGENT_MAX_ITEMS_PER_CYCLE", 3) or 3))
         for lineage in self.registry.lineages():
-            latest_by_stage = (
-                self._save_evidence(lineage)
-                if lineage.active
-                else self.registry.latest_evaluation_by_stage(lineage.lineage_id)
-            )
+            if lineage.active:
+                if self._should_skip_paper_dispatch(lineage):
+                    latest_by_stage = self.registry.latest_evaluation_by_stage(lineage.lineage_id)
+                    _append_recent_action(
+                        recent_actions,
+                        f"[cycle {self._cycle_count}] Skipped paper/shadow dispatch for {lineage.lineage_id} ({lineage.family_id}): stock market closed.",
+                    )
+                else:
+                    latest_by_stage = self._save_evidence(lineage)
+            else:
+                latest_by_stage = self.registry.latest_evaluation_by_stage(lineage.lineage_id)
             family = family_by_id.get(lineage.family_id)
             incumbent_walkforward_bundle: Optional[EvaluationBundle] = None
             incumbent_paper_bundle: Optional[EvaluationBundle] = None
@@ -4885,6 +5443,11 @@ class FactoryOrchestrator:
             prepared_challenger_id: str | None = None
             if runtime_mode.is_full and ranked:
                 self._retire_or_update_lineages(family, ranked, recent_actions=recent_actions)
+                self._retire_by_loss_streak(family, ranked, recent_actions=recent_actions)
+                self._retire_by_backtest_ttl(family, recent_actions=recent_actions)
+                if family == families[-1]:
+                    self._trigger_auto_optimization(families, recent_actions=recent_actions)
+                    self._promote_optimized_lineages(families, recent_actions=recent_actions)
                 refreshed_ranked: List[Dict[str, Any]] = []
                 for row in ranked:
                     lineage = self.registry.load_lineage(str(row["lineage_id"]))

@@ -85,7 +85,12 @@ function App() {
                 <AgentActivityPanel agentRuns={data?.factory?.agent_runs} />
               </ErrorBoundary>
               <ErrorBoundary name="PortfolioGrid">
-                <PortfolioGrid portfolios={data?.execution?.portfolios} placeholders={data?.execution?.placeholders} />
+                <PortfolioGrid
+                  portfolios={data?.execution?.portfolios}
+                  placeholders={data?.execution?.placeholders}
+                  lineages={data?.factory?.lineages}
+                  families={data?.factory?.families}
+                />
               </ErrorBoundary>
             </div>
             <div className="app__col app__col--narrow">

@@ -67,6 +67,8 @@ export function venueIcon(venue: string | undefined | null): string {
     case 'binance': return '₿';
     case 'betfair': return '⚽';
     case 'polymarket': return '🗳';
+    case 'yahoo': return '📈';
+    case 'alpaca': return '🦙';
     default: return '📡';
   }
 }

@@ -22,6 +22,54 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _load_backtest_roi(project_root: Path, family_id: str, lineage_id: str) -> dict:
+    """Load backtest ROI metrics for a lineage."""
+    result = {"backtest_roi_pct": None, "backtest_sharpe": None, "backtest_gate_status": None}
+
+    backtest_dir = project_root / "data" / "backtest_results" / family_id
+    if not backtest_dir.exists():
+        return result
+
+    # Check for optimization results first
+    opt_path = backtest_dir / "optimized_params.json"
+    if opt_path.exists():
+        try:
+            data = json.loads(opt_path.read_text(encoding="utf-8"))
+            metrics = data.get("best_metrics") or {}
+            result["backtest_roi_pct"] = float(metrics.get("total_return_pct", 0) or 0)
+            result["backtest_sharpe"] = float(metrics.get("sharpe", 0) or 0)
+            result["backtest_gate_status"] = "positive" if result["backtest_roi_pct"] > 0 else "negative"
+            return result
+        except Exception:
+            pass
+
+    best_roi = None
+    best_sharpe = None
+    for rf in sorted(backtest_dir.glob("*.json")):
+        try:
+            data = json.loads(rf.read_text(encoding="utf-8"))
+            metrics = (
+                data.get("best_metrics")
+                or data.get("test_metrics")
+                or (data.get("optimization") or {}).get("best_metrics")
+                or {}
+            )
+            roi = float(metrics.get("total_return_pct", metrics.get("total_return", 0)) or 0)
+            sharpe = float(metrics.get("sharpe", metrics.get("sharpe_ratio", 0)) or 0)
+            if best_roi is None or roi > best_roi:
+                best_roi = roi
+                best_sharpe = sharpe
+        except Exception:
+            continue
+
+    if best_roi is not None:
+        result["backtest_roi_pct"] = best_roi
+        result["backtest_sharpe"] = best_sharpe
+        result["backtest_gate_status"] = "positive" if best_roi > 0 else "negative"
+
+    return result
+
+
 def _read_json(path: Path, default: Any = None) -> Any:
     if not path.exists():
         return default
@@ -1028,12 +1076,14 @@ def _portfolio_snapshot(path: Path) -> Dict[str, Any]:
     if str(state.get("error") or "").strip():
         raw_issue_codes.append("runtime_error")
     heartbeat_health = "healthy"
-    if heartbeat_age is not None and heartbeat_age >= 300:
-        raw_issue_codes.append("heartbeat_stale")
-        heartbeat_health = "critical"
-    elif heartbeat_age is not None and heartbeat_age >= 120:
-        raw_issue_codes.append("heartbeat_slow")
-        heartbeat_health = "warning"
+    runner_market_idle = str(heartbeat.get("skipped") or "").lower() == "market_closed"
+    if not runner_market_idle:
+        if heartbeat_age is not None and heartbeat_age >= 300:
+            raw_issue_codes.append("heartbeat_stale")
+            heartbeat_health = "critical"
+        elif heartbeat_age is not None and heartbeat_age >= 120:
+            raw_issue_codes.append("heartbeat_slow")
+            heartbeat_health = "warning"
     execution_issue_codes = list(dict.fromkeys(raw_issue_codes))
     blocked = bool(_portfolio_error(state, readiness))
     display_status = status
@@ -1609,6 +1659,7 @@ def _build_lineage_atlas(factory_state: Dict[str, Any]) -> Dict[str, Any]:
             "runtime_target_portfolio": row.get("runtime_target_portfolio"),
             "canonical_target_portfolio": row.get("canonical_target_portfolio"),
             "suppressed_runtime_sibling": bool(row.get("suppressed_runtime_sibling")),
+            "backtest_roi_pct": _compact_number(row.get("backtest_roi_pct")) if row.get("backtest_roi_pct") is not None else _load_backtest_roi(_project_root(), family_id, lineage_id).get("backtest_roi_pct"),
             "child_lineage_ids": [],
             "depth": 0,
         }
@@ -1917,6 +1968,7 @@ def _build_model_league_view(factory_state: Dict[str, Any]) -> List[Dict[str, An
         for item in list(factory_state.get("lineages") or [])
         if str(item.get("lineage_id") or "").strip()
     }
+    project_root = _project_root()
     for family in factory_state.get("families") or []:
         primary = lineages_by_id.get(str(family.get("primary_incumbent_lineage_id") or ""), {})
         challenger = lineages_by_id.get(str(family.get("isolated_challenger_lineage_id") or ""), {})
@@ -1928,6 +1980,9 @@ def _build_model_league_view(factory_state: Dict[str, Any]) -> List[Dict[str, An
         rankings = []
         for item in list(family.get("curated_rankings") or [])[:3]:
             lineage = lineages_by_id.get(str(item.get("lineage_id") or ""), {})
+            bt_data = _load_backtest_roi(
+                project_root, str(family.get("family_id") or ""), str(item.get("lineage_id") or "")
+            )
             assessment = _assessment_progress(
                 paper_days=int(lineage.get("paper_days", 0) or 0),
                 trade_count=int(item.get("paper_closed_trade_count", 0) or 0),
@@ -2184,10 +2239,11 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
         ),
     )
     rows: List[Dict[str, Any]] = []
+    project_root = _project_root()
     for row in sorted_lineages[:24]:
         paper_runtime_status = _lineage_paper_runtime_status(dict(row))
-        rows.append(
-            {
+        bt_data = _load_backtest_roi(project_root, str(row.get("family_id") or ""), str(row.get("lineage_id") or ""))
+        summary = {
                 "lineage_id": row.get("lineage_id"),
                 "family_id": row.get("family_id"),
                 "role": row.get("role"),
@@ -2266,8 +2322,11 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "last_debug_bug_category": row.get("last_debug_bug_category"),
                 "last_debug_summary": row.get("last_debug_summary"),
                 "source_idea_id": row.get("source_idea_id"),
+                "backtest_roi_pct": bt_data["backtest_roi_pct"],
+                "backtest_sharpe": bt_data["backtest_sharpe"],
+                "backtest_gate_status": bt_data["backtest_gate_status"],
             }
-        )
+        rows.append(summary)
     return rows
 
 
