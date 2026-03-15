@@ -102,6 +102,16 @@ class LocalPortfolioRunner(ABC):
         self._store.runtime_health_path.parent.mkdir(parents=True, exist_ok=True)
         self._store.runtime_health_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    def _sleep_with_heartbeat(self, total_seconds: float, heartbeat_interval: float = 30.0) -> None:
+        """Sleep for *total_seconds* while refreshing the heartbeat every *heartbeat_interval*."""
+        remaining = total_seconds
+        while remaining > 0:
+            nap = min(remaining, heartbeat_interval)
+            time.sleep(nap)
+            remaining -= nap
+            if remaining > 0:
+                self.write_heartbeat({"idle_until_next_cycle": True})
+
     def run(self, cycle_interval_sec: float = 60.0) -> None:
         """Main loop: write heartbeat, run_cycle, merge state, sleep."""
         logger.info("Runner started for portfolio=%s interval=%.1fs", self.portfolio_id, cycle_interval_sec)
@@ -113,7 +123,7 @@ class LocalPortfolioRunner(ABC):
                 if self.should_skip_cycle():
                     logger.debug("Skipping cycle (market closed) for %s", self.portfolio_id)
                     self.write_heartbeat({"skipped": "market_closed"})
-                    time.sleep(cycle_interval_sec)
+                    self._sleep_with_heartbeat(cycle_interval_sec)
                     continue
 
                 cycle_out = self.run_cycle()
@@ -130,7 +140,7 @@ class LocalPortfolioRunner(ABC):
                 logger.exception("Runner cycle error for %s: %s", self.portfolio_id, e)
                 self.write_heartbeat({"error": str(e)})
                 self.write_runtime_health(health_status="warning", error=str(e))
-            time.sleep(cycle_interval_sec)
+            self._sleep_with_heartbeat(cycle_interval_sec)
 
 
 class StubLocalRunner(LocalPortfolioRunner):

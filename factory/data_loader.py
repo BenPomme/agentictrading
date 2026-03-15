@@ -99,25 +99,34 @@ def _load_yahoo(project_root: Path, instruments: list[str]) -> pd.DataFrame:
     if not base.exists():
         raise FileNotFoundError(f"No yahoo data directory found at {base}")
 
-    dfs: list[pd.DataFrame] = []
     to_load = instruments if instruments else _stems_in_dir(base, (".parquet", ".csv"))
+    per_symbol: dict[str, pd.DataFrame] = {}
 
     for instr in to_load:
         try:
             df = _read_ohlcv_file(base, instr, "yahoo")
-            if df is not None:
-                df["symbol"] = instr
-                dfs.append(df)
+            if df is not None and not df.empty:
+                if "symbol" in df.columns:
+                    df = df.drop(columns=["symbol"])
+                per_symbol[instr] = df
         except Exception as e:
             logger.warning("Skipping yahoo instrument %s: %s", instr, e)
 
-    if not dfs:
+    if not per_symbol:
         raise FileNotFoundError(
             f"No yahoo data loaded from {base}. Requested instruments: {instruments or 'all'}."
         )
 
-    out = pd.concat(dfs)
-    return _sort_by_datetime(out)
+    if len(per_symbol) == 1:
+        sym, df = next(iter(per_symbol.items()))
+        df["symbol"] = sym
+        return _sort_by_datetime(df)
+
+    # Multiple instruments: build MultiIndex columns (symbol, field)
+    combined = pd.concat(per_symbol, axis=1)  # level-0 = symbol, level-1 = field
+    combined = combined.sort_index()
+    combined = combined.ffill()
+    return combined
 
 
 def _load_alpaca(project_root: Path, instruments: list[str]) -> pd.DataFrame:
@@ -194,17 +203,17 @@ def _load_binance(project_root: Path, instruments: list[str]) -> pd.DataFrame:
         )
 
     out = pd.concat(dfs, ignore_index=True)
-    for time_col in ("fundingTime", "funding_time"):
-        if time_col in out.columns:
-            out[time_col] = pd.to_datetime(out[time_col], unit="ms", errors="coerce")
-            out = out.dropna(subset=[time_col])
-            out = out.set_index(time_col).sort_index()
-            break
     col_map = {
         "funding_rate": "fundingRate",
         "mark_price": "markPrice",
+        "funding_time": "fundingTime",
     }
     out.rename(columns={k: v for k, v in col_map.items() if k in out.columns}, inplace=True)
+
+    if "fundingTime" in out.columns:
+        out["fundingTime"] = pd.to_datetime(out["fundingTime"], unit="ms", errors="coerce")
+        out = out.dropna(subset=["fundingTime"])
+        out = out.sort_values("fundingTime").reset_index(drop=True)
     return out
 
 

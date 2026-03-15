@@ -24,10 +24,10 @@ FACTORY_PAPER_GATE_MIN_DAYS: int = int(os.getenv("FACTORY_PAPER_GATE_MIN_DAYS", 
 FACTORY_PAPER_GATE_MIN_FAST_TRADES: int = int(os.getenv("FACTORY_PAPER_GATE_MIN_FAST_TRADES", "50"))
 FACTORY_PAPER_GATE_MIN_SLOW_SETTLED: int = int(os.getenv("FACTORY_PAPER_GATE_MIN_SLOW_SETTLED", "10"))
 FACTORY_EXECUTION_AUTOSTART_ENABLED: bool = (
-    os.getenv("FACTORY_EXECUTION_AUTOSTART_ENABLED", "false").lower() == "true"
+    os.getenv("FACTORY_EXECUTION_AUTOSTART_ENABLED", "true").lower() == "true"
 )
 FACTORY_EMBEDDED_EXECUTION_ENABLED: bool = (
-    os.getenv("FACTORY_EMBEDDED_EXECUTION_ENABLED", "false").lower() == "true"
+    os.getenv("FACTORY_EMBEDDED_EXECUTION_ENABLED", "true").lower() == "true"
 )
 AGENTIC_FACTORY_MODE: str = os.getenv("AGENTIC_FACTORY_MODE", "full").strip().lower()
 RESEARCH_FACTORY_PORTFOLIO_ID: str = os.getenv("RESEARCH_FACTORY_PORTFOLIO_ID", "research_factory")
@@ -36,7 +36,7 @@ EXECUTION_REPO_ROOT: str = os.getenv("EXECUTION_REPO_ROOT", "")
 EXECUTION_PORTFOLIO_STATE_ROOT: str = os.getenv("EXECUTION_PORTFOLIO_STATE_ROOT", "")
 EXECUTION_TRACKED_PORTFOLIOS: str = os.getenv(
     "EXECUTION_TRACKED_PORTFOLIOS",
-    "research_factory",
+    "liquidation_rebound_absorption,funding_term_structure_dislocation,vol_surface_dispersion_rotation,cross_venue_probability_elasticity",
 )
 PORTFOLIO_STATE_ROOT: str = os.getenv("PORTFOLIO_STATE_ROOT", "data/portfolios")
 PREDICTION_MODEL_KINDS: str = os.getenv("PREDICTION_MODEL_KINDS", "hybrid_logit,market_calibrated")

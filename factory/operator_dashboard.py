@@ -568,7 +568,10 @@ def _first_assessment_progress(
 def _execution_root() -> Path:
     explicit = str(getattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", "") or "").strip()
     if explicit:
-        return Path(explicit)
+        p = Path(explicit)
+        if not p.is_absolute():
+            p = _project_root() / p
+        return p
     execution_repo = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
     if execution_repo:
         return Path(execution_repo) / "data" / "portfolios"

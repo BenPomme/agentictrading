@@ -46,9 +46,21 @@ class BacktestResult:
 
 def _resolve_price_series(df: pd.DataFrame) -> pd.Series:
     """Resolve price column from data."""
+    # Handle MultiIndex columns (e.g. from multi-instrument yahoo data)
+    if isinstance(df.columns, pd.MultiIndex):
+        for field in ("Close", "close", "Adj Close"):
+            matches = [
+                sym
+                for sym in df.columns.get_level_values(0).unique()
+                if (sym, field) in df.columns
+            ]
+            if matches:
+                s = pd.to_numeric(df[(matches[0], field)], errors="coerce").ffill().fillna(1.0)
+                return pd.Series(s.values, index=df.index)
+
     for col in ("close", "Close", "markPrice", "mark_price", "price", "midpoint"):
         if col in df.columns:
-            s = pd.to_numeric(df[col], errors="coerce").ffill().fillna(1.0)
+            s = pd.to_numeric(df[col], errors="coerce").ffill().bfill()
             return pd.Series(s.values, index=df.index)
     raise ValueError(
         "No price column found in data. Expected one of: close, Close, markPrice, mark_price, price"
@@ -163,6 +175,14 @@ def run_generic_backtest(
     # d. Load data
     df = load_data_for_requirements(data_req, project_root)
 
+    # For multi-symbol flat DataFrames, simulate on the first instrument only
+    # to avoid price-jumping artifacts across symbols with different price ranges.
+    if "symbol" in df.columns and instruments:
+        primary = instruments[0]
+        single = df[df["symbol"] == primary]
+        if len(single) >= 10:
+            df = single.copy()
+
     # e. Split train/test
     n = len(df)
     if n < 10:
@@ -182,7 +202,20 @@ def run_generic_backtest(
     signals = model.predict(test_data)
     if not isinstance(signals, pd.Series):
         signals = pd.Series(signals, index=test_data.index)
-    signals = signals.reindex(test_data.index, fill_value=0).ffill().bfill().fillna(0)
+    # Align signals to test_data index by position (models may reset their index)
+    if len(signals) == len(test_data) and not signals.index.equals(test_data.index):
+        signals = pd.Series(signals.values, index=test_data.index)
+    else:
+        signals = signals.reindex(test_data.index, fill_value=0)
+    signals = signals.ffill().bfill().fillna(0)
+
+    # Drop rows where price is NaN so simulation doesn't use degenerate fill values
+    price_raw = _resolve_price_series(test_data)
+    valid_price = price_raw.notna() & (price_raw > 0)
+    if not valid_price.all():
+        test_data = test_data.loc[valid_price]
+        signals = signals.loc[valid_price]
+        price_raw = price_raw.loc[valid_price]
 
     # h. Simulate
     equity_curve, trades, net_pnl = _run_simulation(

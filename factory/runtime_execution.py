@@ -81,6 +81,38 @@ def _load_from_execution_repo(module_name: str):
         return None
 
 
+def _resolve_portfolio_from_registry(portfolio_id: str) -> Optional[RuntimePortfolioSpec]:
+    """Dynamically resolve a portfolio spec from the factory registry.
+
+    Any active lineage whose target_portfolios includes *portfolio_id* qualifies
+    the portfolio as a valid, enabled runner target -- no hardcoding required.
+    """
+    try:
+        from factory.registry import FactoryRegistry
+
+        project_root = Path(__file__).resolve().parent.parent
+        factory_root = Path(getattr(config, "FACTORY_ROOT", "data/factory"))
+        if not factory_root.is_absolute():
+            factory_root = project_root / factory_root
+
+        registry = FactoryRegistry(str(factory_root))
+        for lineage in registry.lineages():
+            if not lineage.active:
+                continue
+            if portfolio_id in lineage.target_portfolios:
+                label = lineage.family_id.replace("_", " ").title()
+                return RuntimePortfolioSpec(
+                    portfolio_id=portfolio_id,
+                    label=label,
+                    enabled=True,
+                    control_mode="local_managed",
+                    canonical_portfolio_id=portfolio_id,
+                )
+    except Exception:
+        pass
+    return None
+
+
 def get_runtime_portfolio_spec(portfolio_id: str) -> RuntimePortfolioSpec:
     parsed_alias = parse_runtime_portfolio_alias(portfolio_id)
     canonical_portfolio_id = parsed_alias["canonical_portfolio_id"] if parsed_alias else portfolio_id
@@ -94,16 +126,19 @@ def get_runtime_portfolio_spec(portfolio_id: str) -> RuntimePortfolioSpec:
             control_mode=str(getattr(spec, "control_mode", "local_managed")),
             canonical_portfolio_id=canonical_portfolio_id,
         )
-    if canonical_portfolio_id not in _KNOWN_PORTFOLIOS:
-        raise KeyError(f"Unknown portfolio: {portfolio_id}")
-    spec = _KNOWN_PORTFOLIOS[canonical_portfolio_id]
-    return RuntimePortfolioSpec(
-        portfolio_id=portfolio_id,
-        label=spec.label,
-        enabled=spec.enabled,
-        control_mode=spec.control_mode,
-        canonical_portfolio_id=canonical_portfolio_id,
-    )
+    if canonical_portfolio_id in _KNOWN_PORTFOLIOS:
+        spec = _KNOWN_PORTFOLIOS[canonical_portfolio_id]
+        return RuntimePortfolioSpec(
+            portfolio_id=portfolio_id,
+            label=spec.label,
+            enabled=spec.enabled,
+            control_mode=spec.control_mode,
+            canonical_portfolio_id=canonical_portfolio_id,
+        )
+    dynamic_spec = _resolve_portfolio_from_registry(canonical_portfolio_id)
+    if dynamic_spec is not None:
+        return dynamic_spec
+    raise KeyError(f"Unknown portfolio: {portfolio_id}")
 
 
 class RuntimeProcessManager:

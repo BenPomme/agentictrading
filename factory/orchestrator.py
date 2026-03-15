@@ -265,6 +265,55 @@ class FactoryOrchestrator:
         )
         return dict(self._last_state)
 
+    _VENUE_TO_CONNECTORS: Dict[str, List[str]] = {
+        "binance": ["binance_core"],
+        "binance_perpetuals": ["binance_core"],
+        "binance_perp": ["binance_core"],
+        "crypto": ["binance_core"],
+        "betfair": ["betfair_core"],
+        "polymarket": ["polymarket_core", "polymarket_history"],
+        "yahoo": ["yahoo_stocks"],
+        "stock": ["yahoo_stocks"],
+        "equity": ["yahoo_stocks"],
+        "equity_options": ["yahoo_stocks"],
+        "us_equities_etf": ["yahoo_stocks"],
+        "alpaca": ["alpaca_stocks"],
+        "multi": ["yahoo_stocks", "binance_core"],
+    }
+
+    @staticmethod
+    def _normalize_venues_and_connectors(
+        venues: List[str], connectors: List[str],
+    ) -> tuple[List[str], List[str]]:
+        canonical_venues = []
+        resolved_connectors = set()
+        for v in venues:
+            vl = v.strip().lower()
+            if vl in FactoryOrchestrator._VENUE_TO_CONNECTORS:
+                canonical_venues.append(vl)
+                resolved_connectors.update(FactoryOrchestrator._VENUE_TO_CONNECTORS[vl])
+            elif any(kw in vl for kw in ("binance", "perp", "funding", "crypto", "btc", "eth")):
+                canonical_venues.append("binance")
+                resolved_connectors.add("binance_core")
+            elif any(kw in vl for kw in ("betfair", "sport", "football")):
+                canonical_venues.append("betfair")
+                resolved_connectors.add("betfair_core")
+            elif any(kw in vl for kw in ("polymarket", "prediction", "event")):
+                canonical_venues.append("polymarket")
+                resolved_connectors.update(["polymarket_core", "polymarket_history"])
+            elif any(kw in vl for kw in ("stock", "equity", "spy", "etf", "vix", "oil", "yahoo")):
+                canonical_venues.append("yahoo")
+                resolved_connectors.add("yahoo_stocks")
+            elif any(kw in vl for kw in ("alpaca",)):
+                canonical_venues.append("alpaca")
+                resolved_connectors.add("alpaca_stocks")
+            else:
+                canonical_venues.append(vl)
+                resolved_connectors.add("yahoo_stocks")
+        if not resolved_connectors:
+            resolved_connectors.add("yahoo_stocks")
+        return list(dict.fromkeys(canonical_venues)) or ["yahoo"], sorted(resolved_connectors)
+
     def _seed_family_from_spec(
         self,
         spec: Dict[str, Any],
@@ -276,6 +325,13 @@ class FactoryOrchestrator:
         incubation_notes: List[str] | None = None,
     ) -> FactoryFamily:
         family_id = str(spec["family_id"])
+        norm_venues, norm_connectors = self._normalize_venues_and_connectors(
+            list(spec.get("target_venues") or []),
+            list(spec.get("connectors") or []),
+        )
+        spec["target_venues"] = norm_venues
+        spec["connectors"] = norm_connectors
+        spec["target_portfolios"] = [family_id]
         hypothesis_id = f"{family_id}:hypothesis"
         lineage_id = f"{family_id}:champion"
         genome_id = f"{family_id}:genome:champion"
@@ -4825,6 +4881,25 @@ class FactoryOrchestrator:
     def _collect_evidence(self, lineage: LineageRecord) -> List[EvaluationBundle]:
         bundles: List[EvaluationBundle] = []
         experiment_result = self._run_experiment(lineage)
+
+        # Rule: if backtest failed due to missing data, promote directly to paper trading
+        if experiment_result.get("mode") == "model_code_backtest_failed":
+            err = str(experiment_result.get("error") or "")
+            is_data_missing = any(kw in err.lower() for kw in (
+                "no data", "filenotfounderror", "no binance", "no yahoo",
+                "no polymarket", "no betfair", "insufficient data",
+                "no alpaca", "not found",
+            ))
+            if is_data_missing and lineage.current_stage != PromotionStage.PAPER.value:
+                logger.info(
+                    "No backtest data for %s (%s), promoting directly to paper trading",
+                    lineage.lineage_id, err,
+                )
+                lineage.current_stage = PromotionStage.PAPER.value
+                lineage.iteration_status = "paper_trial_no_backtest"
+                lineage.blockers = [b for b in lineage.blockers if "backtest" not in b.lower()]
+                self.registry.save_lineage(lineage)
+
         raw_bundles = list(experiment_result.get("bundles") or [])
         experiment_bundles: List[EvaluationBundle] = []
         for item in raw_bundles:

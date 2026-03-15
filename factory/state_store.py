@@ -42,7 +42,10 @@ class AccountSnapshot:
 def _portfolio_state_root() -> Path:
     explicit = str(getattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", "") or "").strip()
     if explicit:
-        return Path(explicit)
+        p = Path(explicit)
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parent.parent / p
+        return p
     execution_root = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
     if execution_root:
         return Path(execution_root) / "data" / "portfolios"
