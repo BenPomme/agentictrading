@@ -1080,7 +1080,10 @@ def _portfolio_snapshot(path: Path) -> Dict[str, Any]:
         raw_issue_codes.append("runtime_error")
     heartbeat_health = "healthy"
     runner_market_idle = str(heartbeat.get("skipped") or "").lower() == "market_closed"
-    if not runner_market_idle:
+    runner_idle_between_cycles = bool(heartbeat.get("idle_until_next_cycle"))
+    runner_paper_ready = str(heartbeat.get("status") or "").lower() in ("paper_ready", "idle", "waiting")
+    suppress_stale = runner_market_idle or runner_idle_between_cycles or runner_paper_ready
+    if not suppress_stale:
         if heartbeat_age is not None and heartbeat_age >= 300:
             raw_issue_codes.append("heartbeat_stale")
             heartbeat_health = "critical"
