@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -73,6 +76,32 @@ def main(argv: list[str] | None = None) -> int:
     cycle_limit = max(0, int(args.max_cycles))
     cycles_completed = 0
     interval = max(1, int(args.interval_seconds))
+
+    scheduler_script = loop_root / "scripts" / "data_refresh_scheduler.py"
+    scheduler_proc = None
+    if scheduler_script.exists():
+        try:
+            scheduler_proc = subprocess.Popen(
+                [sys.executable, str(scheduler_script)],
+                cwd=str(loop_root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print(f"[factory-loop] Data refresh scheduler started (pid={scheduler_proc.pid})", flush=True)
+        except Exception as exc:
+            print(f"[factory-loop] Failed to start data refresh scheduler: {exc}", flush=True)
+
+    def _cleanup_scheduler():
+        if scheduler_proc and scheduler_proc.poll() is None:
+            scheduler_proc.terminate()
+            try:
+                scheduler_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                scheduler_proc.kill()
+            print("[factory-loop] Data refresh scheduler stopped", flush=True)
+
+    atexit.register(_cleanup_scheduler)
+    signal.signal(signal.SIGTERM, lambda *_: (_cleanup_scheduler(), sys.exit(0)))
 
     while True:
         pause_flag = loop_root / "data" / "factory" / "factory_paused.flag"

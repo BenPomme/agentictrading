@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import sys
+import time
 from collections import defaultdict, deque
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -3017,6 +3018,45 @@ class FactoryOrchestrator:
         family.paper_challenger_ids = [lid for lid in family.paper_challenger_ids if lid not in retired_ids]
         self.registry.save_family(family)
 
+    _DATA_REFRESH_SCRIPTS: Dict[str, str] = {
+        "binance_core": "scripts/refresh_binance_funding.py",
+        "polymarket_core": "scripts/fetch_polymarket_history.py",
+        "polymarket_history": "scripts/fetch_polymarket_history.py",
+        "yahoo_stocks": "scripts/refresh_yahoo_data.py",
+        "alpaca_stocks": "scripts/refresh_alpaca_data.py",
+    }
+    _data_refresh_cooldowns: Dict[str, float] = {}
+    _DATA_REFRESH_COOLDOWN_SECS = 1800  # 30 minutes
+
+    def _maybe_trigger_data_refresh(self, connector_snapshots: List[Dict[str, Any]]) -> None:
+        now = time.time()
+        triggered = set()
+        for snapshot in connector_snapshots:
+            if snapshot.get("ready"):
+                continue
+            cid = str(snapshot.get("connector_id") or "")
+            script = self._DATA_REFRESH_SCRIPTS.get(cid)
+            if not script or script in triggered:
+                continue
+            last = self._data_refresh_cooldowns.get(script, 0)
+            if now - last < self._DATA_REFRESH_COOLDOWN_SECS:
+                continue
+            script_path = self.project_root / script
+            if not script_path.exists():
+                continue
+            try:
+                import subprocess as _sp
+                _sp.Popen(
+                    [sys.executable, str(script_path)],
+                    cwd=str(self.project_root),
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                )
+                self._data_refresh_cooldowns[script] = now
+                triggered.add(script)
+                logger.info("Triggered data refresh for %s via %s", cid, script)
+            except Exception as exc:
+                logger.warning("Failed to trigger data refresh for %s: %s", cid, exc)
+
     def _connector_snapshots(self) -> List[Dict[str, Any]]:
         return [adapter.snapshot().to_dict() for adapter in self.connectors]
 
@@ -5075,6 +5115,7 @@ class FactoryOrchestrator:
         family_by_id = {family.family_id: family for family in families}
         workspace_status = self._workspace_status(families)
         connector_snapshots = self._connector_snapshots()
+        self._maybe_trigger_data_refresh(connector_snapshots)
         manifests_by_lineage = self._latest_manifest_by_lineage()
         connector_ready = {
             snapshot["connector_id"]: bool(snapshot.get("ready"))

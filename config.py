@@ -36,7 +36,7 @@ EXECUTION_REPO_ROOT: str = os.getenv("EXECUTION_REPO_ROOT", "")
 EXECUTION_PORTFOLIO_STATE_ROOT: str = os.getenv("EXECUTION_PORTFOLIO_STATE_ROOT", "")
 EXECUTION_TRACKED_PORTFOLIOS: str = os.getenv(
     "EXECUTION_TRACKED_PORTFOLIOS",
-    "betfair_core,hedge_validation,hedge_research,cascade_alpha,contrarian_legacy,research_factory,polymarket_quantum_fold,mev_scout_sol",
+    "research_factory",
 )
 PORTFOLIO_STATE_ROOT: str = os.getenv("PORTFOLIO_STATE_ROOT", "data/portfolios")
 PREDICTION_MODEL_KINDS: str = os.getenv("PREDICTION_MODEL_KINDS", "hybrid_logit,market_calibrated")
