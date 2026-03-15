@@ -243,7 +243,7 @@ class FactoryExperimentRunner:
                 if key in genome.parameters
             },
             "target_portfolios": list(lineage.target_portfolios),
-            "execution_repo_root": str(getattr(config, "EXECUTION_REPO_ROOT", "") or ""),
+            "execution_repo_root": "",
         }
 
     def _run_execution_refresh(

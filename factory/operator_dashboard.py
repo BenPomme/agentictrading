@@ -572,9 +572,6 @@ def _execution_root() -> Path:
         if not p.is_absolute():
             p = _project_root() / p
         return p
-    execution_repo = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
-    if execution_repo:
-        return Path(execution_repo) / "data" / "portfolios"
     return _project_root() / "data" / "portfolios"
 
 

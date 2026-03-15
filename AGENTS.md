@@ -16,7 +16,7 @@ It owns:
 
 It does **not** own live trading execution.
 
-In standalone mode, paper execution runs via embedded runners. An external execution repo can optionally be connected through `EXECUTION_REPO_ROOT`.
+Paper execution runs via embedded runners. This repo is fully self-contained.
 
 ## Learned User Preferences
 
@@ -191,7 +191,6 @@ If you need execution-repo functionality:
 
 - first prefer adapter interfaces
 - second prefer reading artifacts or state files
-- only use optional integration through `EXECUTION_REPO_ROOT`
 
 ## Next Priorities
 

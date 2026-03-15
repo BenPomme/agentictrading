@@ -26,18 +26,11 @@ Runners live inside this repo via `factory.local_runner_main`. Set:
 
 - `FACTORY_EMBEDDED_EXECUTION_ENABLED=true`
 - `PORTFOLIO_STATE_ROOT=data/portfolios` (state written under this path)
-- `EXECUTION_REPO_ROOT=` (leave empty)
-- `EXECUTION_PORTFOLIO_STATE_ROOT=` (leave empty)
+- `EXECUTION_PORTFOLIO_STATE_ROOT=data/portfolios`
 
 Start a runner: `python -m factory.local_runner_main --portfolio betfair_core --interval 60`
 
-### External mode (connected to a separate execution repo)
-
-Set `EXECUTION_REPO_ROOT=/absolute/path/to/execution-repo` to read execution state and launch runners in the external repo.
-
-Use the local `.env` in this repo as the operator contract.
-
-Minimum required values for this repo shape:
+Minimum required values:
 
 - `AGENTIC_FACTORY_MODE`
 - `FACTORY_REAL_AGENTS_ENABLED`
@@ -45,10 +38,6 @@ Minimum required values for this repo shape:
 - `FACTORY_ROOT`
 - `FACTORY_GOLDFISH_ROOT`
 - `PORTFOLIO_STATE_ROOT`
-
-Optional (only needed for external execution mode):
-- `EXECUTION_REPO_ROOT`
-- `EXECUTION_PORTFOLIO_STATE_ROOT`
 
 Commonly useful explicit values:
 

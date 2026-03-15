@@ -58,8 +58,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Startup diagnostics
     _api_key = os.getenv("OPENAI_API_KEY", "")
-    _exec_root = os.getenv("EXECUTION_REPO_ROOT", "")
-    print(f"[factory-loop] NEBULA standalone mode: EXECUTION_REPO_ROOT={'<empty>' if not _exec_root else _exec_root}", flush=True)
+    print("[factory-loop] NEBULA standalone mode", flush=True)
     print(f"[factory-loop] OPENAI_API_KEY configured: {bool(_api_key)} (len={len(_api_key)})", flush=True)
     print(f"[factory-loop] Provider order: {os.getenv('FACTORY_AGENT_PROVIDER_ORDER', 'codex,deterministic')}", flush=True)
 

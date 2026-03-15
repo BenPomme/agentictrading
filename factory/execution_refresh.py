@@ -41,20 +41,13 @@ class ExecutionRefreshRunner:
         request_path: Path,
         output_path: Path,
     ) -> Dict[str, Any]:
-        execution_root_raw = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
-        if not execution_root_raw or not Path(execution_root_raw).is_dir():
-            reason = (
-                "embedded_mode_refresh_skipped"
-                if getattr(config, "FACTORY_EMBEDDED_EXECUTION_ENABLED", False)
-                else "execution_repo_not_configured"
-            )
-            return {
-                "status": "skipped",
-                "reason": reason,
-                "request_path": str(request_path),
-                "output_path": str(output_path),
-            }
-        execution_root = Path(execution_root_raw)
+        return {
+            "status": "skipped",
+            "reason": "standalone_embedded_mode",
+            "request_path": str(request_path),
+            "output_path": str(output_path),
+        }
+        execution_root = Path("")  # dead code below kept for interface compatibility
         script_path = execution_root / "scripts" / "factory_refresh_models.py"
         if not script_path.exists():
             return {

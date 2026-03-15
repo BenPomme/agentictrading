@@ -33,34 +33,10 @@ def _has_data_files(path: Path) -> bool:
 def resolve_data_root(project_root: Path, venue: str) -> Path:
     """Resolve the actual ``data/`` root for *venue*.
 
-    Checks ``project_root/data`` first.  If the expected venue
-    sub-directory is missing or empty, falls back to
-    ``$EXECUTION_REPO_ROOT/data`` so that data living in an
-    external execution repository is transparently available.
+    Uses ``project_root/data`` exclusively.  All venue data must
+    live locally -- no external repo fallback.
     """
-    venue = (venue or "").strip().lower()
-    local = project_root / "data"
-    subdir = _VENUE_DATA_SUBDIRS.get(venue, "")
-
-    if subdir:
-        local_path = local / subdir
-        if local_path.exists() and _has_data_files(local_path):
-            return local
-
-    exec_root = os.environ.get("EXECUTION_REPO_ROOT", "").strip()
-    if exec_root:
-        alt = Path(exec_root) / "data"
-        if subdir:
-            alt_path = alt / subdir
-            if alt_path.exists() and _has_data_files(alt_path):
-                logger.info(
-                    "Using EXECUTION_REPO_ROOT data for venue=%s: %s",
-                    venue,
-                    alt_path,
-                )
-                return alt
-
-    return local
+    return project_root / "data"
 
 
 def load_data_for_requirements(data_req: dict, project_root: Path) -> pd.DataFrame:

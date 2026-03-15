@@ -61,24 +61,11 @@ _KNOWN_PORTFOLIOS: Dict[str, RuntimePortfolioSpec] = {
 
 
 def _execution_repo_root() -> Path | None:
-    raw = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
-    if not raw:
-        return None
-    root = Path(raw)
-    return root if root.exists() else None
+    return None
 
 
 def _load_from_execution_repo(module_name: str):
-    root = _execution_repo_root()
-    if root is None:
-        return None
-    root_str = str(root)
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
-    try:
-        return importlib.import_module(module_name)
-    except Exception:
-        return None
+    return None
 
 
 def _resolve_portfolio_from_registry(portfolio_id: str) -> Optional[RuntimePortfolioSpec]:

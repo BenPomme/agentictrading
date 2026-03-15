@@ -46,9 +46,6 @@ def _portfolio_state_root() -> Path:
         if not p.is_absolute():
             p = Path(__file__).resolve().parent.parent / p
         return p
-    execution_root = str(getattr(config, "EXECUTION_REPO_ROOT", "") or "").strip()
-    if execution_root:
-        return Path(execution_root) / "data" / "portfolios"
     portfolio_root = str(getattr(config, "PORTFOLIO_STATE_ROOT", "") or "").strip()
     if portfolio_root:
         return Path(portfolio_root)

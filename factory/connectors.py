@@ -175,7 +175,7 @@ def backtest_data_depth(project_root: str | Path) -> Dict[str, Dict[str, Any]]:
             "estimated_years": 6,
         }
 
-    # Betfair -- resolve through EXECUTION_REPO_ROOT if local is empty
+    # Betfair
     betfair_data = resolve_data_root(root, "betfair")
     betfair_dir = betfair_data / "candidates"
     if betfair_dir.exists():
@@ -186,7 +186,7 @@ def backtest_data_depth(project_root: str | Path) -> Dict[str, Dict[str, Any]]:
             "estimated_months": 6,
         }
 
-    # Polymarket -- resolve through EXECUTION_REPO_ROOT if local is empty
+    # Polymarket
     poly_data = resolve_data_root(root, "polymarket")
     poly_dir = poly_data / "polymarket" / "prices_history"
     if poly_dir.exists():
