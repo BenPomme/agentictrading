@@ -58,9 +58,26 @@ def main(argv: list[str] | None = None) -> int:
 
     # Startup diagnostics
     _api_key = os.getenv("OPENAI_API_KEY", "")
+    _provider_order = os.getenv("FACTORY_AGENT_PROVIDER_ORDER", "codex,deterministic")
     print("[factory-loop] NEBULA standalone mode", flush=True)
     print(f"[factory-loop] OPENAI_API_KEY configured: {bool(_api_key)} (len={len(_api_key)})", flush=True)
-    print(f"[factory-loop] Provider order: {os.getenv('FACTORY_AGENT_PROVIDER_ORDER', 'codex,deterministic')}", flush=True)
+    print(f"[factory-loop] Provider order: {_provider_order}", flush=True)
+
+    if "openai_api" in _provider_order and not _api_key:
+        print(
+            "[factory-loop] FATAL: openai_api is in FACTORY_AGENT_PROVIDER_ORDER "
+            "but OPENAI_API_KEY is empty in .env. Agent runs will silently fail "
+            "to deterministic (no-op). Fix .env and restart.",
+            flush=True,
+        )
+        sys.exit(1)
+
+    if "openai_api" not in _provider_order:
+        print(
+            "[factory-loop] WARNING: openai_api is NOT in FACTORY_AGENT_PROVIDER_ORDER. "
+            "If codex CLI is unavailable, agents will fall to deterministic (no-op).",
+            flush=True,
+        )
 
     # Log market hours status
     try:

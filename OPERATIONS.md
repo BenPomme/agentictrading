@@ -198,6 +198,19 @@ If either has uncommitted changes, commit them before proceeding.
 | "Connection Failed" in browser | Two processes on same port, or dashboard not started | `lsof -i :8787` to check. Kill duplicates. Restart. |
 | Build fails: "Cannot find module 'react'" | `node_modules` missing | `cd dashboard-ui && npm install && npm run build` |
 | Build fails: "Cannot read tsconfig.app.json" | File missing — branch is stale | Merge `nebula-agent-cost-guard` into `main` |
-| Agent runs all show "codex not found" + `deterministic` | `.env` missing `openai_api` in provider chain or missing `OPENAI_API_KEY` | Set `FACTORY_AGENT_PROVIDER_ORDER=codex,openai_api,deterministic` and add a valid `OPENAI_API_KEY=sk-...` to `.env`. Restart factory loop. |
-| Agent runs show `openai_api` but fail | `OPENAI_API_KEY` empty or invalid | Add a valid key to `.env`. The factory loop reads `.env` at startup. |
+| Agent runs all show "codex not found" + `deterministic` | `.env` missing `openai_api` in provider chain or missing `OPENAI_API_KEY` | Set `FACTORY_AGENT_PROVIDER_ORDER=codex,openai_api,deterministic` and add a valid `OPENAI_API_KEY=sk-...` to `.env`. **Restart factory loop** (it reads `.env` at startup only). |
+| Agent runs show `openai_api` but fail | `OPENAI_API_KEY` empty or invalid | Add a valid key to `.env`. **Restart factory loop.** |
 | Factory produces hardcoded template models | Running old code before "Eliminate hardcoded models" commit | Merge latest from `nebula-agent-cost-guard` |
+| Factory loop refuses to start (exit 1) | `openai_api` in provider chain but `OPENAI_API_KEY` empty | The startup validator blocks this on purpose. Add a valid key to `.env`. |
+
+### CRITICAL: Restart after `.env` changes
+
+The factory loop reads `.env` **once at startup**. If you edit `.env`,
+the running process still has stale values. You **MUST** kill and
+restart the factory loop after any `.env` change:
+
+```bash
+ps aux | grep factory_loop | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null
+sleep 2
+python3 scripts/factory_loop.py --json &
+```

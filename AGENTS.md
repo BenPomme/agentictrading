@@ -48,6 +48,8 @@ Paper execution runs via embedded runners. This repo is fully self-contained.
 - `.env` must set `EXECUTION_PORTFOLIO_STATE_ROOT=data/portfolios` (local, not the Arbitrage repo) so the dashboard reads fresh heartbeats from embedded runners; if it points to the external repo, portfolios show as degraded/heartbeat_stale
 - `.env` is gitignored; must contain `OPENAI_API_KEY`, `FACTORY_AGENT_PROVIDER_ORDER`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`; when searching for files like `.env`, search across branches and repos, not only the current worktree
 - Agent provider chain: `codex,openai_api,deterministic`; Codex model names (e.g. `gpt-5.2-codex`) are automatically stripped before OpenAI API fallback
+- CRITICAL: The factory loop reads `.env` at startup. If `.env` is changed after the factory starts, the running process has stale values. You MUST restart the factory loop after any `.env` edit. The startup validator will crash if `openai_api` is in the provider chain but `OPENAI_API_KEY` is empty.
+- The `agent_runtime.py` reads `OPENAI_API_KEY` from `os.environ` at call time (not from cached config), providing resilience against import-order bugs
 - Cost guard: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10`; OpenAI API model tiers: CHEAP=`gpt-4.1-nano`, STANDARD=`gpt-4.1-mini`, HARD/FRONTIER=`gpt-5-mini`, DEEP=`gpt-5.4`
 - `data/` contains all local data; large blobs (yahoo, alpaca, polymarket, agent_runs, backtest_results) are gitignored
 - Data sources: Yahoo (503 Parquet files, 5yr OHLCV), Alpaca (free tier, no SIP bars), Binance (50 klines CSVs, 1yr hourly), Betfair, Polymarket (CLOB history pipeline)

@@ -1,0 +1,45 @@
+---
+description: Mandatory checks at the start of every factory session
+alwaysApply: true
+---
+
+# Factory Session Start — Mandatory Checks
+
+Before doing ANY work in this repo, perform these checks in order.
+Do NOT skip any of them. Do NOT assume state is correct.
+
+## 1. Read OPERATIONS.md
+
+Read `OPERATIONS.md` for the canonical start/stop/verify procedures.
+
+## 2. Verify .env
+
+Read `.env` and confirm ALL of these are correct:
+
+- `FACTORY_AGENT_PROVIDER_ORDER=codex,openai_api,deterministic`
+- `OPENAI_API_KEY` is non-empty and starts with `sk-`
+- `EXECUTION_REPO_ROOT=` (empty, no path)
+- `EXECUTION_PORTFOLIO_STATE_ROOT=data/portfolios`
+
+If anything is wrong, fix it BEFORE proceeding. This is the #1 cause
+of factory breakage.
+
+## 3. Check git state
+
+- `git status` on main — look for uncommitted work
+- Check if `bng` worktree has unpushed commits:
+  `git -C ~/.cursor/worktrees/AgenticTrading/bng log --oneline main..HEAD`
+- If there are unmerged commits, merge them to main first
+
+## 4. Verify services
+
+- Dashboard: `curl -s http://127.0.0.1:8787/ | head -c 100`
+- Factory loop: `ps aux | grep factory_loop | grep -v grep`
+- If either is down, start it (see OPERATIONS.md)
+
+## 5. Never do these things
+
+- Never set `EXECUTION_REPO_ROOT` to any path
+- Never remove `openai_api` from the provider chain
+- Never start the dashboard on port 8788
+- Never skip the `.env` verification step

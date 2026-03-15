@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import tempfile
@@ -1458,7 +1459,7 @@ class RealResearchAgentRuntime:
                     )
                     return self._write_run_artifact(result)
                 if provider == "openai_api":
-                    api_key = str(getattr(config, "FACTORY_AGENT_OPENAI_API_KEY", "") or "").strip()
+                    api_key = os.environ.get("OPENAI_API_KEY", "").strip() or str(getattr(config, "FACTORY_AGENT_OPENAI_API_KEY", "") or "").strip()
                     if not api_key:
                         logger.warning("Agent run [%s]: openai_api skipped — OPENAI_API_KEY not configured", task_type)
                         errors.append("openai_api:no_api_key")

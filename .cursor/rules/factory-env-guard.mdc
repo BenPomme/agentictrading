@@ -1,0 +1,32 @@
+---
+description: Guard .env integrity — provider chain, API key, no external repo
+globs: .env
+alwaysApply: false
+---
+
+# .env Guard — Never Break the Factory
+
+When editing or reading `.env`, always verify these three lines exist
+and are correct. If any are wrong, fix them immediately.
+
+## Required lines
+
+```
+FACTORY_AGENT_PROVIDER_ORDER=codex,openai_api,deterministic
+OPENAI_API_KEY=sk-...   (must be non-empty, valid OpenAI key)
+EXECUTION_REPO_ROOT=    (must be empty — no external repo)
+```
+
+## Rules
+
+- `FACTORY_AGENT_PROVIDER_ORDER` MUST include `openai_api` between
+  `codex` and `deterministic`. Without it, agent runs silently fail
+  to `deterministic` (no-op) when codex CLI is unavailable.
+- `OPENAI_API_KEY` MUST be a valid, non-empty key. If it is empty,
+  the `openai_api` provider fails and the factory does nothing useful.
+- `EXECUTION_REPO_ROOT` MUST be empty. This repo is standalone.
+  Setting it to the Arbitrage repo causes the dashboard to read stale
+  data and show all portfolios as degraded.
+- `EXECUTION_PORTFOLIO_STATE_ROOT` must be `data/portfolios` (local).
+- Never remove or reorder these lines.
+- Never commit `.env` to git (it is gitignored).
