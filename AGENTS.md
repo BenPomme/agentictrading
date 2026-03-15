@@ -41,6 +41,7 @@ In standalone mode, paper execution runs via embedded runners. An external execu
 
 - Remote: `https://github.com/BenPomme/agentictrading.git`; main repo at `/Users/benjaminpommeraud/Documents/AgenticTrading`, bng worktree at `.cursor/worktrees/AgenticTrading/bng`
 - Standalone embedded execution mode; dashboard at `http://127.0.0.1:8787` (React build from `dashboard-ui/dist`); factory loop at 15-minute intervals
+- `.env` must set `EXECUTION_PORTFOLIO_STATE_ROOT=data/portfolios` (local, not the Arbitrage repo) so the dashboard reads fresh heartbeats from embedded runners; if it points to the external repo, portfolios show as degraded/heartbeat_stale
 - `.env` is gitignored; must contain `OPENAI_API_KEY`, `FACTORY_AGENT_PROVIDER_ORDER`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`; when searching for files like `.env`, search across branches and repos, not only the current worktree
 - Agent provider chain: `codex,openai_api,deterministic`; Codex model names (e.g. `gpt-5.2-codex`) are automatically stripped before OpenAI API fallback
 - Cost guard: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10`; OpenAI API model tiers: CHEAP=`gpt-4.1-nano`, STANDARD=`gpt-4.1-mini`, HARD/FRONTIER=`gpt-5-mini`, DEEP=`gpt-5.4`
