@@ -40,10 +40,10 @@ In standalone mode, paper execution runs via embedded runners. An external execu
 ## Learned Workspace Facts
 
 - Remote: `https://github.com/BenPomme/agentictrading.git`; main repo at `/Users/benjaminpommeraud/Documents/AgenticTrading`, bng worktree at `.cursor/worktrees/AgenticTrading/bng`
-- Standalone embedded execution mode; dashboard at `http://127.0.0.1:8788` (React build from `dashboard-ui/dist`); factory loop at 15-minute intervals
+- Standalone embedded execution mode; dashboard at `http://127.0.0.1:8787` (React build from `dashboard-ui/dist`); factory loop at 15-minute intervals
 - `.env` is gitignored; must contain `OPENAI_API_KEY`, `FACTORY_AGENT_PROVIDER_ORDER`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`; when searching for files like `.env`, search across branches and repos, not only the current worktree
 - Agent provider chain: `codex,openai_api,deterministic`; Codex model names (e.g. `gpt-5.2-codex`) are automatically stripped before OpenAI API fallback
-- Cost guard: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10`; OpenAI API fallback uses `gpt-4.1-nano`/`gpt-4.1-mini`/`gpt-4.1`/`o4-mini`/`o3`
+- Cost guard: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10`; OpenAI API model tiers: CHEAP=`gpt-4.1-nano`, STANDARD=`gpt-4.1-mini`, HARD/FRONTIER=`gpt-5-mini`, DEEP=`gpt-5.4`
 - `data/` contains all local data; large blobs (yahoo, alpaca, polymarket, agent_runs, backtest_results) are gitignored
 - Data sources: Yahoo (503 Parquet files, 5yr OHLCV), Alpaca (free tier, no SIP bars), Binance (50 klines CSVs, 1yr hourly), Betfair, Polymarket (CLOB history pipeline)
 - Market-hours scheduling: stock families (yahoo*, alpaca*) paper-trade 9:30-16:00 ET only; crypto/betting families trade 24/7; factory agent reviews, debug, tweaks, and retirement are all suppressed for stock-market lineages when the market is closed -- heartbeat_stale/no_trade_syndrome are expected idle, not bugs
@@ -74,7 +74,7 @@ The execution repo should never import internal factory modules directly.
 Start the NEBULA Control Room dashboard:
 
 ```bash
-python3 scripts/factory_dashboard.py --host 0.0.0.0 --port 8788
+python3 scripts/factory_dashboard.py --host 0.0.0.0 --port 8787
 ```
 
 Start the factory loop:
@@ -203,7 +203,7 @@ The factory enforces a tiered cost model for all agent runs:
 - **Cost guard**: `_apply_cost_guard()` in `factory/agent_runtime.py` checks the rolling window of recent runs. If expensive tiers (`TASK_FRONTIER`/`TASK_DEEP`) exceed `FACTORY_AGENT_EXPENSIVE_CAP_PCT` (default 10%), subsequent expensive requests are auto-downgraded to `TASK_HARD`.
 - **Family bootstrap exempt**: `generate_family_proposal` always uses `TASK_FRONTIER` — creating new strategy families needs the best model.
 - **Provider chain**: `codex -> openai_api -> deterministic`. Each provider is tried in order; the first success wins. The `codex` provider calls the Codex CLI; `openai_api` calls `https://api.openai.com/v1/chat/completions` directly with the API key from `.env`.
-- **Proposal model default**: Changed from `gpt-5.4` to `gpt-5.2-codex` to avoid burning expensive budget on routine proposals.
+- **Model tiers**: CHEAP=`gpt-4.1-nano`, STANDARD=`gpt-4.1-mini`, HARD=`gpt-5-mini`, FRONTIER=`gpt-5-mini`, DEEP=`gpt-5.4`. Model design always uses DEEP (gpt-5.4). The `temperature` param is skipped for gpt-5 family models (API compatibility).
 - **Task class downgrades (2026-03-14)**: `post_eval_critique` → `TASK_STANDARD` (gpt-4.1-mini). Debug escalation requires BOTH critical health AND repeated debug for TASK_HARD. Maintenance only escalates to TASK_HARD for replace/retire actions. Tweak requires `tweak_count >= 2` for TASK_HARD, `>= 1` for TASK_STANDARD, else TASK_CHEAP. Estimated 40-60% cost reduction per cycle.
 - **Auto-optimization**: `_trigger_auto_optimization()` spawns `optimize_all_champions.py` as a background subprocess (TASK_LOCAL, no tokens). Runs once per family per day, tracked via `data/factory/state/last_auto_optimize.json`.
 - **Auto-promotion**: `_promote_optimized_lineages()` re-evaluates champions after optimization results land.
@@ -219,10 +219,15 @@ The factory enforces a tiered cost model for all agent runs:
 
 ## Experiment Runner Families
 
-The experiment runner (`factory/experiment_runner.py`) dispatches experiments based on `lineage.family_id`:
+The experiment runner (`factory/experiment_runner.py`) uses **generic backtest dispatch** -- no hardcoded family routing. Models with `model_code_path` are backtested via `factory/generic_backtest.py`. LLM-designed model code follows the `StrategyModel` protocol defined in `factory/model_protocol.py`.
 
-- **hmm_regime_adaptive**: Uses Yahoo OHLCV, `HMMRegimeModel` from `research/goldfish/hmm_regime_adaptive/model.py`. Walk-forward backtest with 70% train split.
-- **binance_funding_contrarian**, **binance_cascade_regime**, **polymarket_cross_venue**: Existing families using venue-specific data.
+Active LLM-generated families (as of 2026-03-15):
+- **cross_venue_probability_elasticity**: Polymarket cross-venue arbitrage
+- **funding_term_structure_dislocation**: Binance funding rate term structure
+- **liquidation_rebound_absorption**: Binance liquidation cascade rebounds
+- **vol_surface_dispersion_rotation**: Yahoo/Alpaca volatility surface dispersion
+
+Dynamic runners in `factory/runners/`: `dynamic_runner.py`, `generic_runner.py`, `hmm_runner.py`, `funding_runner.py`.
 
 ## Batch Backtest
 
@@ -237,8 +242,9 @@ The experiment runner (`factory/experiment_runner.py`) dispatches experiments ba
 
 If starting a new session in this repo:
 
-- check for uncommitted Codex CLI work on `main` before starting
-- verify the dashboard is running at http://127.0.0.1:8788 (start it if not)
+- check for uncommitted Codex CLI work on `main` AND on the `nebula-agent-cost-guard` branch (bng worktree) before starting; if the branch is ahead of `main`, merge it with `git merge nebula-agent-cost-guard --ff-only`
+- verify `main` has the latest commits (should include "Eliminate hardcoded models" and "Auto data refresh"); if not, merge from `nebula-agent-cost-guard`
+- verify the dashboard is running at http://127.0.0.1:8787 (start it if not); rebuild with `cd dashboard-ui && npm install && npm run build` if assets are stale
 - verify the factory loop is running (`ps aux | grep factory_loop`)
 - verify embedded runners are alive (`ps aux | grep local_runner_main`); check heartbeat files for `skipped: market_closed` on weekends
 - verify data refresh scheduler is running (`ps aux | grep data_refresh_scheduler`)
@@ -247,3 +253,4 @@ If starting a new session in this repo:
 - check agent run success rate: `ls -lt data/factory/agent_runs/ | head` and verify recent runs show `openai_api` provider with `success: true`
 - if data feeds are showing stale/warning, run the relevant refresh scripts
 - if factory loop crashed, check for Python import errors (missing `logging` etc.) in the traceback
+- never start the factory on the old code (`main` at `a62cf59` or earlier) -- always verify families are LLM-generated (not hardcoded templates) by checking `factory/orchestrator.py` for `_design_model_for_family`
