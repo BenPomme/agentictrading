@@ -1,5 +1,9 @@
 # NEBULA Control Room — Operator Notes
 
+> **Before starting any work, read [`OPERATIONS.md`](OPERATIONS.md).**
+> It contains the exact commands to start/stop the dashboard and factory,
+> verify health, and avoid known pitfalls. Every agent session must follow it.
+
 ## Repo Role
 
 This repo is the **NEBULA** standalone autonomous strategy factory.
