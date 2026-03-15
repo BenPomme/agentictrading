@@ -14,6 +14,23 @@ All commands run from the repo root:
 The dashboard serves a React build from `dashboard-ui/dist/`. If the
 build is missing or stale, rebuild first (see "Rebuild" below).
 
+### Critical `.env` settings
+
+These three lines must be correct or the factory is broken:
+
+```
+FACTORY_AGENT_PROVIDER_ORDER=codex,openai_api,deterministic
+OPENAI_API_KEY=sk-...    # REQUIRED for openai_api fallback
+EXECUTION_REPO_ROOT=     # MUST be empty
+```
+
+If `OPENAI_API_KEY` is empty, the `openai_api` provider will fail and
+all agent runs fall through to `deterministic` (no-op). The factory
+will appear to run but produce no useful work.
+
+If `FACTORY_AGENT_PROVIDER_ORDER` is missing `openai_api`, the same
+thing happens when `codex` CLI is not installed.
+
 ---
 
 ## 1. Start
@@ -181,5 +198,6 @@ If either has uncommitted changes, commit them before proceeding.
 | "Connection Failed" in browser | Two processes on same port, or dashboard not started | `lsof -i :8787` to check. Kill duplicates. Restart. |
 | Build fails: "Cannot find module 'react'" | `node_modules` missing | `cd dashboard-ui && npm install && npm run build` |
 | Build fails: "Cannot read tsconfig.app.json" | File missing — branch is stale | Merge `nebula-agent-cost-guard` into `main` |
-| Agent runs all show "codex not found" | Codex CLI not installed and no `OPENAI_API_KEY` | Add `OPENAI_API_KEY` to `.env` or install Codex CLI |
+| Agent runs all show "codex not found" + `deterministic` | `.env` missing `openai_api` in provider chain or missing `OPENAI_API_KEY` | Set `FACTORY_AGENT_PROVIDER_ORDER=codex,openai_api,deterministic` and add a valid `OPENAI_API_KEY=sk-...` to `.env`. Restart factory loop. |
+| Agent runs show `openai_api` but fail | `OPENAI_API_KEY` empty or invalid | Add a valid key to `.env`. The factory loop reads `.env` at startup. |
 | Factory produces hardcoded template models | Running old code before "Eliminate hardcoded models" commit | Merge latest from `nebula-agent-cost-guard` |
