@@ -32,8 +32,6 @@ FACTORY_EMBEDDED_EXECUTION_ENABLED: bool = (
 AGENTIC_FACTORY_MODE: str = os.getenv("AGENTIC_FACTORY_MODE", "full").strip().lower()
 RESEARCH_FACTORY_PORTFOLIO_ID: str = os.getenv("RESEARCH_FACTORY_PORTFOLIO_ID", "research_factory")
 PREDICTION_POLICY_GATE_PATH: str = os.getenv("PREDICTION_POLICY_GATE_PATH", "data/prediction_policy_gate.json")
-EXECUTION_REPO_ROOT: str = os.getenv("EXECUTION_REPO_ROOT", "")
-EXECUTION_PORTFOLIO_STATE_ROOT: str = os.getenv("EXECUTION_PORTFOLIO_STATE_ROOT", "")
 EXECUTION_TRACKED_PORTFOLIOS: str = os.getenv(
     "EXECUTION_TRACKED_PORTFOLIOS",
     "liquidation_rebound_absorption,funding_term_structure_dislocation,vol_surface_dispersion_rotation,cross_venue_probability_elasticity",

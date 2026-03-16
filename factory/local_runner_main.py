@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
-from factory.local_runner_base import LocalPortfolioRunner, StubLocalRunner
+from factory.local_runner_base import LocalPortfolioRunner
 
 logger = logging.getLogger(__name__)
 
@@ -16,16 +17,13 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
 
     Resolution order:
     1. If the lineage genome has model_code_path -> DynamicModelRunner
-    2. Legacy family-based routing for existing families
-    3. GenericSignalRunner fallback
+    2. Legacy family-based routing for existing families (Binance funding)
+    3. HMM fallback for stock portfolios
+    4. GenericSignalRunner fallback
     """
-    # Try to resolve from registry (genome-driven)
     try:
-        from pathlib import Path
-
         import config
-
-        from factory.family_classifier import family_runtime_venue, is_equity_family, load_family_config
+        from factory.family_classifier import family_runtime_venue, load_family_config
         from factory.registry import FactoryRegistry
 
         project_root = Path(__file__).resolve().parent.parent
@@ -62,46 +60,53 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
                             genome_params=dict(genome.parameters),
                             runtime_data_source=runtime_ds,
                         )
-                # Check venue for legacy routing
+                
+                # Legacy dispatch for funding rate strategies (which use custom runner)
                 venues = set(lineage.target_venues)
                 if "binance" in venues:
                     from factory.runners.funding_runner import FundingContrarianRunner
-
                     logger.info("Using FundingContrarianRunner for %s (venue: binance)", portfolio_id)
                     return FundingContrarianRunner(portfolio_id)
+                
+                # If stocks/Alpaca but no model code, use HMMRegimeModel via DynamicModelRunner
                 if venues.intersection({"yahoo_stocks", "yahoo", "alpaca_stocks", "alpaca"}):
-                    from factory.runners.hmm_runner import HMMRegimeRunner
-
-                    logger.info("Using HMMRegimeRunner for %s (venue: stocks)", portfolio_id)
-                    return HMMRegimeRunner(portfolio_id)
-                break  # found lineage, use fallback
+                    from factory.runners.dynamic_runner import DynamicModelRunner
+                    
+                    model_path = project_root / "research/goldfish/hmm_regime_adaptive/model.py"
+                    if model_path.exists():
+                        logger.info("Using DynamicModelRunner+HMMRegimeModel for %s (venue: stocks, fallback)", portfolio_id)
+                        return DynamicModelRunner(
+                            portfolio_id,
+                            model_code_path=str(model_path),
+                            class_name="HMMRegimeModel",
+                            runtime_data_source="alpaca" if "alpaca" in venues else "yahoo"
+                        )
+                break
     except Exception as e:
         logger.warning("Registry-based runner resolution failed for %s: %s", portfolio_id, e)
 
-    # Legacy hardcoded fallback for known portfolios
-    _LEGACY_RUNNER_MAP = {
-        "alpaca_paper": "hmm_regime",
-        "contrarian_legacy": "funding_contrarian",
-        "cascade_alpha": "funding_contrarian",
-        "hedge_validation": "funding_contrarian",
-        "hedge_research": "funding_contrarian",
-    }
-    runner_type = _LEGACY_RUNNER_MAP.get(portfolio_id, "generic")
+    # Legacy fallback map
+    # Note: We replaced 'hmm_regime' with DynamicModelRunner+HMMRegimeModel above if it hits the registry.
+    # This map is only for portfolios NOT in the registry or if registry load fails.
+    if portfolio_id in {"alpaca_paper"}:
+        from factory.runners.dynamic_runner import DynamicModelRunner
+        model_path = Path("research/goldfish/hmm_regime_adaptive/model.py")
+        if model_path.exists():
+             logger.info("Using DynamicModelRunner+HMMRegimeModel for %s (legacy fallback)", portfolio_id)
+             return DynamicModelRunner(
+                portfolio_id,
+                model_code_path=str(model_path),
+                class_name="HMMRegimeModel",
+                runtime_data_source="alpaca"
+            )
 
-    if runner_type == "hmm_regime":
-        from factory.runners.hmm_runner import HMMRegimeRunner
-
-        logger.info("Using HMMRegimeRunner for %s (legacy)", portfolio_id)
-        return HMMRegimeRunner(portfolio_id)
-    if runner_type == "funding_contrarian":
+    if portfolio_id in {"contrarian_legacy", "cascade_alpha", "hedge_validation", "hedge_research"}:
         from factory.runners.funding_runner import FundingContrarianRunner
-
-        logger.info("Using FundingContrarianRunner for %s (legacy)", portfolio_id)
+        logger.info("Using FundingContrarianRunner for %s (legacy fallback)", portfolio_id)
         return FundingContrarianRunner(portfolio_id)
 
     from factory.runners.generic_runner import GenericSignalRunner
-
-    logger.info("Using GenericSignalRunner for %s (fallback)", portfolio_id)
+    logger.info("Using GenericSignalRunner for %s (final fallback)", portfolio_id)
     return GenericSignalRunner(portfolio_id)
 
 

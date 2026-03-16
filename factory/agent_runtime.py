@@ -142,9 +142,17 @@ def _resolve_log_dir(project_root: Path | None = None) -> Path:
 
 
 def _provider_order() -> List[str]:
-    raw = str(getattr(config, "FACTORY_AGENT_PROVIDER_ORDER", "codex,deterministic") or "")
-    providers = [item.strip().lower() for item in raw.split(",") if item.strip()]
-    return providers or ["deterministic"]
+    raw = os.environ.get("FACTORY_AGENT_PROVIDER_ORDER", "").strip() or str(
+        getattr(config, "FACTORY_AGENT_PROVIDER_ORDER", "codex,openai_api,deterministic") or ""
+    )
+    providers = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    if not providers:
+        return ["deterministic"]
+    # Ensure openai_api is tried after codex when key is available (resilient to .env omission)
+    if "codex" in providers and "openai_api" not in providers:
+        idx = providers.index("codex") + 1
+        providers.insert(idx, "openai_api")
+    return providers
 
 
 def _demo_family() -> str:
@@ -1414,6 +1422,13 @@ class RealResearchAgentRuntime:
         attempted: List[str] = []
         providers = _provider_order()
         logger.info("Agent run [%s/%s]: provider order=%s", task_type, task_class, providers)
+        # #region agent log
+        try:
+            _dbg = {"sessionId": "a027e7", "hypothesisId": "H1", "location": "agent_runtime.py:provider_loop", "message": "provider_order", "data": {"providers": providers, "config_order": str(getattr(config, "FACTORY_AGENT_PROVIDER_ORDER", "")), "openai_in_order": "openai_api" in providers}, "timestamp": int(time.time() * 1000)}
+            open("/Users/benjaminpommeraud/Documents/AgenticTrading/.cursor/debug-a027e7.log", "a").write(json.dumps(_dbg) + "\n")
+        except Exception:
+            pass
+        # #endregion
         for provider in providers:
             if provider == "ollama" and (not _ollama_fallback_enabled() or task_class != TASK_CHEAP):
                 continue
@@ -1460,6 +1475,13 @@ class RealResearchAgentRuntime:
                     return self._write_run_artifact(result)
                 if provider == "openai_api":
                     api_key = os.environ.get("OPENAI_API_KEY", "").strip() or str(getattr(config, "FACTORY_AGENT_OPENAI_API_KEY", "") or "").strip()
+                    # #region agent log
+                    try:
+                        _dbg = {"sessionId": "a027e7", "hypothesisId": "H3", "location": "agent_runtime.py:openai_api_check", "message": "openai_api_key_check", "data": {"api_key_len": len(api_key), "skipped": not bool(api_key)}, "timestamp": int(time.time() * 1000)}
+                        open("/Users/benjaminpommeraud/Documents/AgenticTrading/.cursor/debug-a027e7.log", "a").write(json.dumps(_dbg) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     if not api_key:
                         logger.warning("Agent run [%s]: openai_api skipped — OPENAI_API_KEY not configured", task_type)
                         errors.append("openai_api:no_api_key")
@@ -1503,6 +1525,20 @@ class RealResearchAgentRuntime:
                 err_msg = _compact_agent_error(provider, str(exc))
                 logger.warning("Agent run [%s]: provider '%s' failed: %s", task_type, provider, err_msg)
                 errors.append(err_msg)
+                # #region agent log
+                try:
+                    _dbg = {"sessionId": "a027e7", "hypothesisId": "H2", "location": "agent_runtime.py:provider_failed", "message": "provider_failed_continuing", "data": {"provider": provider, "exc_type": type(exc).__name__, "err_snippet": str(exc)[:200]}, "timestamp": int(time.time() * 1000)}
+                    open("/Users/benjaminpommeraud/Documents/AgenticTrading/.cursor/debug-a027e7.log", "a").write(json.dumps(_dbg) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+        # #region agent log
+        try:
+            _dbg = {"sessionId": "a027e7", "hypothesisId": "H4", "location": "agent_runtime.py:all_providers_failed", "message": "building_failure_result", "data": {"attempted": attempted, "errors_count": len(errors)}, "timestamp": int(time.time() * 1000)}
+            open("/Users/benjaminpommeraud/Documents/AgenticTrading/.cursor/debug-a027e7.log", "a").write(json.dumps(_dbg) + "\n")
+        except Exception:
+            pass
+        # #endregion
         failure = AgentRunResult(
             run_id=self._new_run_id(task_type),
             task_type=task_type,

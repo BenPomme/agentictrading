@@ -58,8 +58,6 @@ def test_live_manifest_refs_are_hidden_when_factory_is_hard_stopped(tmp_path, mo
 
 
 def test_candidate_contexts_are_visible_in_cost_saver_and_hidden_in_hard_stop(tmp_path, monkeypatch):
-    if execution_repo_root() is None:
-        pytest.skip("Requires EXECUTION_REPO_ROOT to seed execution-backed portfolio inputs.")
     project_root = tmp_path / "repo"
     project_root.mkdir(parents=True, exist_ok=True)
     portfolio_root = tmp_path / "portfolio_state"

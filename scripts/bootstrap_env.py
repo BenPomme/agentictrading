@@ -12,21 +12,6 @@ DEFAULTS = {
     "FACTORY_AGENT_OLLAMA_FALLBACK_ENABLED": "false",
     "FACTORY_AGENT_ENABLED_FAMILIES": "binance_funding_contrarian,binance_cascade_regime,polymarket_cross_venue",
     "FACTORY_AGENT_DEMO_FAMILY": "binance_funding_contrarian",
-    "FACTORY_AGENT_CODEX_MODEL_CHEAP": "gpt-5.1-codex-mini",
-    "FACTORY_AGENT_CODEX_MODEL_PROPOSAL": "gpt-5.4",
-    "FACTORY_AGENT_CODEX_MODEL_STANDARD": "gpt-5.1-codex",
-    "FACTORY_AGENT_CODEX_MODEL_HARD": "gpt-5.2-codex",
-    "FACTORY_AGENT_CODEX_MODEL_FRONTIER": "gpt-5.3-codex",
-    "FACTORY_AGENT_CODEX_MODEL_DEEP": "gpt-5.4",
-    "FACTORY_AGENT_CODEX_MODEL_SPARK": "gpt-5.3-codex-spark",
-    "FACTORY_AGENT_CODEX_MULTI_AGENT_ENABLED": "true",
-    "FACTORY_AGENT_CODEX_MULTI_AGENT_TASKS": "proposal_generation,post_eval_critique,runtime_debug_review,family_bootstrap_generation,maintenance_resolution_review",
-    "FACTORY_AGENT_REASONING_CHEAP": "medium",
-    "FACTORY_AGENT_REASONING_PROPOSAL": "high",
-    "FACTORY_AGENT_REASONING_STANDARD": "medium",
-    "FACTORY_AGENT_REASONING_HARD": "high",
-    "FACTORY_AGENT_REASONING_FRONTIER": "high",
-    "FACTORY_AGENT_REASONING_DEEP": "high",
     "FACTORY_AGENT_OLLAMA_MODEL": "qwen2.5:32b",
     "FACTORY_AGENT_LOG_DIR": "data/factory/agent_runs",
     "FACTORY_AGENT_POST_EVAL_CRITIQUE_ENABLED": "false",
@@ -133,7 +118,6 @@ DEFAULTS = {
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Write a local .env for AgenticTrading extraction mode.")
-    parser.add_argument("--execution-repo-root", default=None, help="Absolute path to the execution repo. Optional; omit for embedded-only mode.")
     parser.add_argument("--output", default=".env", help="Target .env path.")
     args = parser.parse_args()
 
@@ -141,14 +125,6 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
 
     rows = [f"{key}={value}" for key, value in DEFAULTS.items()]
-    if args.execution_repo_root:
-        execution_root = Path(args.execution_repo_root).expanduser().resolve()
-        rows.append(f"EXECUTION_REPO_ROOT={execution_root}")
-        rows.append(f"EXECUTION_PORTFOLIO_STATE_ROOT={execution_root / 'data' / 'portfolios'}")
-        rows.append("FACTORY_EMBEDDED_EXECUTION_ENABLED=false")
-    else:
-        rows.append("EXECUTION_REPO_ROOT=")
-        rows.append("EXECUTION_PORTFOLIO_STATE_ROOT=")
     output.write_text("\n".join(rows) + "\n", encoding="utf-8")
     print(output)
     return 0

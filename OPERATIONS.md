@@ -21,7 +21,6 @@ These three lines must be correct or the factory is broken:
 ```
 FACTORY_AGENT_PROVIDER_ORDER=codex,openai_api,deterministic
 OPENAI_API_KEY=sk-...    # REQUIRED for openai_api fallback
-EXECUTION_REPO_ROOT=     # MUST be empty
 ```
 
 If `OPENAI_API_KEY` is empty, the `openai_api` provider will fail and
@@ -50,6 +49,22 @@ python3 scripts/factory_loop.py --json
 Both are long-running processes. Run them in background terminals or
 with `&`. The factory loop auto-starts the data refresh scheduler as a
 child process.
+
+### Start and survive Cursor close (nohup)
+
+To keep dashboard and factory running after you close Cursor, start
+them with `nohup` and redirect logs:
+
+```bash
+cd /Users/benjaminpommeraud/Documents/AgenticTrading
+mkdir -p data/factory
+
+nohup python3 scripts/factory_dashboard.py --host 0.0.0.0 --port 8787 >> data/factory/dashboard.log 2>&1 &
+nohup python3 scripts/factory_loop.py --json >> data/factory/factory_loop.log 2>&1 &
+
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/
+# 200 = dashboard OK. Logs: tail -f data/factory/dashboard.log data/factory/factory_loop.log
+```
 
 ### Typical startup sequence
 
@@ -177,11 +192,6 @@ If either has uncommitted changes, commit them before proceeding.
 
 ## 6. What NOT to do
 
-- **Never set `EXECUTION_REPO_ROOT`** in `.env`. This repo is fully
-  standalone. All data lives in `data/`. All portfolio state lives in
-  `data/portfolios/`. There is no external execution repo.
-- **Never set `EXECUTION_PORTFOLIO_STATE_ROOT`** to an external path.
-  It must be `data/portfolios` (relative to repo root) or left empty.
 - **Never start the dashboard on port 8788**. The canonical port is
   **8787** (the default in `factory_dashboard.py`).
 - **Never run the factory from an old commit** that has hardcoded
@@ -194,7 +204,7 @@ If either has uncommitted changes, commit them before proceeding.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Portfolios show "degraded" / `heartbeat_stale` | Dashboard reading stale heartbeats | Check `.env` has `EXECUTION_PORTFOLIO_STATE_ROOT=data/portfolios` and `EXECUTION_REPO_ROOT=` (empty). Restart dashboard. |
+| Portfolios show "degraded" / `heartbeat_stale` | Dashboard reading stale heartbeats | Check that `PORTFOLIO_STATE_ROOT` defaults to `data/portfolios` (or is set correctly in `.env`). Restart dashboard. |
 | "Connection Failed" in browser | Two processes on same port, or dashboard not started | `lsof -i :8787` to check. Kill duplicates. Restart. |
 | Build fails: "Cannot find module 'react'" | `node_modules` missing | `cd dashboard-ui && npm install && npm run build` |
 | Build fails: "Cannot read tsconfig.app.json" | File missing — branch is stale | Merge `nebula-agent-cost-guard` into `main` |

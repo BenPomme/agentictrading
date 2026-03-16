@@ -6,14 +6,13 @@ import config
 
 
 def _reload_runtime_execution():
-    import factory.runtime_execution as runtime_execution
+    import factory.execution_manager as runtime_execution
 
     importlib.reload(runtime_execution)
     return runtime_execution
 
 
 def test_legacy_portfolios_default_enabled_without_environment_flags(monkeypatch):
-    monkeypatch.setattr(config, "EXECUTION_REPO_ROOT", "")
     monkeypatch.delenv("CASCADE_ALPHA_ENABLED", raising=False)
     monkeypatch.delenv("CONTRARIAN_LEGACY_ENABLED", raising=False)
     monkeypatch.delenv("POLYMARKET_QF_ENABLED", raising=False)
@@ -24,7 +23,6 @@ def test_legacy_portfolios_default_enabled_without_environment_flags(monkeypatch
 
 
 def test_legacy_portfolios_respect_explicit_disable_flag(monkeypatch):
-    monkeypatch.setattr(config, "EXECUTION_REPO_ROOT", "")
     monkeypatch.setenv("CASCADE_ALPHA_ENABLED", "false")
     monkeypatch.setenv("CONTRARIAN_LEGACY_ENABLED", "false")
     monkeypatch.setenv("POLYMARKET_QF_ENABLED", "false")

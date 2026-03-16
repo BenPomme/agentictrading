@@ -17,65 +17,39 @@ It owns:
 - promotion governance and manifest publication
 - data ingestion (Yahoo, Alpaca, Binance, Betfair, Polymarket)
 - NEBULA Control Room dashboard (React + Vite)
+- Embedded paper trading execution (simulated)
 
-It does **not** own live trading execution.
-
-Paper execution runs via embedded runners. This repo is fully self-contained.
+It is fully self-contained and manages its own execution runners.
 
 ## Learned User Preferences
 
-- Be fully autonomous: do not ask the user to restart dashboards, servers, or processes -- do it yourself; execute plans fully without prompting for manual steps
+- Be fully autonomous: do not ask the user to restart dashboards, servers, or processes -- do it yourself; start them with nohup so they survive Cursor session closure
 - Always verify work visually using browser tools (navigate to dashboard, take screenshots, inspect DOM) before claiming something works -- also check logs and live behavior
-- Use available skills and MCPs proactively instead of doing things manually
-- Show progress frequently -- the user dislikes silent long-running work with no visibility; appearing idle triggers frustration
-- Delegate routine tasks to cheap subagents; reserve expensive models (gpt-5.4, o3, Opus 4.6) for critical reasoning and final review only
-- When Codex CLI quota is exhausted, gracefully fall back to the OpenAI API; learning and paper trading must continue even without Codex credits and resume automatically when credits return
-- The user works with Codex CLI in parallel sessions; always check for uncommitted work on `main` before assuming the worktree is current; scan Codex work and build on top of it
-- Preserve system state across sessions: if ideas were processed, models were trading, feeds were healthy -- that state must not regress
-- Keep this repo self-contained; paper trading and execution must run inside this repo, not the old Arbitrage system; never create runtime dependencies on external repos
-- Update `docs/ROADMAP.md` and `AGENTS.md` as work lands so future sessions can pick up context expertly
-- Start with a plan for complex multi-step work; execute the plan systematically
-- Commit directly to `main` and push to GitHub when the user says "commit to main"
-- All fixes and improvements must be generic/systemic, not family-specific patches -- changes to fitness, retirement, promotion apply to ALL families
-- Never retire a model before it has traded; if no backtest data is available, paper trade first to generate data -- retiring untested models is always wrong
-- Factory agents must understand venue schedules: stock-market models cannot trade on weekends/after-hours; never penalize, review, tweak, or retire a model for being idle when its market is closed
+- Use available skills and MCPs proactively; show progress frequently -- silent long-running work with no visibility triggers frustration
+- Delegate routine tasks to cheap subagents; reserve expensive models (gpt-5.4, o3, Opus 4.6) for critical reasoning only; when Codex CLI is exhausted, fall back to the OpenAI API automatically
+- Check for uncommitted Codex CLI work on `main` before assuming the worktree is current; preserve system state across sessions -- ideas, models, feeds must not regress
+- Keep this repo self-contained with no runtime dependencies on external repos; update `docs/ROADMAP.md` and `AGENTS.md` as work lands
+- Start with a plan for complex multi-step work; finish the plan completely before starting implementation; do not leave plans half-written
+- All fixes must be generic/systemic, not family-specific patches; never retire a model before it has traded -- paper trade first
+- Factory agents must understand venue schedules: stock-market models idle on weekends/after-hours; never penalize idle when the market is closed
 - Do not repeat instructions the user already gave earlier in the session; track and remember all stated rules within a conversation
+- When making significant code changes, document work with timestamp and agent model signature (e.g. [2026-03-16, agent: gpt-5.1-cursor]) so the user can trace and revert
+- Commit directly to `main` and push to GitHub when the user says "commit to main"
 
 ## Learned Workspace Facts
 
-- Remote: `https://github.com/BenPomme/agentictrading.git`; main repo at `/Users/benjaminpommeraud/Documents/AgenticTrading`, bng worktree at `.cursor/worktrees/AgenticTrading/bng`
-- Standalone embedded execution mode; dashboard at `http://127.0.0.1:8787` (React build from `dashboard-ui/dist`); factory loop at 15-minute intervals
-- `.env` must set `EXECUTION_PORTFOLIO_STATE_ROOT=data/portfolios` (local, not the Arbitrage repo) so the dashboard reads fresh heartbeats from embedded runners; if it points to the external repo, portfolios show as degraded/heartbeat_stale
-- `.env` is gitignored; must contain `OPENAI_API_KEY`, `FACTORY_AGENT_PROVIDER_ORDER`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`; when searching for files like `.env`, search across branches and repos, not only the current worktree
-- Agent provider chain: `codex,openai_api,deterministic`; Codex model names (e.g. `gpt-5.2-codex`) are automatically stripped before OpenAI API fallback
-- CRITICAL: The factory loop reads `.env` at startup. If `.env` is changed after the factory starts, the running process has stale values. You MUST restart the factory loop after any `.env` edit. The startup validator will crash if `openai_api` is in the provider chain but `OPENAI_API_KEY` is empty.
-- The `agent_runtime.py` reads `OPENAI_API_KEY` from `os.environ` at call time (not from cached config), providing resilience against import-order bugs
-- Cost guard: `FACTORY_AGENT_EXPENSIVE_CAP_PCT=10`; OpenAI API model tiers: CHEAP=`gpt-4.1-nano`, STANDARD=`gpt-4.1-mini`, HARD/FRONTIER=`gpt-5-mini`, DEEP=`gpt-5.4`
-- `data/` contains all local data; large blobs (yahoo, alpaca, polymarket, agent_runs, backtest_results) are gitignored
-- Data sources: Yahoo (503 Parquet files, 5yr OHLCV), Alpaca (free tier, no SIP bars), Binance (50 klines CSVs, 1yr hourly), Betfair, Polymarket (CLOB history pipeline)
-- Market-hours scheduling: stock families (yahoo*, alpaca*) paper-trade 9:30-16:00 ET only; crypto/betting families trade 24/7; factory agent reviews, debug, tweaks, and retirement are all suppressed for stock-market lineages when the market is closed -- heartbeat_stale/no_trade_syndrome are expected idle, not bugs
-- Automated paper trading: 5 embedded runners managed by `EmbeddedExecutionManager` -- `contrarian_legacy` (8hr funding), `cascade_alpha` (8hr funding), `alpaca_paper` (1hr HMM, market-hours only), `betfair_core` (5min generic), `polymarket_quantum_fold` (5min generic); P&L charts update per runner cycle interval, not in real-time
-- Data refresh scheduler: `scripts/data_refresh_scheduler.py` daemon runs Yahoo (6hr), Alpaca (6hr), and Binance funding (4hr) refreshes in background
-- Backtest engine (`backtest/` module): Optuna TPE + walk-forward; backtest-positive gate before paper promotion (Polymarket exempt)
-- Fitness formula (evaluation.py): profit floor ensures models with positive ROI and 10+ trades never score below `roi * 2.0`; hard vetoes reduced to -10 each; failure_rate weight reduced to 40; capacity/regime vetoes skipped for models with <50 trades
-- Retirement rules: untested models (no trades) get a paper trial (7 days, configurable) instead of being retired; only retire after paper trial if model has traded and results are negative; 3 consecutive negative evals or expired paper trial triggers retirement; learning recorded in goldfish memory
-- TASK_LOCAL bypasses agent runtime for pure computation (backtest, optimization) -- no LLM tokens spent
-- Auto-optimization: `_trigger_auto_optimization()` in orchestrator spawns `scripts/optimize_all_champions.py` once/day per family (TASK_LOCAL subprocess)
-- Agent cost downgrades: post_eval_critique→TASK_STANDARD; debug/maintenance/tweak escalation tightened; 40-60% cost reduction per cycle
-- Dashboard P&L charts: API returns `points` key (not `balance_points`); charts only render when `balance_history.jsonl` has data; chart refresh cadence matches runner cycle interval (5min for generic, 1hr for HMM, 8hr for funding)
-- Idea-to-model pipeline: `experiment_runner.run()` and `orchestrator._collect_evidence()` must have a generic fallback for new families; hardcoded family dispatch lists cause new ideas to get stuck at `goldfish_run` with `missing_*_evidence` blockers
-- [2026-03-16, agent: gpt-5.1-cursor] Equity/ETF families (stock-market instruments) must backtest on Yahoo historical data and, when promoted to paper runtime, always use Alpaca as the live data stream and paper broker; crypto and prediction families remain on Binance/Polymarket/Betfair. Implementation: `factory/family_classifier.py` classifies families; `experiment_runner.py` passes `data_source_override="yahoo"` to backtests; `DynamicModelRunner` accepts `runtime_data_source="alpaca"` for runtime; `orchestrator._seed_family_from_spec` assigns `alpaca_paper` portfolio for equity families; `vol_surface_dispersion_rotation` family metadata updated to target `alpaca_paper`.
-
-## Integration Contract
-
-This repo should communicate with the execution repo through:
-
-- approved manifests
-- candidate context payloads
-- packaged artifacts
-- execution state snapshots
-
-The execution repo should never import internal factory modules directly.
+- Remote: `https://github.com/BenPomme/agentictrading.git`; main repo at `/Users/benjaminpommeraud/Documents/AgenticTrading`; standalone embedded execution; dashboard at `http://127.0.0.1:8787`; factory loop at 15-min intervals
+- `.env` is gitignored; must contain `OPENAI_API_KEY`, `FACTORY_AGENT_PROVIDER_ORDER`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`; factory loop reads `.env` at startup -- MUST restart after edits; `agent_runtime.py` reads `OPENAI_API_KEY` from `os.environ` at call time
+- Agent provider chain: `codex,openai_api,deterministic`; cost guard caps expensive models at 10%; model tiers: CHEAP=`gpt-4.1-nano`, STANDARD=`gpt-4.1-mini`, HARD/FRONTIER=`gpt-5-mini`, DEEP=`gpt-5.4`; TASK_LOCAL bypasses LLM for pure computation
+- `data/` contains all local data (gitignored large blobs); Yahoo (503 Parquet, 5yr OHLCV), Alpaca (free tier), Binance (50 klines CSVs, 1yr hourly), Betfair, Polymarket; data refresh scheduler runs Yahoo/Alpaca (6hr), Binance (4hr) in background
+- Market-hours scheduling: stock families paper-trade 9:30-16:00 ET only; crypto/betting families 24/7; heartbeat_stale/no_trade_syndrome during market close are expected idle, not bugs
+- Embedded runners managed by `EmbeddedExecutionManager`; P&L charts update per runner cycle interval (5min generic, 1hr HMM, 8hr funding), not real-time; dashboard API returns `points` key
+- Backtest engine: Optuna TPE + walk-forward; backtest-positive gate before paper promotion (Polymarket exempt); auto-optimization runs once/day per family via TASK_LOCAL subprocess
+- Fitness formula: profit floor for positive ROI + 10 trades; hard vetoes at -10; failure_rate weight 40; capacity/regime vetoes skipped <50 trades; retirement only after paper trial with negative results
+- Agent cost downgrades: post_eval_critique→TASK_STANDARD; debug/maintenance/tweak escalation tightened; auto-promotion after optimization results land
+- Idea-to-model pipeline: `experiment_runner.run()` and `orchestrator._collect_evidence()` must have generic fallback for new families; hardcoded family dispatch lists cause new ideas to get stuck
+- Equity/ETF families backtest on Yahoo data; when promoted to paper runtime, switch to Alpaca as live data stream and paper broker; `factory/family_classifier.py` classifies families; orchestrator assigns `alpaca_paper` portfolio for equity; crypto/prediction families stay on Binance/Polymarket/Betfair
+- Active LLM-generated families: `vol_surface_dispersion_rotation` (yahoo/alpaca equity), `cross_venue_probability_elasticity` (polymarket/binance), `funding_term_structure_dislocation` (binance), `liquidation_rebound_absorption` (binance)
 
 ## Commands
 

@@ -5,7 +5,7 @@ from typing import Dict
 import config
 from factory.execution_bridge import FactoryExecutionBridge
 from factory.runtime_lanes import decide_runtime_lane_policy
-from factory.runtime_execution import RuntimePortfolioSpec
+from factory.execution_manager import RuntimePortfolioSpec
 
 
 class _DummyManager:
