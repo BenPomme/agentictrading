@@ -530,6 +530,11 @@ class MobkitOrchestratorBackend:
         member_id = f"at-{task_type[:10]}-{trace_id[:8]}"
         profile = _TIER_TO_PROFILE.get(model_tier, "standard-worker")
         tok = max_tokens or 2048
+        # Apply budget_hooks token ceiling if present.
+        if budget_hooks is not None:
+            tok_override = getattr(budget_hooks, "max_tokens_override", None)
+            if tok_override is not None:
+                tok = min(tok, tok_override)
         timeout = float(timeout_seconds or self._timeout)
 
         try:
@@ -596,6 +601,7 @@ class MobkitOrchestratorBackend:
                     trace_id=trace_id,
                     family_id=family_id,
                     lineage_id=lineage_id,
+                    budget_hooks=budget_hooks,
                 ),
                 timeout=timeout,
             )
@@ -710,6 +716,7 @@ class MobkitOrchestratorBackend:
         trace_id: str,
         family_id: str,
         lineage_id: Optional[str],
+        budget_hooks: Optional[Any] = None,  # BudgetHooks | None
     ) -> Dict[str, Any]:
         """Execute a multi-member workflow: Lead → Reviewers → Lead synthesis."""
         member_traces: List[Dict[str, Any]] = []
@@ -717,7 +724,27 @@ class MobkitOrchestratorBackend:
             (r for r in profile.member_roles if r.is_lead),
             profile.member_roles[0],
         )
-        reviewer_roles = [r for r in profile.member_roles if not r.is_lead]
+
+        # ---- Apply budget_hooks constraints ---------------------------
+        _removed_roles: set = set()
+        _force_single = False
+        _lead_max_tokens = lead_role.max_tokens
+        if budget_hooks is not None:
+            removed = getattr(budget_hooks, "removed_member_roles", [])
+            _removed_roles = set(removed)
+            _force_single = getattr(budget_hooks, "force_single_task", False)
+            tok_override = getattr(budget_hooks, "max_tokens_override", None)
+            if tok_override is not None:
+                _lead_max_tokens = min(_lead_max_tokens, tok_override)
+
+        reviewer_roles = [
+            r for r in profile.member_roles
+            if not r.is_lead and r.role not in _removed_roles
+        ]
+
+        # Force single task: skip reviewers entirely.
+        if _force_single:
+            reviewer_roles = []
 
         context_text = json.dumps(shared_context, default=str, indent=2)
         lead_id = f"at-{profile.name[:8]}-{trace_id[:6]}-{lead_role.member_id_suffix}"
@@ -735,7 +762,7 @@ class MobkitOrchestratorBackend:
         )
         await self._handle.send(lead_id, lead_prompt)
         lead_draft = await self._collect_run_result(
-            lead_id, timeout=float(lead_role.max_tokens * 0.05 + 60)
+            lead_id, timeout=float(_lead_max_tokens * 0.05 + 60)
         )
         member_traces.append(
             {
@@ -805,7 +832,7 @@ class MobkitOrchestratorBackend:
             )
             await self._handle.send(lead_id, synthesis_prompt)
             final_text = await self._collect_run_result(
-                lead_id, timeout=float(lead_role.max_tokens * 0.05 + 60)
+                lead_id, timeout=float(_lead_max_tokens * 0.05 + 60)
             )
         else:
             final_text = lead_draft
@@ -822,6 +849,16 @@ class MobkitOrchestratorBackend:
 # ---------------------------------------------------------------------------
 # JSON output helpers
 # ---------------------------------------------------------------------------
+
+
+def _extract_tokens(result: Dict[str, Any]) -> int:
+    """Sum token counts from member_traces in a backend result dict."""
+    total = 0
+    for trace in result.get("member_traces", []):
+        usage = trace.get("usage") or {}
+        if isinstance(usage, dict):
+            total += usage.get("total_tokens", 0)
+    return total
 
 
 def _parse_json_output(text: str, member_id: str) -> Dict[str, Any]:
@@ -902,11 +939,13 @@ class MobkitRuntime:
         self,
         project_root: str | Path,
         backend: Optional[MobkitOrchestratorBackend] = None,
+        governor: Optional[Any] = None,  # factory.governance.CostGovernor (lazy import avoids cycle)
     ) -> None:
         self._project_root = Path(project_root)
         if backend is None:
             backend = MobkitOrchestratorBackend.create(project_root)
         self._backend = backend
+        self._governor = governor  # CostGovernor | None
 
     @property
     def backend_name(self) -> str:
@@ -936,6 +975,30 @@ class MobkitRuntime:
     ) -> Optional[AgentRunResult]:
         started_at = datetime.now(timezone.utc)
         tid = trace_id or str(uuid.uuid4())
+
+        # ---- Budget gate (Task 04) ------------------------------------
+        profile = WORKFLOW_PROFILES.get(workflow_name)
+        reviewer_roles = (
+            [r.role for r in profile.member_roles if not r.is_lead]
+            if profile else []
+        )
+        planned_tokens = profile.member_roles[0].max_tokens if profile else 2048
+        hooks = self._resolve_budget_hooks(
+            budget_hooks=budget_hooks,
+            family_id=family_id,
+            lineage_id=lineage_id,
+            task_type=task_type,
+            planned_tokens=planned_tokens,
+            is_mob=True,
+            reviewer_roles=reviewer_roles,
+        )
+        if hooks is not None and getattr(hooks, "downgrade_decision", None) is not None:
+            dd = hooks.downgrade_decision
+            if getattr(dd, "stopped", False) and getattr(hooks, "strict", False):
+                # strict hard stop — return None (skip this task)
+                logger.warning("MobkitRuntime._run_mob: hard stop for %s/%s", task_type, family_id)
+                return None
+
         try:
             result = self._backend.run_mob_workflow(
                 workflow_name=workflow_name,
@@ -946,7 +1009,13 @@ class MobkitRuntime:
                 family_id=family_id,
                 lineage_id=lineage_id,
                 timeout_seconds=timeout_seconds,
-                budget_hooks=budget_hooks,
+                budget_hooks=hooks,
+            )
+            # ---- Record actual usage ----------------------------------
+            tokens = _extract_tokens(result)
+            self._record_governor_usage(
+                family_id=family_id, lineage_id=lineage_id,
+                task_type=task_type, tokens=tokens, success=True,
             )
             return _make_run_result(
                 task_type=task_type,
@@ -958,6 +1027,10 @@ class MobkitRuntime:
                 model_class=model_class,
             )
         except MobkitWorkflowError as exc:
+            self._record_governor_usage(
+                family_id=family_id, lineage_id=lineage_id,
+                task_type=task_type, tokens=0, success=False,
+            )
             logger.error("MobkitRuntime.%s failed: %s", task_type, exc)
             return _make_run_result(
                 task_type=task_type,
@@ -986,6 +1059,23 @@ class MobkitRuntime:
         started_at = datetime.now(timezone.utc)
         tid = trace_id or str(uuid.uuid4())
         model_class = _TIER_TO_MODEL_CLASS.get(model_tier, "TASK_STANDARD")
+
+        # ---- Budget gate (Task 04) ------------------------------------
+        hooks = self._resolve_budget_hooks(
+            budget_hooks=budget_hooks,
+            family_id=family_id,
+            lineage_id=lineage_id,
+            task_type=task_type,
+            planned_tokens=2048,
+            is_mob=False,
+            reviewer_roles=[],
+        )
+        if hooks is not None and getattr(hooks, "downgrade_decision", None) is not None:
+            dd = hooks.downgrade_decision
+            if getattr(dd, "stopped", False) and getattr(hooks, "strict", False):
+                logger.warning("MobkitRuntime._run_single: hard stop for %s/%s", task_type, family_id)
+                return None
+
         try:
             result = self._backend.run_structured_task(
                 task_type=task_type,
@@ -996,7 +1086,12 @@ class MobkitRuntime:
                 lineage_id=lineage_id,
                 trace_id=tid,
                 timeout_seconds=timeout_seconds,
-                budget_hooks=budget_hooks,
+                budget_hooks=hooks,
+            )
+            tokens = _extract_tokens(result)
+            self._record_governor_usage(
+                family_id=family_id, lineage_id=lineage_id,
+                task_type=task_type, tokens=tokens, success=True,
             )
             return _make_run_result(
                 task_type=task_type,
@@ -1008,6 +1103,10 @@ class MobkitRuntime:
                 model_class=model_class,
             )
         except MobkitWorkflowError as exc:
+            self._record_governor_usage(
+                family_id=family_id, lineage_id=lineage_id,
+                task_type=task_type, tokens=0, success=False,
+            )
             logger.error("MobkitRuntime.%s failed: %s", task_type, exc)
             return _make_run_result(
                 task_type=task_type,
@@ -1018,6 +1117,62 @@ class MobkitRuntime:
                 success=False,
                 error=str(exc),
             )
+
+    # ------------------------------------------------------------------
+    # Governance helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_budget_hooks(
+        self,
+        *,
+        budget_hooks: Optional[Any],
+        family_id: str,
+        lineage_id: Optional[str],
+        task_type: str,
+        planned_tokens: int,
+        is_mob: bool,
+        reviewer_roles: List[str],
+    ) -> Optional[Any]:
+        """Ask governor for BudgetHooks; fall back to caller-supplied hooks."""
+        if self._governor is not None:
+            try:
+                return self._governor.check_and_plan(
+                    family_id=family_id,
+                    lineage_id=lineage_id,
+                    task_type=task_type,
+                    planned_tokens=planned_tokens,
+                    is_mob=is_mob,
+                    reviewer_roles=reviewer_roles,
+                )
+            except Exception as exc:  # GovernorStopError or unexpected
+                from factory.governance import GovernorStopError
+                if isinstance(exc, GovernorStopError):
+                    raise
+                logger.warning(
+                    "MobkitRuntime: governor.check_and_plan error (ignored): %s", exc
+                )
+        return budget_hooks  # caller-supplied passthrough
+
+    def _record_governor_usage(
+        self,
+        *,
+        family_id: str,
+        lineage_id: Optional[str],
+        task_type: str,
+        tokens: int,
+        success: bool,
+    ) -> None:
+        if self._governor is not None:
+            try:
+                self._governor.record_usage(
+                    family_id=family_id,
+                    lineage_id=lineage_id,
+                    task_type=task_type,
+                    tokens=tokens,
+                    success=success,
+                )
+            except Exception as exc:
+                logger.warning("MobkitRuntime: governor.record_usage error (ignored): %s", exc)
 
     # ------------------------------------------------------------------
     # AgentRuntime protocol — 8 business-level methods

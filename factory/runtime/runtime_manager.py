@@ -2,21 +2,28 @@
 
 Selection order:
 1. If FACTORY_RUNTIME_BACKEND=mobkit AND FACTORY_ENABLE_MOBKIT=true
-   → return MobkitRuntime
+   → return MobkitRuntime (with injected CostGovernor)
 2. Otherwise (default)
    → return LegacyRuntime
 
 The default is always legacy, preserving existing behavior until an explicit
 opt-in is configured. An unknown backend name is treated as a config error
 and logged, then falls back to legacy.
+
+Cost governance (Task 04):
+RuntimeManager creates a CostGovernor and injects it into the active runtime.
+The governor is also accessible via manager.governor for direct checks from
+the orchestrator. When FACTORY_ENABLE_STRICT_BUDGETS=false (default), the
+governor runs in observe-only mode and never blocks execution.
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Union
+from typing import Optional
 
 import config
+from factory.governance import CostGovernor
 from factory.runtime.legacy_runtime import LegacyRuntime
 
 logger = logging.getLogger(__name__)
@@ -53,6 +60,7 @@ class RuntimeManager:
     def __init__(self, project_root: str | Path) -> None:
         self._project_root = Path(project_root)
         self._backend_name = _runtime_backend_setting()
+        self._governor = CostGovernor.create()
         self._runtime = self._build_runtime()
 
     # ------------------------------------------------------------------
@@ -68,6 +76,11 @@ class RuntimeManager:
     def backend_name(self) -> str:
         """Name of the active backend, as it will appear in logs and envelopes."""
         return self._backend_name
+
+    @property
+    def governor(self) -> CostGovernor:
+        """The cost governor for this runtime. Always present regardless of backend."""
+        return self._governor
 
     @property
     def runtime(self):
@@ -121,7 +134,7 @@ class RuntimeManager:
                 return LegacyRuntime(self._project_root)
             try:
                 from factory.runtime.mobkit_backend import MobkitRuntime
-                rt = MobkitRuntime(self._project_root)
+                rt = MobkitRuntime(self._project_root, governor=self._governor)
                 logger.info("RuntimeManager: using mobkit backend")
                 return rt
             except Exception:

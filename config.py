@@ -213,9 +213,45 @@ FACTORY_ENABLE_GOLDFISH_PROVENANCE: bool = (
 )
 
 # FACTORY_ENABLE_STRICT_BUDGETS: will gate hard budget enforcement (Task 04).
+# When false (default): governance runs in observe-only mode — downgrades are
+# computed and returned in BudgetHooks, but hard stops only log warnings.
+# When true: hard stops raise GovernorStopError and circuit breakers block calls.
 FACTORY_ENABLE_STRICT_BUDGETS: bool = (
     os.getenv("FACTORY_ENABLE_STRICT_BUDGETS", "false").lower() == "true"
 )
+
+# ---------------------------------------------------------------------------
+# Task 04: Cost governance budget thresholds
+# ---------------------------------------------------------------------------
+# Global daily ceilings (entire factory process, per UTC day).
+FACTORY_GLOBAL_DAILY_BUDGET_USD: float = float(os.getenv("FACTORY_GLOBAL_DAILY_BUDGET_USD", "10.0"))
+FACTORY_GLOBAL_DAILY_TOKENS: int = int(os.getenv("FACTORY_GLOBAL_DAILY_TOKENS", "500000"))
+FACTORY_GLOBAL_MAX_CONCURRENT_WORKFLOWS: int = int(os.getenv("FACTORY_GLOBAL_MAX_CONCURRENT_WORKFLOWS", "3"))
+FACTORY_GLOBAL_MAX_CYCLES_PER_DAY: int = int(os.getenv("FACTORY_GLOBAL_MAX_CYCLES_PER_DAY", "48"))
+
+# Per-family daily ceilings.
+FACTORY_FAMILY_DAILY_BUDGET_USD: float = float(os.getenv("FACTORY_FAMILY_DAILY_BUDGET_USD", "2.0"))
+FACTORY_FAMILY_DAILY_TOKENS: int = int(os.getenv("FACTORY_FAMILY_DAILY_TOKENS", "100000"))
+FACTORY_FAMILY_MAX_NEW_LINEAGES_PER_DAY: int = int(os.getenv("FACTORY_FAMILY_MAX_NEW_LINEAGES_PER_DAY", "3"))
+FACTORY_FAMILY_MAX_CRITIQUE_DEPTH_PER_DAY: int = int(os.getenv("FACTORY_FAMILY_MAX_CRITIQUE_DEPTH_PER_DAY", "5"))
+FACTORY_FAMILY_MAX_EXPENSIVE_RUNS_PER_DAY: int = int(os.getenv("FACTORY_FAMILY_MAX_EXPENSIVE_RUNS_PER_DAY", "2"))
+
+# Per-lineage lifetime limits.
+FACTORY_LINEAGE_MAX_BUDGET_USD: float = float(os.getenv("FACTORY_LINEAGE_MAX_BUDGET_USD", "1.0"))
+FACTORY_LINEAGE_MAX_MUTATIONS: int = int(os.getenv("FACTORY_LINEAGE_MAX_MUTATIONS", "5"))
+FACTORY_LINEAGE_MAX_FAILED_BACKTESTS: int = int(os.getenv("FACTORY_LINEAGE_MAX_FAILED_BACKTESTS", "3"))
+FACTORY_LINEAGE_MAX_CRITIQUE_ROUNDS: int = int(os.getenv("FACTORY_LINEAGE_MAX_CRITIQUE_ROUNDS", "3"))
+
+# Per-task defaults.
+FACTORY_TASK_DEFAULT_MAX_TOKENS: int = int(os.getenv("FACTORY_TASK_DEFAULT_MAX_TOKENS", "2048"))
+FACTORY_TASK_DEFAULT_TIMEOUT_SECONDS: int = int(os.getenv("FACTORY_TASK_DEFAULT_TIMEOUT_SECONDS", "120"))
+FACTORY_TASK_MAX_RETRIES: int = int(os.getenv("FACTORY_TASK_MAX_RETRIES", "1"))
+FACTORY_TASK_SCHEMA_RETRY_LIMIT: int = int(os.getenv("FACTORY_TASK_SCHEMA_RETRY_LIMIT", "1"))
+
+# Per-mob-member defaults.
+FACTORY_MOB_MEMBER_DEFAULT_MAX_TOKENS: int = int(os.getenv("FACTORY_MOB_MEMBER_DEFAULT_MAX_TOKENS", "512"))
+FACTORY_MOB_REVIEWER_MAX_TOKENS: int = int(os.getenv("FACTORY_MOB_REVIEWER_MAX_TOKENS", "512"))
+FACTORY_MOB_LEAD_MAX_TOKENS: int = int(os.getenv("FACTORY_MOB_LEAD_MAX_TOKENS", "2048"))
 
 # FACTORY_FALLBACK_TO_LEGACY: when true, a failing new backend falls back to
 # legacy rather than hard-failing. Default true for safety during migration.
