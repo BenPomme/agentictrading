@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSnapshot } from './hooks/useSnapshot';
 import { useFactoryControl } from './hooks/useFactoryControl';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -18,14 +18,50 @@ import IdeasPanel from './components/IdeasPanel';
 import QueuePanel from './components/QueuePanel';
 import DesksPanel from './components/DesksPanel';
 import LineageAtlas from './components/LineageAtlas';
+import { useAudioAlerts } from './hooks/useAudioAlerts';
 import './App.css';
 
 type Tab = 'overview' | 'atlas';
 
 function App() {
-  const { data, loading, error } = useSnapshot();
+  const { data, prev, loading, error } = useSnapshot();
   const { toggle, pending } = useFactoryControl(data?.factory_paused);
   const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const { audioEnabled, toggleAudio, playAgentRun, playPaperTrade } = useAudioAlerts();
+
+  useEffect(() => {
+    if (!data || !prev || !audioEnabled) return;
+
+    const currentRuns = data.factory?.agent_runs ?? [];
+    const prevRuns = prev.factory?.agent_runs ?? [];
+    if (currentRuns.length > 0) {
+      const latest = currentRuns[0]?.run_id;
+      const prevLatest = prevRuns[0]?.run_id;
+      if (latest && latest !== prevLatest) {
+        playAgentRun();
+      }
+    }
+
+    const currentPortfolios = data.execution?.portfolios ?? [];
+    const prevPortfolios = prev.execution?.portfolios ?? [];
+    if (currentPortfolios.length && prevPortfolios.length) {
+      const prevTradeCounts = new Map<string, number>();
+      for (const p of prevPortfolios) {
+        prevTradeCounts.set(p.portfolio_id, p.trade_count);
+      }
+      let hasNewTrade = false;
+      for (const p of currentPortfolios) {
+        const prevCount = prevTradeCounts.get(p.portfolio_id);
+        if (prevCount != null && p.trade_count > prevCount) {
+          hasNewTrade = true;
+          break;
+        }
+      }
+      if (hasNewTrade) {
+        playPaperTrade();
+      }
+    }
+  }, [data, prev, audioEnabled, playAgentRun, playPaperTrade]);
 
   if (loading && !data) {
     return (
@@ -54,6 +90,8 @@ function App() {
         snapshotTime={data?.generated_at ?? null}
         onToggleFactory={toggle}
         togglePending={pending}
+        audioEnabled={audioEnabled}
+        onToggleAudio={toggleAudio}
       />
 
       <APIFeedsStrip feeds={data?.api_feeds} />

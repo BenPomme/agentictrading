@@ -9,6 +9,8 @@ interface TopCommandBarProps {
   snapshotTime: string | null;
   onToggleFactory: () => Promise<unknown>;
   togglePending: boolean;
+  audioEnabled: boolean;
+  onToggleAudio: () => void;
 }
 
 function useUtcClock(): string {
@@ -38,6 +40,8 @@ export const TopCommandBar: React.FC<TopCommandBarProps> = ({
   snapshotTime,
   onToggleFactory,
   togglePending,
+  audioEnabled,
+  onToggleAudio,
 }) => {
   const utc = useUtcClock();
   const [showConfirm, setShowConfirm] = useState(false);
@@ -96,6 +100,14 @@ export const TopCommandBar: React.FC<TopCommandBarProps> = ({
         </div>
 
         <div className="tcb__right">
+          <button
+            type="button"
+            className={`tcb__audio-toggle ${audioEnabled ? 'tcb__audio-toggle--on' : 'tcb__audio-toggle--off'}`}
+            onClick={onToggleAudio}
+            title={audioEnabled ? 'Disable audio alerts' : 'Enable audio alerts'}
+          >
+            {audioEnabled ? '🔊 Audio alerts' : '🔈 Audio alerts'}
+          </button>
           <span className="tcb__clock">{utc}</span>
           <span className="tcb__age">{relativeTime(snapshotTime)}</span>
           <span

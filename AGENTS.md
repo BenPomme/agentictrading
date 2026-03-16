@@ -64,6 +64,7 @@ Paper execution runs via embedded runners. This repo is fully self-contained.
 - Agent cost downgrades: post_eval_critique→TASK_STANDARD; debug/maintenance/tweak escalation tightened; 40-60% cost reduction per cycle
 - Dashboard P&L charts: API returns `points` key (not `balance_points`); charts only render when `balance_history.jsonl` has data; chart refresh cadence matches runner cycle interval (5min for generic, 1hr for HMM, 8hr for funding)
 - Idea-to-model pipeline: `experiment_runner.run()` and `orchestrator._collect_evidence()` must have a generic fallback for new families; hardcoded family dispatch lists cause new ideas to get stuck at `goldfish_run` with `missing_*_evidence` blockers
+- [2026-03-16, agent: gpt-5.1-cursor] Equity/ETF families (stock-market instruments) must backtest on Yahoo historical data and, when promoted to paper runtime, always use Alpaca as the live data stream and paper broker; crypto and prediction families remain on Binance/Polymarket/Betfair
 
 ## Integration Contract
 

@@ -25,6 +25,7 @@ from factory.contracts import (
     utc_now_iso,
 )
 from factory.execution_refresh import ExecutionRefreshRunner
+from factory.family_classifier import family_backtest_venue, load_family_config
 from factory.experiment_sources import (
     ContrarianBacktester,
     HybridLogitModel,
@@ -145,6 +146,11 @@ class FactoryExperimentRunner:
         """Run backtest using LLM-generated model code."""
         from factory.generic_backtest import run_generic_backtest, backtest_result_to_evaluation_bundle
 
+        # Derive an explicit backtest venue for logging/consistency. For non-equity
+        # families this will usually mirror lineage.target_venues.
+        family_cfg = load_family_config(self.project_root, lineage.family_id)
+        backtest_source = family_backtest_venue(family_cfg) or "unknown"
+
         try:
             result = run_generic_backtest(
                 model_code_path=model_code_path,
@@ -153,6 +159,7 @@ class FactoryExperimentRunner:
                 project_root=self.project_root,
                 train_frac=0.7,
                 initial_capital=10_000.0,
+                data_source_override=backtest_source,
             )
         except Exception as e:
             logger.warning("Model code backtest failed for %s: %s", lineage.lineage_id, e)

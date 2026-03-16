@@ -156,6 +156,7 @@ def run_generic_backtest(
     *,
     train_frac: float = 0.7,
     initial_capital: float = 10_000.0,
+    data_source_override: str | None = None,
 ) -> BacktestResult:
     """Run a generic backtest for any model implementing StrategyModel protocol."""
     path = Path(model_code_path)
@@ -170,9 +171,17 @@ def run_generic_backtest(
     # c. Get data requirements
     data_req = model.required_data()
     data_source = (data_req.get("source") or "unknown").strip().lower()
+    if data_source_override:
+        data_source = data_source_override.strip().lower()
     instruments = list(data_req.get("instruments") or [])
 
     # d. Load data
+    # When an explicit override is provided (e.g. for equity families), pass it
+    # through to the loader via data_req so downstream logic can choose between
+    # yahoo and alpaca without the model having to know.
+    if data_source_override:
+        data_req = dict(data_req)
+        data_req["source"] = data_source_override
     df = load_data_for_requirements(data_req, project_root)
 
     # For multi-symbol flat DataFrames, simulate on the first instrument only
