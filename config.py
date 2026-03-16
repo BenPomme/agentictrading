@@ -197,19 +197,22 @@ BINANCE_FUTURES_TESTNET_API_KEY: str = os.getenv("BINANCE_FUTURES_TESTNET_API_KE
 BINANCE_FUTURES_TESTNET_API_SECRET: str = os.getenv("BINANCE_FUTURES_TESTNET_API_SECRET", "")
 
 # ---------------------------------------------------------------------------
-# Task 01: Runtime adapter feature flags
+# Task 06: Runtime adapter feature flags (cutover defaults)
 # ---------------------------------------------------------------------------
-# FACTORY_RUNTIME_BACKEND: active runtime backend. "legacy" (default) uses the
-# existing Codex/OpenAI provider chain. "mobkit" will be wired in Task 03.
-FACTORY_RUNTIME_BACKEND: str = os.getenv("FACTORY_RUNTIME_BACKEND", "legacy").strip().lower()
+# FACTORY_RUNTIME_BACKEND: active runtime backend. "mobkit" (default as of Task
+# 06 cutover) uses the meerkat-mobkit orchestrator. Set to "legacy" to roll back
+# to the existing Codex/OpenAI provider chain.
+FACTORY_RUNTIME_BACKEND: str = os.getenv("FACTORY_RUNTIME_BACKEND", "mobkit").strip().lower()
 
-# FACTORY_ENABLE_MOBKIT: must be true *and* FACTORY_RUNTIME_BACKEND=mobkit to
-# activate the mobkit backend. Double-flag prevents accidental activation.
-FACTORY_ENABLE_MOBKIT: bool = os.getenv("FACTORY_ENABLE_MOBKIT", "false").lower() == "true"
+# FACTORY_ENABLE_MOBKIT: enables the mobkit backend.  True by default as of Task
+# 06 cutover.  Set to "false" for emergency rollback to legacy.
+FACTORY_ENABLE_MOBKIT: bool = os.getenv("FACTORY_ENABLE_MOBKIT", "true").lower() == "true"
 
-# FACTORY_ENABLE_GOLDFISH_PROVENANCE: will gate Goldfish write path (Task 02).
+# FACTORY_ENABLE_GOLDFISH_PROVENANCE: gates Goldfish write path.  True by
+# default as of Task 06 cutover — Goldfish is now the authoritative provenance
+# store.  Set to "false" to disable Goldfish writes (rollback or dry-run).
 FACTORY_ENABLE_GOLDFISH_PROVENANCE: bool = (
-    os.getenv("FACTORY_ENABLE_GOLDFISH_PROVENANCE", "false").lower() == "true"
+    os.getenv("FACTORY_ENABLE_GOLDFISH_PROVENANCE", "true").lower() == "true"
 )
 
 # FACTORY_ENABLE_STRICT_BUDGETS: will gate hard budget enforcement (Task 04).

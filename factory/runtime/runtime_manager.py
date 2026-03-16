@@ -1,14 +1,18 @@
 """RuntimeManager — selects and vends the active agent runtime backend.
 
-Selection order:
-1. If FACTORY_RUNTIME_BACKEND=mobkit AND FACTORY_ENABLE_MOBKIT=true
+Selection order (Task 06 defaults):
+1. If FACTORY_RUNTIME_BACKEND=mobkit AND FACTORY_ENABLE_MOBKIT=true (default)
    → return MobkitRuntime (with injected CostGovernor)
-2. Otherwise (default)
-   → return LegacyRuntime
+2. If mobkit init fails AND FACTORY_FALLBACK_TO_LEGACY=true (default)
+   → emit FALLBACK_ACTIVATED telemetry and return LegacyRuntime
+3. If mobkit init fails AND FACTORY_FALLBACK_TO_LEGACY=false
+   → raise RuntimeError (hard fail — no hidden degradation)
+4. If FACTORY_RUNTIME_BACKEND=legacy explicitly
+   → return LegacyRuntime with a deprecation warning
 
-The default is always legacy, preserving existing behavior until an explicit
-opt-in is configured. An unknown backend name is treated as a config error
-and logged, then falls back to legacy.
+Emergency rollback config:
+    FACTORY_RUNTIME_BACKEND=legacy
+    FACTORY_ENABLE_GOLDFISH_PROVENANCE=false
 
 Cost governance (Task 04):
 RuntimeManager creates a CostGovernor and injects it into the active runtime.
@@ -36,14 +40,19 @@ _KNOWN_BACKENDS = {BACKEND_LEGACY, BACKEND_MOBKIT}
 
 
 def _runtime_backend_setting() -> str:
-    """Read FACTORY_RUNTIME_BACKEND from config, defaulting to 'legacy'."""
-    raw = str(getattr(config, "FACTORY_RUNTIME_BACKEND", BACKEND_LEGACY) or "").strip().lower()
-    return raw if raw in _KNOWN_BACKENDS else BACKEND_LEGACY
+    """Read FACTORY_RUNTIME_BACKEND from config, defaulting to 'mobkit' (Task 06)."""
+    raw = str(getattr(config, "FACTORY_RUNTIME_BACKEND", BACKEND_MOBKIT) or "").strip().lower()
+    return raw if raw in _KNOWN_BACKENDS else BACKEND_MOBKIT
 
 
 def _mobkit_enabled() -> bool:
-    """Read FACTORY_ENABLE_MOBKIT from config, defaulting to False."""
-    return bool(getattr(config, "FACTORY_ENABLE_MOBKIT", False))
+    """Read FACTORY_ENABLE_MOBKIT from config, defaulting to True (Task 06)."""
+    return bool(getattr(config, "FACTORY_ENABLE_MOBKIT", True))
+
+
+def _fallback_to_legacy_allowed() -> bool:
+    """Read FACTORY_FALLBACK_TO_LEGACY from config, defaulting to True."""
+    return bool(getattr(config, "FACTORY_FALLBACK_TO_LEGACY", True))
 
 
 class RuntimeManager:
@@ -122,37 +131,54 @@ class RuntimeManager:
     # Internal
     # ------------------------------------------------------------------
 
+    def _fallback_to_legacy(self, reason: str) -> LegacyRuntime:
+        """
+        Gracefully degrade to the legacy runtime, respecting FACTORY_FALLBACK_TO_LEGACY.
+
+        Emits a FALLBACK_ACTIVATED telemetry event and logs at WARNING level.
+        If FACTORY_FALLBACK_TO_LEGACY=false, raises RuntimeError instead.
+        """
+        if not _fallback_to_legacy_allowed():
+            raise RuntimeError(
+                f"RuntimeManager: backend {self._backend_name!r} unavailable and "
+                f"FACTORY_FALLBACK_TO_LEGACY=false — refusing silent fallback. "
+                f"Reason: {reason}"
+            )
+        logger.warning(
+            "RuntimeManager: falling back to legacy runtime. Reason: %s", reason
+        )
+        _tel.fallback_activated(self._backend_name, BACKEND_LEGACY, reason=reason)
+        self._backend_name = BACKEND_LEGACY
+        return LegacyRuntime(self._project_root)
+
     def _build_runtime(self):
         requested = self._backend_name
         mobkit_flag = _mobkit_enabled()
 
         if requested == BACKEND_MOBKIT:
             if not mobkit_flag:
-                logger.warning(
-                    "FACTORY_RUNTIME_BACKEND=mobkit but FACTORY_ENABLE_MOBKIT=false; "
-                    "falling back to legacy runtime"
-                )
-                self._backend_name = BACKEND_LEGACY
-                return LegacyRuntime(self._project_root)
+                return self._fallback_to_legacy("FACTORY_ENABLE_MOBKIT=false")
             try:
                 from factory.runtime.mobkit_backend import MobkitRuntime
                 rt = MobkitRuntime(self._project_root, governor=self._governor)
                 logger.info("RuntimeManager: using mobkit backend")
                 return rt
-            except Exception:
-                logger.exception(
-                    "RuntimeManager: failed to initialize MobkitRuntime; "
-                    "falling back to legacy runtime"
-                )
-                self._backend_name = BACKEND_LEGACY
-                return LegacyRuntime(self._project_root)
+            except Exception as exc:
+                logger.exception("RuntimeManager: failed to initialize MobkitRuntime")
+                return self._fallback_to_legacy(f"MobkitRuntime init failed: {exc}")
 
         if requested not in _KNOWN_BACKENDS:
             logger.error(
                 "Unknown FACTORY_RUNTIME_BACKEND=%r; falling back to legacy runtime",
                 requested,
             )
-            self._backend_name = BACKEND_LEGACY
+            return self._fallback_to_legacy(f"unknown backend: {requested!r}")
 
+        # Explicit legacy selection — warn that legacy is now deprecated as the default
+        logger.warning(
+            "RuntimeManager: FACTORY_RUNTIME_BACKEND=legacy — "
+            "legacy runtime is deprecated as default (Task 06 cutover); "
+            "set FACTORY_RUNTIME_BACKEND=mobkit to use the new backend"
+        )
         logger.debug("RuntimeManager: using backend=%s", self._backend_name)
         return LegacyRuntime(self._project_root)
