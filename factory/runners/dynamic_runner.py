@@ -67,7 +67,8 @@ class DynamicModelRunner(LocalPortfolioRunner):
         self._model: Any = None
         self._last_fit_date: date | None = None
         self._retrain_interval_days = 21
-        self._project_root = Path(__file__).resolve().parent.parent.parent
+        import config as _cfg
+        self._project_root = Path(_cfg.__file__).resolve().parent
         self._data: pd.DataFrame | None = None
         self._data_req: dict | None = None
         # Set after first load based on source

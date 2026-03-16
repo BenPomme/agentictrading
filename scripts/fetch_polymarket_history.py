@@ -174,8 +174,14 @@ def run(
             skip_count += 1
             continue
 
-        # Also try clobTokenIds if available
+        # Also try clobTokenIds if available (Gamma API returns this as a JSON string)
         clob_token_ids = market.get("clobTokenIds", [])
+        if isinstance(clob_token_ids, str):
+            try:
+                import json as _json
+                clob_token_ids = _json.loads(clob_token_ids)
+            except Exception:
+                clob_token_ids = []
         tokens_to_try = clob_token_ids if clob_token_ids else [market_id]
 
         for token_id in tokens_to_try:

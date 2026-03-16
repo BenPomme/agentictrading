@@ -45,17 +45,24 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
                 if genome is not None:
                     code_path = str(genome.parameters.get("model_code_path") or "").strip()
                     class_name = str(genome.parameters.get("model_class_name") or "").strip()
-                    if code_path and class_name and Path(code_path).exists():
+                    resolved_code_path = Path(code_path)
+                    if not resolved_code_path.is_absolute():
+                        resolved_code_path = project_root / resolved_code_path
+                    if code_path and class_name and resolved_code_path.exists():
                         from factory.runners.dynamic_runner import DynamicModelRunner
 
-                        runtime_ds = "alpaca" if runtime_venue == "alpaca" else None
+                        # Only override to "alpaca" if live Alpaca bars data actually exists on disk;
+                        # otherwise fall back to model's own required_data() source (e.g. yahoo).
+                        alpaca_bars_dir = project_root / "data" / "alpaca" / "bars"
+                        alpaca_has_data = alpaca_bars_dir.is_dir() and any(alpaca_bars_dir.iterdir())
+                        runtime_ds = "alpaca" if runtime_venue == "alpaca" and alpaca_has_data else None
                         logger.info(
                             "Using DynamicModelRunner for %s (model: %s, runtime_data_source: %s)",
                             portfolio_id, class_name, runtime_ds or "model-default",
                         )
                         return DynamicModelRunner(
                             portfolio_id,
-                            model_code_path=code_path,
+                            model_code_path=str(resolved_code_path),
                             class_name=class_name,
                             genome_params=dict(genome.parameters),
                             runtime_data_source=runtime_ds,

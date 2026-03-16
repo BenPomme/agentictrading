@@ -121,7 +121,7 @@ class LocalPortfolioRunner(ABC):
                 self.write_runtime_health()
 
                 if self.should_skip_cycle():
-                    logger.debug("Skipping cycle (market closed) for %s", self.portfolio_id)
+                    logger.info("Skipping cycle (market closed) for %s", self.portfolio_id)
                     self.write_heartbeat({"skipped": "market_closed"})
                     self._sleep_with_heartbeat(cycle_interval_sec)
                     continue

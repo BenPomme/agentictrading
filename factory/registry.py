@@ -196,7 +196,18 @@ class FactoryRegistry:
 
     def save_genome(self, lineage_id: str, genome: StrategyGenome) -> None:
         with self._lock:
-            self._atomic_write_json(self.lineages_dir / lineage_id / "genome.json", genome.to_dict())
+            genome_dict = genome.to_dict()
+            params = genome_dict.get("parameters", {})
+            if "model_code_path" in params and params["model_code_path"]:
+                try:
+                    import config as _cfg
+                    project_root = Path(_cfg.__file__).resolve().parent
+                    params["model_code_path"] = str(
+                        Path(params["model_code_path"]).relative_to(project_root)
+                    )
+                except (ValueError, ImportError):
+                    pass  # Already relative or on a different drive; leave as-is
+            self._atomic_write_json(self.lineages_dir / lineage_id / "genome.json", genome_dict)
 
     def save_hypothesis(self, lineage_id: str, hypothesis: ResearchHypothesis) -> None:
         with self._lock:
