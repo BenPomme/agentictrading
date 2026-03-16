@@ -15,10 +15,10 @@ from zoneinfo import ZoneInfo
 import config
 from factory.agent_runtime import (
     AgentRunResult,
-    RealResearchAgentRuntime,
     apply_real_agent_proposal,
     apply_real_family_proposal,
 )
+from factory.runtime.runtime_manager import RuntimeManager
 from factory.assessment import assessment_progress
 from factory.connectors import default_connector_catalog
 from factory.contracts import (
@@ -45,6 +45,7 @@ from factory.evaluation import assign_pareto_ranks, compute_hard_vetoes
 from factory.experiment_runner import FactoryExperimentRunner
 from factory.experiment_sources import family_model_rankings, portfolio_scorecards
 from factory.goldfish_bridge import GoldfishBridge
+from factory.provenance.goldfish_client import ProvenanceService
 from factory.idea_intake import all_ideas, annotate_idea_statuses, maybe_run_manual_idea_watch, relevant_ideas_for_family
 from factory.idea_scout import maybe_run_idea_scout
 from factory.promotion import PromotionController
@@ -198,10 +199,12 @@ class FactoryOrchestrator:
             goldfish_root = self.project_root / goldfish_root
         self.registry = FactoryRegistry(factory_root)
         self.bridge = GoldfishBridge(goldfish_root)
+        self.provenance = ProvenanceService.create(self.project_root)
         self.execution_bridge = FactoryExecutionBridge()
         self.experiment_runner = FactoryExperimentRunner(self.project_root)
         self.strategy_inventor = ScientificStrategyInventor()
-        self.agent_runtime = RealResearchAgentRuntime(self.project_root)
+        self._runtime_manager = RuntimeManager.create(self.project_root)
+        self.agent_runtime = self._runtime_manager.runtime
         self.promotion = PromotionController()
         self.connectors = default_connector_catalog(self.project_root)
         self._events: Deque[Dict[str, Any]] = deque(maxlen=200)

@@ -24,6 +24,7 @@ from factory.contracts import (
     StrategyGenome,
     utc_now_iso,
 )
+from factory.provenance.lineage_projection import LineageProjectionStore, ProvenanceRef
 
 T = TypeVar("T")
 
@@ -55,6 +56,8 @@ class FactoryRegistry:
         self.state_dir = self.root / "state"
         self.journal_path = self.state_dir / "STATE.md"
         self._lock = threading.Lock()
+        # Provenance projection cache: local mirror of Goldfish record references
+        self._provenance_store = LineageProjectionStore(self.root)
         self.ensure()
 
     def ensure(self) -> None:
@@ -609,3 +612,19 @@ class FactoryRegistry:
             if section == "## Recent Actions" and line.startswith("- "):
                 recent_actions.append(line[2:])
         return FactoryJournal(active_goal=active_goal, recent_actions=recent_actions[-20:])
+
+    # ------------------------------------------------------------------
+    # Provenance projection cache (Task 02)
+    # ------------------------------------------------------------------
+
+    def save_provenance_ref(self, ref: ProvenanceRef) -> None:
+        """Store a Goldfish record reference in the local projection cache."""
+        self._provenance_store.save(ref)
+
+    def load_provenance_ref(self, lineage_id: str) -> Optional[ProvenanceRef]:
+        """Load the latest Goldfish record reference for a lineage, or None."""
+        return self._provenance_store.load(lineage_id)
+
+    def all_provenance_refs(self) -> List[ProvenanceRef]:
+        """Return all stored provenance projection references."""
+        return self._provenance_store.all_refs()

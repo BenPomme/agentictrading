@@ -195,3 +195,43 @@ BINANCE_SPOT_TESTNET_API_KEY: str = os.getenv("BINANCE_SPOT_TESTNET_API_KEY", ""
 BINANCE_SPOT_TESTNET_API_SECRET: str = os.getenv("BINANCE_SPOT_TESTNET_API_SECRET", "")
 BINANCE_FUTURES_TESTNET_API_KEY: str = os.getenv("BINANCE_FUTURES_TESTNET_API_KEY", "")
 BINANCE_FUTURES_TESTNET_API_SECRET: str = os.getenv("BINANCE_FUTURES_TESTNET_API_SECRET", "")
+
+# ---------------------------------------------------------------------------
+# Task 01: Runtime adapter feature flags
+# ---------------------------------------------------------------------------
+# FACTORY_RUNTIME_BACKEND: active runtime backend. "legacy" (default) uses the
+# existing Codex/OpenAI provider chain. "mobkit" will be wired in Task 03.
+FACTORY_RUNTIME_BACKEND: str = os.getenv("FACTORY_RUNTIME_BACKEND", "legacy").strip().lower()
+
+# FACTORY_ENABLE_MOBKIT: must be true *and* FACTORY_RUNTIME_BACKEND=mobkit to
+# activate the mobkit backend. Double-flag prevents accidental activation.
+FACTORY_ENABLE_MOBKIT: bool = os.getenv("FACTORY_ENABLE_MOBKIT", "false").lower() == "true"
+
+# FACTORY_ENABLE_GOLDFISH_PROVENANCE: will gate Goldfish write path (Task 02).
+FACTORY_ENABLE_GOLDFISH_PROVENANCE: bool = (
+    os.getenv("FACTORY_ENABLE_GOLDFISH_PROVENANCE", "false").lower() == "true"
+)
+
+# FACTORY_ENABLE_STRICT_BUDGETS: will gate hard budget enforcement (Task 04).
+FACTORY_ENABLE_STRICT_BUDGETS: bool = (
+    os.getenv("FACTORY_ENABLE_STRICT_BUDGETS", "false").lower() == "true"
+)
+
+# FACTORY_FALLBACK_TO_LEGACY: when true, a failing new backend falls back to
+# legacy rather than hard-failing. Default true for safety during migration.
+FACTORY_FALLBACK_TO_LEGACY: bool = (
+    os.getenv("FACTORY_FALLBACK_TO_LEGACY", "true").lower() == "true"
+)
+
+# ---------------------------------------------------------------------------
+# Task 02: Goldfish provenance config keys
+# ---------------------------------------------------------------------------
+# Optional override for the goldfish project root directory.
+# If empty, falls back to FACTORY_GOLDFISH_ROOT.
+FACTORY_GOLDFISH_PROJECT_ROOT: str = os.getenv("FACTORY_GOLDFISH_PROJECT_ROOT", "").strip()
+
+# When true, a Goldfish write failure causes the operation to raise rather than
+# log-and-continue. Default false (warn-only) during migration.
+FACTORY_GOLDFISH_FAIL_ON_ERROR: bool = (
+    os.getenv("FACTORY_GOLDFISH_FAIL_ON_ERROR", "false").lower() == "true"
+)

@@ -1,6 +1,20 @@
+"""GoldfishBridge — DEPRECATED filesystem-only scaffold.
+
+This class predates the real Goldfish integration introduced in Task 02.
+It writes local filesystem scaffolds and is kept only for backward
+compatibility with existing orchestrator call sites.
+
+MIGRATION:
+  - Real Goldfish provenance is now in factory/provenance/goldfish_client.py
+  - Workspace paths are still used by orchestrator for local experiment dirs
+  - Task 06 (cutover) will remove this class
+
+Do not add new logic here.  New provenance writes belong in ProvenanceService.
+"""
 from __future__ import annotations
 
 import hashlib
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
