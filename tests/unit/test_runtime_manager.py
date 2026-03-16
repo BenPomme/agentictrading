@@ -68,12 +68,14 @@ class TestRuntimeManagerSelection:
             manager = RuntimeManager.create(_tmp_root(tmp_path))
         assert manager.backend_name == BACKEND_LEGACY
 
-    def test_mobkit_with_enable_flag_falls_back_until_task03(self, tmp_path):
-        """mobkit + enable=true → falls back to legacy because Task 03 not done yet."""
+    def test_mobkit_with_enable_flag_falls_back_when_no_gateway(self, tmp_path):
+        """mobkit + enable=true but no gateway binary → falls back to legacy."""
         with patch.object(config, "FACTORY_RUNTIME_BACKEND", "mobkit"), \
-             patch.object(config, "FACTORY_ENABLE_MOBKIT", True):
+             patch.object(config, "FACTORY_ENABLE_MOBKIT", True), \
+             patch.object(config, "FACTORY_MOBKIT_GATEWAY_BIN", ""), \
+             patch.object(config, "FACTORY_MOBKIT_CONFIG_PATH", ""):
             manager = RuntimeManager.create(_tmp_root(tmp_path))
-        # Task 03 not implemented → still legacy
+        # No FACTORY_MOBKIT_GATEWAY_BIN set → MobkitOrchestratorBackend.create() raises → legacy
         assert manager.backend_name == BACKEND_LEGACY
 
     def test_unknown_backend_falls_back_to_legacy(self, tmp_path):

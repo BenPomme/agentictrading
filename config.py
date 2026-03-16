@@ -224,6 +224,23 @@ FACTORY_FALLBACK_TO_LEGACY: bool = (
 )
 
 # ---------------------------------------------------------------------------
+# Task 03: mobkit backend config keys
+# ---------------------------------------------------------------------------
+# Path to the mobkit-rpc gateway binary. Required when FACTORY_RUNTIME_BACKEND=mobkit.
+# Set via MOBKIT_RPC_GATEWAY_BIN (conventional name) or FACTORY_MOBKIT_GATEWAY_BIN.
+FACTORY_MOBKIT_GATEWAY_BIN: str = os.getenv(
+    "FACTORY_MOBKIT_GATEWAY_BIN",
+    os.getenv("MOBKIT_RPC_GATEWAY_BIN", ""),
+).strip()
+
+# Optional path to a mob.toml config file for the mobkit runtime.
+# Leave empty to use convention-based defaults (config/mob.toml if present).
+FACTORY_MOBKIT_CONFIG_PATH: str = os.getenv("FACTORY_MOBKIT_CONFIG_PATH", "").strip()
+
+# Per-call timeout for mobkit RPC operations, in seconds.
+FACTORY_MOBKIT_TIMEOUT_SECONDS: int = int(os.getenv("FACTORY_MOBKIT_TIMEOUT_SECONDS", "120"))
+
+# ---------------------------------------------------------------------------
 # Task 02: Goldfish provenance config keys
 # ---------------------------------------------------------------------------
 # Optional override for the goldfish project root directory.

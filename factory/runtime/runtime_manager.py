@@ -2,7 +2,7 @@
 
 Selection order:
 1. If FACTORY_RUNTIME_BACKEND=mobkit AND FACTORY_ENABLE_MOBKIT=true
-   → return MobkitRuntime (Task 03 implements this; raises NotImplementedError now)
+   → return MobkitRuntime
 2. Otherwise (default)
    → return LegacyRuntime
 
@@ -70,24 +70,24 @@ class RuntimeManager:
         return self._backend_name
 
     @property
-    def runtime(self) -> LegacyRuntime:
-        """
-        The resolved runtime instance.
-
-        Returns LegacyRuntime until Task 03 wires mobkit.
-        Typed as LegacyRuntime for now; will widen to AgentRuntime union
-        once MobkitRuntime exists.
-        """
-        return self._runtime  # type: ignore[return-value]
+    def runtime(self):
+        """The resolved runtime instance (LegacyRuntime or MobkitRuntime)."""
+        return self._runtime
 
     def healthcheck(self) -> bool:
         """
         Quick sanity check on the active backend.
         Legacy runtime is always considered healthy (it fails at invocation time).
+        MobkitRuntime delegates to MobkitOrchestratorBackend.healthcheck().
         """
         if self._backend_name == BACKEND_LEGACY:
             return True
-        # TODO Task 03: delegate to MobkitOrchestratorBackend.healthcheck()
+        if self._backend_name == BACKEND_MOBKIT:
+            try:
+                return self._runtime.healthcheck()
+            except Exception:
+                logger.exception("RuntimeManager: mobkit healthcheck failed")
+                return False
         return False
 
     # ------------------------------------------------------------------
@@ -107,7 +107,7 @@ class RuntimeManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _build_runtime(self) -> LegacyRuntime:
+    def _build_runtime(self):
         requested = self._backend_name
         mobkit_flag = _mobkit_enabled()
 
@@ -119,13 +119,18 @@ class RuntimeManager:
                 )
                 self._backend_name = BACKEND_LEGACY
                 return LegacyRuntime(self._project_root)
-            # TODO Task 03: return MobkitRuntime(self._project_root)
-            logger.warning(
-                "FACTORY_RUNTIME_BACKEND=mobkit is set but MobkitRuntime is not yet "
-                "implemented (Task 03); falling back to legacy runtime"
-            )
-            self._backend_name = BACKEND_LEGACY
-            return LegacyRuntime(self._project_root)
+            try:
+                from factory.runtime.mobkit_backend import MobkitRuntime
+                rt = MobkitRuntime(self._project_root)
+                logger.info("RuntimeManager: using mobkit backend")
+                return rt
+            except Exception:
+                logger.exception(
+                    "RuntimeManager: failed to initialize MobkitRuntime; "
+                    "falling back to legacy runtime"
+                )
+                self._backend_name = BACKEND_LEGACY
+                return LegacyRuntime(self._project_root)
 
         if requested not in _KNOWN_BACKENDS:
             logger.error(
