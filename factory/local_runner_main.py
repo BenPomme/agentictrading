@@ -25,6 +25,7 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
 
         import config
 
+        from factory.family_classifier import family_runtime_venue, is_equity_family, load_family_config
         from factory.registry import FactoryRegistry
 
         project_root = Path(__file__).resolve().parent.parent
@@ -39,6 +40,9 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
             if not lineage.active:
                 continue
             if portfolio_id in lineage.target_portfolios:
+                family_cfg = load_family_config(project_root, lineage.family_id)
+                runtime_venue = family_runtime_venue(family_cfg) if family_cfg else None
+
                 genome = registry.load_genome(lineage.lineage_id)
                 if genome is not None:
                     code_path = str(genome.parameters.get("model_code_path") or "").strip()
@@ -46,12 +50,17 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
                     if code_path and class_name and Path(code_path).exists():
                         from factory.runners.dynamic_runner import DynamicModelRunner
 
-                        logger.info("Using DynamicModelRunner for %s (model: %s)", portfolio_id, class_name)
+                        runtime_ds = "alpaca" if runtime_venue == "alpaca" else None
+                        logger.info(
+                            "Using DynamicModelRunner for %s (model: %s, runtime_data_source: %s)",
+                            portfolio_id, class_name, runtime_ds or "model-default",
+                        )
                         return DynamicModelRunner(
                             portfolio_id,
                             model_code_path=code_path,
                             class_name=class_name,
                             genome_params=dict(genome.parameters),
+                            runtime_data_source=runtime_ds,
                         )
                 # Check venue for legacy routing
                 venues = set(lineage.target_venues)

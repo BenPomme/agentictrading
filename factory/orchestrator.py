@@ -331,7 +331,16 @@ class FactoryOrchestrator:
         )
         spec["target_venues"] = norm_venues
         spec["connectors"] = norm_connectors
-        spec["target_portfolios"] = [family_id]
+
+        from factory.family_classifier import is_equity_family as _is_equity
+        _equity_probe = {
+            "target_venues": norm_venues,
+            "primary_connector_ids": norm_connectors,
+        }
+        if _is_equity(_equity_probe):
+            spec["target_portfolios"] = ["alpaca_paper"]
+        else:
+            spec["target_portfolios"] = [family_id]
         hypothesis_id = f"{family_id}:hypothesis"
         lineage_id = f"{family_id}:champion"
         genome_id = f"{family_id}:genome:champion"

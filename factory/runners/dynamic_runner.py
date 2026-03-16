@@ -53,11 +53,13 @@ class DynamicModelRunner(LocalPortfolioRunner):
         model_code_path: str,
         class_name: str,
         genome_params: dict | None = None,
+        runtime_data_source: str | None = None,
     ) -> None:
         super().__init__(portfolio_id)
         self._model_code_path = model_code_path
         self._class_name = class_name
         self._genome_params = genome_params or {}
+        self._runtime_data_source = runtime_data_source
         self._book = PaperTradeBook(
             portfolio_dir=self.portfolio_dir,
             initial_balance=10_000.0,
@@ -87,6 +89,9 @@ class DynamicModelRunner(LocalPortfolioRunner):
             self._model.configure(self._genome_params or {})
 
             self._data_req = self._model.required_data()
+            if self._runtime_data_source:
+                self._data_req = dict(self._data_req)
+                self._data_req["source"] = self._runtime_data_source
             self._data = load_data_for_requirements(self._data_req, self._project_root)
 
             if self._data is None or len(self._data) == 0:

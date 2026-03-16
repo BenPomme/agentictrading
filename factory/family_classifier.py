@@ -29,14 +29,20 @@ def load_family_config(project_root: Path | str, family_id: str) -> Dict[str, An
 def is_equity_family(cfg: Dict[str, Any]) -> bool:
     """Heuristic: treat families that clearly target stocks/ETFs as equity.
 
-    Current signals:
-    - target_venues includes \"yahoo\" or \"alpaca\"
-    - primary_connector_ids includes \"yahoo_stocks\" or \"alpaca_stocks\"
+    Positive signals (any match → equity):
+    - target_venues includes "yahoo" or "alpaca"
+    - primary_connector_ids includes "yahoo_stocks" or "alpaca_stocks"
+
+    Negative signals (override → not equity even if yahoo present):
+    - target_venues includes "binance", "betfair", or "polymarket"
     """
     if not cfg:
         return False
     venues = {str(v).lower() for v in (cfg.get("target_venues") or [])}
     connectors = {str(c).lower() for c in (cfg.get("primary_connector_ids") or [])}
+    non_equity_venues = {"binance", "betfair", "polymarket"}
+    if venues.intersection(non_equity_venues):
+        return False
     if venues.intersection({"yahoo", "alpaca"}):
         return True
     if connectors.intersection({"yahoo_stocks", "alpaca_stocks"}):

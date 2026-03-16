@@ -1,0 +1,48 @@
+{
+  "family_id": "vol_surface_dispersion_rotation",
+  "label": "Vol Surface Dispersion Rotation",
+  "thesis": "We believe we can create alpha by rotating among equity, duration, and defensive sleeves based on the cross-sectional shape and disagreement of listed equity volatility surfaces rather than on raw VIX level alone, capturing regime transitions earlier when index-implied stress and single-name dispersion decouple.",
+  "target_portfolios": [
+    "alpaca_paper"
+  ],
+  "target_venues": [
+    "yahoo",
+    "alpaca"
+  ],
+  "primary_connector_ids": [
+    "yahoo_stocks",
+    "alpaca_stocks"
+  ],
+  "champion_lineage_id": "vol_surface_dispersion_rotation:champion",
+  "shadow_challenger_ids": [],
+  "paper_challenger_ids": [],
+  "budget_split": {
+    "incumbent": 70.0,
+    "adjacent": 20.0,
+    "moonshot": 10.0
+  },
+  "queue_stage": "walkforward",
+  "explainer": "This family is distinct from simple VIX threshold allocation because it uses a local, bounded state vector derived from option-implied information: index term structure, skew, and cross-sectional single-name implied volatility dispersion relative to index volatility. The core hypothesis is that risk regimes are not well described by spot VIX alone. When index vol rises with shallow single-name dispersion, the market often reflects macro hedging demand and can mean-revert; when single-name dispersion and downside skew rise together, stress is more likely to propagate and equity beta should be reduced more aggressively. A paper-only implementation can classify daily regimes for SPY, QQQ, TLT, and GLD using option-chain-derived features from supported equity-options datasets, then test allocation policies such as equity overweight, barbell defense, or duration-plus-gold defense. The family remains incubatable because it is daily frequency, uses a small instrument set, and can be evaluated with end-of-day historical chains and ETF prices before any runtime consideration.",
+  "origin": "real_agent_openai_api",
+  "source_idea_id": "idea_003",
+  "incubation_status": "incubating",
+  "incubation_cycle_created": 0,
+  "incubation_notes": [
+    "Use daily end-of-day option chains on SPY and QQQ to build features: front-back term slope, 25-delta put skew proxy, and cross-sectional implied volatility dispersion from a fixed basket of liquid constituents or sector ETFs.",
+    "Start with paper-only allocations across SPY, QQQ, TLT, and GLD; avoid shorting in initial incubation to keep the family bounded and easier to validate.",
+    "Benchmark against the original VIX-threshold strategy to prove incremental explanatory power from surface features rather than level effects.",
+    "Constrain regime definitions to 3-4 discrete states learned from rolling historical clustering or fixed feature thresholds to reduce overfitting.",
+    "Run robustness checks across calm, inflation, and crisis subperiods, with turnover, gap risk, and allocation stability diagnostics.",
+    "If single-name option coverage is sparse, a fallback version can approximate dispersion using sector ETF implied vol spread versus index implied vol while preserving the family thesis.",
+    "Research tier deep_review should prioritize feature stationarity, data quality around option expiries, and sensitivity to chain selection rules.",
+    "provider=openai_api",
+    "model=gpt-5.4",
+    "task_type=family_bootstrap_generation",
+    "task_class=deep_review",
+    "multi_agent_requested=false"
+  ],
+  "incubation_decided_at": null,
+  "incubation_decision_reason": null,
+  "last_cycle_at": "2026-03-16T08:53:57.744595+00:00",
+  "retired_lineage_ids": []
+}
