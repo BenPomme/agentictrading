@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import config
+from factory.telemetry.run_logger import default_logger as _tel
+from factory.telemetry.trace_context import TraceContext
 
 logger = logging.getLogger(__name__)
 
@@ -477,6 +479,7 @@ class ProvenanceService:
         cycle_id: str,
         evaluation_payload: Dict[str, Any],
         correlation: Dict[str, Any],
+        trace_ctx: Optional[TraceContext] = None,
     ) -> Optional[str]:
         """
         Record one evaluation cycle in Goldfish provenance.
@@ -491,6 +494,8 @@ class ProvenanceService:
             **correlation,
         }
         created = self._call("create_run", workspace_id=workspace_id, run_id=run_id, metadata=metadata)
+        if created is not None:
+            _tel.goldfish_run_created(run_id, workspace_id, trace_ctx=trace_ctx)
         # If create_run failed and was suppressed, stop here — don't attempt finalize.
         if created is None and not self._fail_on_error:
             return None
@@ -501,6 +506,10 @@ class ProvenanceService:
             result=evaluation_payload,
             tags=["evaluation"],
         )
+        if record_id is not None:
+            _tel.goldfish_run_finalized(run_id, workspace_id, trace_ctx=trace_ctx, success=True)
+        else:
+            _tel.goldfish_run_finalized(run_id, workspace_id, trace_ctx=trace_ctx, success=False)
         return record_id
 
     def record_retirement(

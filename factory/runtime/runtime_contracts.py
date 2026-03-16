@@ -107,6 +107,8 @@ class AgentRunEnvelope:
     # Correlation IDs for downstream provenance (Goldfish, lineage, etc.)
     family_id: str = ""
     lineage_id: Optional[str] = None
+    cycle_id: str = ""                         # factory cycle that spawned this run
+    goldfish_record_id: Optional[str] = None   # Goldfish record after provenance write
 
     # Error detail when success=False
     error: Optional[str] = None
@@ -137,6 +139,8 @@ class AgentRunEnvelope:
             "fallback_used": self.fallback_used,
             "family_id": self.family_id,
             "lineage_id": self.lineage_id,
+            "cycle_id": self.cycle_id,
+            "goldfish_record_id": self.goldfish_record_id,
             "error": self.error,
         }
 

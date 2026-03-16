@@ -25,6 +25,7 @@ from typing import Optional
 import config
 from factory.governance import CostGovernor
 from factory.runtime.legacy_runtime import LegacyRuntime
+from factory.telemetry.run_logger import default_logger as _tel
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class RuntimeManager:
         self._backend_name = _runtime_backend_setting()
         self._governor = CostGovernor.create()
         self._runtime = self._build_runtime()
+        _tel.backend_selected(self._backend_name)
 
     # ------------------------------------------------------------------
     # Public API

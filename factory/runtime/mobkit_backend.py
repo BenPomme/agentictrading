@@ -45,6 +45,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import config
 from factory.agent_runtime import AgentRunResult
+from factory.telemetry.run_logger import default_logger as _tel
+from factory.telemetry.trace_context import TraceContext
 from factory.contracts import (
     EvaluationBundle,
     FactoryFamily,
@@ -975,6 +977,9 @@ class MobkitRuntime:
     ) -> Optional[AgentRunResult]:
         started_at = datetime.now(timezone.utc)
         tid = trace_id or str(uuid.uuid4())
+        _trace_ctx = TraceContext.create(
+            family_id=family_id, lineage_id=lineage_id, trace_id=tid
+        )
 
         # ---- Budget gate (Task 04) ------------------------------------
         profile = WORKFLOW_PROFILES.get(workflow_name)
@@ -983,6 +988,10 @@ class MobkitRuntime:
             if profile else []
         )
         planned_tokens = profile.member_roles[0].max_tokens if profile else 2048
+        _tel.workflow_planned(
+            task_type, self.BACKEND_NAME,
+            trace_ctx=_trace_ctx, planned_tokens=planned_tokens, is_mob=True,
+        )
         hooks = self._resolve_budget_hooks(
             budget_hooks=budget_hooks,
             family_id=family_id,
@@ -997,8 +1006,23 @@ class MobkitRuntime:
             if getattr(dd, "stopped", False) and getattr(hooks, "strict", False):
                 # strict hard stop — return None (skip this task)
                 logger.warning("MobkitRuntime._run_mob: hard stop for %s/%s", task_type, family_id)
+                _tel.workflow_failed(
+                    task_type, self.BACKEND_NAME,
+                    trace_ctx=_trace_ctx, reason="budget_hard_stop",
+                )
                 return None
+            # Emit downgrade event if any constraint is active.
+            if getattr(hooks, "has_constraints", lambda: False)():
+                _tel.downgrade_applied(
+                    task_type,
+                    trace_ctx=_trace_ctx,
+                    scope=getattr(dd, "scope", None),
+                    reason=getattr(dd, "reason", None),
+                    action=getattr(dd, "action", None),
+                    usage_ratio=getattr(dd, "usage_ratio", None),
+                )
 
+        _tel.workflow_started(task_type, self.BACKEND_NAME, trace_ctx=_trace_ctx)
         try:
             result = self._backend.run_mob_workflow(
                 workflow_name=workflow_name,
@@ -1017,6 +1041,11 @@ class MobkitRuntime:
                 family_id=family_id, lineage_id=lineage_id,
                 task_type=task_type, tokens=tokens, success=True,
             )
+            duration_ms = max(0, int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000))
+            _tel.workflow_finished(
+                task_type, self.BACKEND_NAME,
+                trace_ctx=_trace_ctx, tokens=tokens, duration_ms=duration_ms,
+            )
             return _make_run_result(
                 task_type=task_type,
                 backend_result=result,
@@ -1032,6 +1061,10 @@ class MobkitRuntime:
                 task_type=task_type, tokens=0, success=False,
             )
             logger.error("MobkitRuntime.%s failed: %s", task_type, exc)
+            _tel.workflow_failed(
+                task_type, self.BACKEND_NAME,
+                trace_ctx=_trace_ctx, reason=str(exc),
+            )
             return _make_run_result(
                 task_type=task_type,
                 backend_result={},
@@ -1059,8 +1092,15 @@ class MobkitRuntime:
         started_at = datetime.now(timezone.utc)
         tid = trace_id or str(uuid.uuid4())
         model_class = _TIER_TO_MODEL_CLASS.get(model_tier, "TASK_STANDARD")
+        _trace_ctx = TraceContext.create(
+            family_id=family_id, lineage_id=lineage_id, trace_id=tid
+        )
 
         # ---- Budget gate (Task 04) ------------------------------------
+        _tel.workflow_planned(
+            task_type, self.BACKEND_NAME,
+            trace_ctx=_trace_ctx, planned_tokens=2048, is_mob=False,
+        )
         hooks = self._resolve_budget_hooks(
             budget_hooks=budget_hooks,
             family_id=family_id,
@@ -1074,8 +1114,22 @@ class MobkitRuntime:
             dd = hooks.downgrade_decision
             if getattr(dd, "stopped", False) and getattr(hooks, "strict", False):
                 logger.warning("MobkitRuntime._run_single: hard stop for %s/%s", task_type, family_id)
+                _tel.workflow_failed(
+                    task_type, self.BACKEND_NAME,
+                    trace_ctx=_trace_ctx, reason="budget_hard_stop",
+                )
                 return None
+            if getattr(hooks, "has_constraints", lambda: False)():
+                _tel.downgrade_applied(
+                    task_type,
+                    trace_ctx=_trace_ctx,
+                    scope=getattr(dd, "scope", None),
+                    reason=getattr(dd, "reason", None),
+                    action=getattr(dd, "action", None),
+                    usage_ratio=getattr(dd, "usage_ratio", None),
+                )
 
+        _tel.workflow_started(task_type, self.BACKEND_NAME, trace_ctx=_trace_ctx)
         try:
             result = self._backend.run_structured_task(
                 task_type=task_type,
@@ -1093,6 +1147,11 @@ class MobkitRuntime:
                 family_id=family_id, lineage_id=lineage_id,
                 task_type=task_type, tokens=tokens, success=True,
             )
+            duration_ms = max(0, int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000))
+            _tel.workflow_finished(
+                task_type, self.BACKEND_NAME,
+                trace_ctx=_trace_ctx, tokens=tokens, duration_ms=duration_ms,
+            )
             return _make_run_result(
                 task_type=task_type,
                 backend_result=result,
@@ -1108,6 +1167,10 @@ class MobkitRuntime:
                 task_type=task_type, tokens=0, success=False,
             )
             logger.error("MobkitRuntime.%s failed: %s", task_type, exc)
+            _tel.workflow_failed(
+                task_type, self.BACKEND_NAME,
+                trace_ctx=_trace_ctx, reason=str(exc),
+            )
             return _make_run_result(
                 task_type=task_type,
                 backend_result={},
