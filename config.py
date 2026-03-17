@@ -291,3 +291,107 @@ FACTORY_GOLDFISH_PROJECT_ROOT: str = os.getenv("FACTORY_GOLDFISH_PROJECT_ROOT", 
 FACTORY_GOLDFISH_FAIL_ON_ERROR: bool = (
     os.getenv("FACTORY_GOLDFISH_FAIL_ON_ERROR", "false").lower() == "true"
 )
+
+# FACTORY_GOLDFISH_STRICT_MODE: staging-facing alias for FACTORY_GOLDFISH_FAIL_ON_ERROR.
+# When true, Goldfish write failures abort the workflow (strict provenance mode).
+# Default false — observe-only is the safe staging default.
+FACTORY_GOLDFISH_STRICT_MODE: bool = (
+    os.getenv("FACTORY_GOLDFISH_STRICT_MODE", "false").lower() == "true"
+    or FACTORY_GOLDFISH_FAIL_ON_ERROR
+)
+
+# Goldfish project identity / artefact paths.
+GOLDFISH_PROJECT_NAME: str = os.getenv("GOLDFISH_PROJECT_NAME", "agentictrading").strip()
+GOLDFISH_WORKSPACE_ROOT: str = os.getenv("GOLDFISH_WORKSPACE_ROOT", ".goldfish").strip()
+GOLDFISH_ARTEFACT_ROOT: str = os.getenv("GOLDFISH_ARTEFACT_ROOT", "artifacts/goldfish").strip()
+
+# ---------------------------------------------------------------------------
+# Prompt 04: Staging guards — safe first-run scope limits
+# ---------------------------------------------------------------------------
+# Idea / research sources
+FACTORY_IDEA_SOURCE_FILE: str = os.getenv("FACTORY_IDEA_SOURCE_FILE", "./IDEAS.md").strip()
+FACTORY_ENABLE_WEB_IDEA_RESEARCH: bool = (
+    os.getenv("FACTORY_ENABLE_WEB_IDEA_RESEARCH", "false").lower() == "true"
+)
+
+# Trading mode flags — both disabled by default; live trading is a hard no.
+FACTORY_ENABLE_PAPER_TRADING: bool = (
+    os.getenv("FACTORY_ENABLE_PAPER_TRADING", "false").lower() == "true"
+)
+FACTORY_ENABLE_LIVE_TRADING: bool = (
+    os.getenv("FACTORY_ENABLE_LIVE_TRADING", "false").lower() == "true"
+)
+# Hard-disable guard: live trading cannot be enabled while this is true.
+FACTORY_LIVE_TRADING_HARD_DISABLE: bool = (
+    os.getenv("FACTORY_LIVE_TRADING_HARD_DISABLE", "true").lower() == "true"
+)
+
+# Scope caps for first bring-up (1 family / 1 model / 1 challenger by default).
+FACTORY_MAX_ACTIVE_FAMILIES: int = int(os.getenv("FACTORY_MAX_ACTIVE_FAMILIES", "1"))
+FACTORY_MAX_ACTIVE_MODELS_PER_FAMILY: int = int(
+    os.getenv("FACTORY_MAX_ACTIVE_MODELS_PER_FAMILY", "1")
+)
+FACTORY_MAX_CHALLENGERS_PER_FAMILY: int = int(
+    os.getenv("FACTORY_MAX_CHALLENGERS_PER_FAMILY", "1")
+)
+
+# Autonomy guards — both off by default for staged bring-up.
+FACTORY_ALLOW_AUTONOMOUS_MUTATION: bool = (
+    os.getenv("FACTORY_ALLOW_AUTONOMOUS_MUTATION", "false").lower() == "true"
+)
+FACTORY_ALLOW_AUTONOMOUS_PAPER_PROMOTION: bool = (
+    os.getenv("FACTORY_ALLOW_AUTONOMOUS_PAPER_PROMOTION", "false").lower() == "true"
+)
+
+# Evaluation gate thresholds (staging-facing names).
+# FACTORY_BACKTEST_PASS_MONTHLY_ROI: minimum monthly ROI fraction for a backtest pass.
+# Expressed as a fraction (0.05 = 5 %).  Aligns with FACTORY_PAPER_GATE_MONTHLY_ROI_PCT.
+FACTORY_BACKTEST_PASS_MONTHLY_ROI: float = float(
+    os.getenv("FACTORY_BACKTEST_PASS_MONTHLY_ROI", "0.05")
+)
+FACTORY_REQUIRE_FORWARDTEST_PASS: bool = (
+    os.getenv("FACTORY_REQUIRE_FORWARDTEST_PASS", "true").lower() == "true"
+)
+FACTORY_REQUIRE_PAPER_EVIDENCE_FOR_CHALLENGER: bool = (
+    os.getenv("FACTORY_REQUIRE_PAPER_EVIDENCE_FOR_CHALLENGER", "true").lower() == "true"
+)
+
+# Budget: staging-facing names (aliases / supplements to Task 04 global vars).
+# FACTORY_DAILY_INFERENCE_BUDGET_USD: preferred staging name; falls back to
+# FACTORY_GLOBAL_DAILY_BUDGET_USD so both names work.
+FACTORY_DAILY_INFERENCE_BUDGET_USD: float = float(
+    os.getenv(
+        "FACTORY_DAILY_INFERENCE_BUDGET_USD",
+        os.getenv("FACTORY_GLOBAL_DAILY_BUDGET_USD", "15.0"),
+    )
+)
+FACTORY_WEEKLY_INFERENCE_BUDGET_USD: float = float(
+    os.getenv("FACTORY_WEEKLY_INFERENCE_BUDGET_USD", "75.0")
+)
+# FACTORY_STRICT_BUDGETS: staging-facing alias for FACTORY_ENABLE_STRICT_BUDGETS.
+FACTORY_STRICT_BUDGETS: bool = (
+    os.getenv("FACTORY_STRICT_BUDGETS", "false").lower() == "true"
+    or FACTORY_ENABLE_STRICT_BUDGETS
+)
+
+# Downgrade cascade ratio thresholds (configurable for staging tuning).
+# Each value is the fraction of the budget ceiling that activates that step.
+FACTORY_BUDGET_REVIEWER_REMOVAL_RATIO: float = float(
+    os.getenv("FACTORY_BUDGET_REVIEWER_REMOVAL_RATIO", "0.70")
+)
+FACTORY_BUDGET_FORCE_CHEAP_RATIO: float = float(
+    os.getenv("FACTORY_BUDGET_FORCE_CHEAP_RATIO", "0.80")
+)
+FACTORY_BUDGET_SINGLE_AGENT_RATIO: float = float(
+    os.getenv("FACTORY_BUDGET_SINGLE_AGENT_RATIO", "0.90")
+)
+
+# Observability output paths.
+FACTORY_LOG_LEVEL: str = os.getenv("FACTORY_LOG_LEVEL", "INFO").strip().upper()
+FACTORY_LOG_JSON: bool = os.getenv("FACTORY_LOG_JSON", "true").lower() == "true"
+FACTORY_OPERATOR_STATUS_PATH: str = os.getenv(
+    "FACTORY_OPERATOR_STATUS_PATH", "artifacts/operator_status.json"
+).strip()
+FACTORY_PROMOTION_REPORT_PATH: str = os.getenv(
+    "FACTORY_PROMOTION_REPORT_PATH", "artifacts/trade_ready_models.md"
+).strip()

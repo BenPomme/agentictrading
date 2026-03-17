@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import config as _cfg
 from factory.governance.budget_ledger import (
     SCOPE_FAMILY,
     SCOPE_GLOBAL,
@@ -37,15 +38,20 @@ DOWNGRADE_CHEAP_TIERS = "cheap_tiers"
 DOWNGRADE_SINGLE_TASK = "single_task"
 DOWNGRADE_STOP = "stop"
 
-# Activation thresholds (fraction of soft ceiling).
-# A usage ratio above each threshold activates that downgrade step.
-_STEP_THRESHOLDS = {
-    DOWNGRADE_REDUCE_TOKENS:  0.60,   # > 60 % → reduce tokens
-    DOWNGRADE_REMOVE_REVIEWERS: 0.70, # > 70 % → remove non-required reviewers
-    DOWNGRADE_CHEAP_TIERS:    0.80,   # > 80 % → force cheap tiers
-    DOWNGRADE_SINGLE_TASK:    0.90,   # > 90 % → collapse to single task
-    DOWNGRADE_STOP:           1.00,   # > 100 % (hard ceiling) → stop
-}
+
+def _build_step_thresholds() -> Dict[str, float]:
+    """Build threshold map from config, allowing staging overrides."""
+    return {
+        DOWNGRADE_REDUCE_TOKENS:    0.60,
+        DOWNGRADE_REMOVE_REVIEWERS: getattr(_cfg, "FACTORY_BUDGET_REVIEWER_REMOVAL_RATIO", 0.70),
+        DOWNGRADE_CHEAP_TIERS:      getattr(_cfg, "FACTORY_BUDGET_FORCE_CHEAP_RATIO", 0.80),
+        DOWNGRADE_SINGLE_TASK:      getattr(_cfg, "FACTORY_BUDGET_SINGLE_AGENT_RATIO", 0.90),
+        DOWNGRADE_STOP:             1.00,
+    }
+
+
+# Module-level thresholds (built once at import; tests may override _STEP_THRESHOLDS directly).
+_STEP_THRESHOLDS: Dict[str, float] = _build_step_thresholds()
 
 # Token reduction factor at DOWNGRADE_REDUCE_TOKENS step.
 _TOKEN_REDUCTION_FACTOR = 0.5

@@ -6,6 +6,7 @@ OperatorStatus is a point-in-time view of the factory's observable state:
 - open circuit breakers
 - recent fallback/downgrade activity
 - latest provenance record references
+- staging guards (scope caps, autonomy flags, trading mode)
 
 ``build_operator_status()`` assembles this from a RuntimeManager and an
 optional CostGovernor instance, both of which are already in scope for
@@ -72,6 +73,9 @@ class OperatorStatus:
     goldfish_last_write_time: Optional[str] = None
     goldfish_last_error: Optional[str] = None
 
+    # Staging guards (serialised dict — None when not loaded)
+    staging_guards: Optional[Dict[str, Any]] = None
+
     # Timestamp
     as_of: str = ""
 
@@ -80,7 +84,7 @@ class OperatorStatus:
     # ------------------------------------------------------------------
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "active_backend": self.active_backend,
             "backend_healthy": self.backend_healthy,
             "strict_budgets": self.strict_budgets,
@@ -109,6 +113,9 @@ class OperatorStatus:
             },
             "as_of": self.as_of,
         }
+        if self.staging_guards is not None:
+            d["staging_guards"] = self.staging_guards
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +131,7 @@ def build_operator_status(
     last_goldfish_record_id: Optional[str] = None,
     last_runtime_run_id: Optional[str] = None,
     recent_fallback_reasons: Optional[List[str]] = None,
+    staging_guards: Optional[Any] = None,
 ) -> OperatorStatus:
     """
     Assemble an OperatorStatus snapshot from live system components.
@@ -142,6 +150,9 @@ def build_operator_status(
         Caller-supplied latest runtime run ID from most recent envelope.
     recent_fallback_reasons:
         Caller-supplied list of recent fallback reason strings.
+    staging_guards:
+        Optional ``StagingGuards`` instance (or any object with ``to_dict()``).
+        When provided, rendered as ``staging_guards`` in the output dict.
     """
     # --- Backend identity -------------------------------------------------
     backend_name: str = getattr(runtime_manager, "backend_name", "unknown")
@@ -217,6 +228,14 @@ def build_operator_status(
         except Exception:
             pass  # Provenance health must never break operator status
 
+    # --- Staging guards ---------------------------------------------------
+    guards_dict: Optional[Dict[str, Any]] = None
+    if staging_guards is not None:
+        try:
+            guards_dict = staging_guards.to_dict()
+        except Exception:
+            pass
+
     return OperatorStatus(
         active_backend=backend_name,
         backend_healthy=backend_healthy,
@@ -238,5 +257,6 @@ def build_operator_status(
         goldfish_degraded=gf_degraded,
         goldfish_last_write_time=gf_last_write,
         goldfish_last_error=gf_last_error,
+        staging_guards=guards_dict,
         as_of=datetime.now(timezone.utc).isoformat(),
     )
