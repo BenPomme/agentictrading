@@ -22,4 +22,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["factory", "backtest"]
+packages = ["factory"]
