@@ -1,0 +1,78 @@
+{
+  "as_of": "2026-03-17T12:48:01.532803+00:00",
+  "pass": 12,
+  "warn": 2,
+  "fail": 0,
+  "checks": [
+    {
+      "check": "staging_guards",
+      "result": "pass",
+      "detail": "is_safe_for_preflight=True"
+    },
+    {
+      "check": "live_trading_disabled",
+      "result": "pass",
+      "detail": ""
+    },
+    {
+      "check": "paper_trading_disabled",
+      "result": "pass",
+      "detail": ""
+    },
+    {
+      "check": "scope_caps",
+      "result": "pass",
+      "detail": "max_families=1"
+    },
+    {
+      "check": "OPENAI_API_KEY",
+      "result": "pass",
+      "detail": ""
+    },
+    {
+      "check": "ANTHROPIC_API_KEY",
+      "result": "pass",
+      "detail": ""
+    },
+    {
+      "check": "GOOGLE_API_KEY",
+      "result": "pass",
+      "detail": ""
+    },
+    {
+      "check": "runtime_boot",
+      "result": "pass",
+      "detail": "backend=legacy"
+    },
+    {
+      "check": "runtime_healthcheck",
+      "result": "pass",
+      "detail": "backend=legacy healthy"
+    },
+    {
+      "check": "goldfish_boot",
+      "result": "warn",
+      "detail": "enabled but library not installed \u2014 observe-only mode active"
+    },
+    {
+      "check": "goldfish_write",
+      "result": "warn",
+      "detail": "write degraded: Goldfish provenance is enabled (FACTORY_ENABLE_GOLDFISH_PROVENANCE=true) but the"
+    },
+    {
+      "check": "idea_intake",
+      "result": "pass",
+      "detail": "11 ideas parsed from IDEAS.md"
+    },
+    {
+      "check": "operator_status",
+      "result": "pass",
+      "detail": "backend=legacy healthy=True"
+    },
+    {
+      "check": "operator_status_written",
+      "result": "pass",
+      "detail": "artifacts/operator_status.json"
+    }
+  ]
+}

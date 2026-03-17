@@ -1,0 +1,68 @@
+{
+  "active_backend": "legacy",
+  "backend_healthy": true,
+  "strict_budgets": false,
+  "budget": {
+    "global_tokens_today": 0,
+    "global_usd_today": 0.0,
+    "global_budget_usd": 10.0,
+    "global_pct_used": 0.0
+  },
+  "circuit": {
+    "global_open": false,
+    "family_open_ids": []
+  },
+  "recent_fallback_reasons": [],
+  "last_goldfish_record_id": null,
+  "last_runtime_run_id": null,
+  "downgrade_events_today": 0,
+  "stop_events_today": 0,
+  "goldfish": {
+    "enabled": true,
+    "strict": false,
+    "healthy": false,
+    "degraded": true,
+    "last_write_time": null,
+    "last_error": "Goldfish provenance is enabled (FACTORY_ENABLE_GOLDFISH_PROVENANCE=true) but the goldfish library is not installed or daemon is unreachable. Install lukacf/goldfish or set FACTORY_ENABLE_GOLDFISH_PROVENANCE=false."
+  },
+  "as_of": "2026-03-17T12:48:01.900906+00:00",
+  "staging_guards": {
+    "idea_source_file": "./IDEAS.md",
+    "web_idea_research_enabled": false,
+    "trading": {
+      "paper_enabled": false,
+      "live_enabled": false,
+      "live_hard_disabled": true,
+      "live_blocked": true
+    },
+    "scope": {
+      "max_active_families": 1,
+      "max_active_models_per_family": 1,
+      "max_challengers_per_family": 1
+    },
+    "autonomy": {
+      "allow_mutation": false,
+      "allow_paper_promotion": false
+    },
+    "evaluation_gates": {
+      "backtest_pass_monthly_roi": 0.05,
+      "require_forwardtest_pass": true,
+      "require_paper_evidence_for_challenger": true
+    },
+    "budget": {
+      "daily_usd": 15.0,
+      "weekly_usd": 75.0,
+      "strict": false,
+      "reviewer_removal_ratio": 0.7,
+      "force_cheap_ratio": 0.8,
+      "single_agent_ratio": 0.9
+    },
+    "observability": {
+      "log_level": "INFO",
+      "log_json": true,
+      "operator_status_path": "./artifacts/operator_status.json",
+      "promotion_report_path": "./artifacts/trade_ready_models.md"
+    },
+    "is_safe_for_preflight": true
+  }
+}

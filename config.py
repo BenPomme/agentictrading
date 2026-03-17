@@ -5,9 +5,23 @@ from decimal import Decimal
 from pathlib import Path
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values, load_dotenv
 
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    _repo_root = Path(__file__).resolve().parent
+    _base_env = _repo_root / ".env"
+    _staging_env = _repo_root / ".env.staging"
+
+    # Priority: shell > .env.staging > .env
+    # Read both files without touching os.environ, merge with staging winning,
+    # then only inject values that are not already set in the shell.
+    _merged: dict = {}
+    if _base_env.exists():
+        _merged.update(dotenv_values(_base_env))
+    if _staging_env.exists():
+        _merged.update(dotenv_values(_staging_env))  # staging overwrites base
+    for _k, _v in _merged.items():
+        if _k not in os.environ and _v is not None:
+            os.environ[_k] = _v
 except ImportError:
     pass
 
