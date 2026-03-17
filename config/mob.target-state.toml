@@ -1,0 +1,56 @@
+# mob.target-state.toml — MobKit mob configuration for AgenticTrading factory
+#
+# Loaded by the factory's MobkitOrchestratorBackend via:
+#   MobKit.builder().mob("config/mob.target-state.toml").gateway(bin).build()
+#
+# Profile names match _TIER_TO_PROFILE in factory/runtime/mobkit_backend.py:
+#   tier1_cheap    → cheap-reviewer
+#   tier2_standard → standard-worker
+#   tier3_lead     → lead-researcher
+#
+# Model strings map to the provider order configured in FACTORY_PROVIDER_ORDER.
+# In cost_saver mode the factory never issues live LLM calls; profiles are
+# used for member lifecycle bookkeeping only.
+
+[mob]
+id = "agentictrading-factory"
+
+# ---------------------------------------------------------------------------
+# Core role profiles — names must match _TIER_TO_PROFILE in mobkit_backend.py
+# ---------------------------------------------------------------------------
+
+# tier1_cheap — cheap reviewer / fast critique pass
+[profiles.cheap-reviewer]
+model = "gpt-4.1-mini"
+external_addressable = false
+
+# tier2_standard — standard strategy codegen and evaluation worker
+[profiles.standard-worker]
+model = "gpt-5.2"
+external_addressable = true
+
+# tier3_lead — lead analyst; generates theses and synthesises reviewer feedback
+[profiles.lead-researcher]
+model = "gpt-5.2"
+external_addressable = true
+
+# ---------------------------------------------------------------------------
+# Factory-specific extended profiles (used by named workflow profiles)
+# ---------------------------------------------------------------------------
+
+# Code generation specialist — kept alive across cycle to amortise warm-up
+[profiles.codegen-specialist]
+model = "gpt-5.2"
+external_addressable = true
+
+# Deterministic evaluator — no LLM required; profile exists for lifecycle tracking
+[profiles.deterministic-evaluator]
+model = "gpt-4.1-mini"
+external_addressable = false
+
+# ---------------------------------------------------------------------------
+# Mob-level defaults — inherited by any profile that does not override them
+# ---------------------------------------------------------------------------
+[defaults]
+max_tokens = 4096
+restart_on_failure = true

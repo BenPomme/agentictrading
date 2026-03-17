@@ -161,7 +161,14 @@ class RuntimeManager:
             try:
                 from factory.runtime.mobkit_backend import MobkitRuntime
                 rt = MobkitRuntime(self._project_root, governor=self._governor)
-                logger.info("RuntimeManager: using mobkit backend")
+                gateway_bin = str(getattr(config, "FACTORY_MOBKIT_GATEWAY_BIN", "") or "")
+                mob_cfg = str(getattr(config, "FACTORY_MOBKIT_CONFIG_PATH", "") or "")
+                logger.info(
+                    "RuntimeManager: using mobkit backend "
+                    "(gateway=%s, mob_config=%s)",
+                    gateway_bin or "<none>",
+                    mob_cfg or "<none>",
+                )
                 return rt
             except Exception as exc:
                 logger.exception("RuntimeManager: failed to initialize MobkitRuntime")

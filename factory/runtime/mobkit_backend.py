@@ -126,6 +126,54 @@ _TIER_TO_MODEL_CLASS: Dict[str, str] = {
     "tier3_lead":     "TASK_EXPENSIVE",
 }
 
+# Per-task-type system prompt overrides.  Keys match factory task_type strings.
+# Falling back to the generic instruction set when a key is not present.
+_TASK_SYSTEM_PROMPTS: Dict[str, str] = {
+    "proposal_generation": (
+        "You are a quantitative strategy analyst. Generate concise, testable strategy "
+        "theses grounded in statistical evidence. Avoid narrative padding. "
+        "Output exactly one JSON object matching the schema."
+    ),
+    "post_eval_critique": (
+        "You are a quantitative risk reviewer. Critically evaluate the provided backtest "
+        "results for overfitting, data-snooping bias, and regime fragility. "
+        "Output exactly one JSON object matching the schema."
+    ),
+    "model_design": (
+        "You are a machine-learning engineer specialising in alpha research. "
+        "Design the requested model architecture with explicit feature engineering "
+        "and training regime. Output exactly one JSON object matching the schema."
+    ),
+    "model_mutation": (
+        "You are a parameter-space explorer. Propose targeted, minimal mutations to "
+        "the provided model to improve its Sharpe ratio without increasing drawdown. "
+        "Output exactly one JSON object matching the schema."
+    ),
+    "tweak_suggestion": (
+        "You are an execution-optimisation specialist. Suggest targeted parameter tweaks "
+        "based on the provided performance diagnostics. "
+        "Output exactly one JSON object matching the schema."
+    ),
+    "maintenance_diagnosis": (
+        "You are a strategy health analyst. Diagnose the root cause of performance "
+        "degradation from the provided metrics and propose a concrete remediation plan. "
+        "Output exactly one JSON object matching the schema."
+    ),
+}
+
+
+def _task_instructions(*, task_type: str, model_tier: str, schema: Dict[str, Any]) -> List[str]:
+    """Build role-specific system instructions for a structured task."""
+    task_prompt = _TASK_SYSTEM_PROMPTS.get(
+        task_type,
+        f"You are a {model_tier} analyst agent for task '{task_type}' in AgenticTrading.",
+    )
+    return [
+        task_prompt,
+        "Return ONLY a valid JSON object — no prose, no markdown fences.",
+        f"Required schema: {json.dumps(schema)}",
+    ]
+
 
 @dataclass
 class MemberRoleSpec:
@@ -539,16 +587,14 @@ class MobkitOrchestratorBackend:
                 tok = min(tok, tok_override)
         timeout = float(timeout_seconds or self._timeout)
 
+        instructions = _task_instructions(task_type=task_type, model_tier=model_tier, schema=schema)
         try:
             return self._loop.run(
                 self._async_single_member(
                     member_id=member_id,
                     profile=profile,
-                    instructions=[
-                        f"You are a {model_tier} agent for task '{task_type}' in AgenticTrading.",
-                        "Return ONLY valid JSON matching the schema below.",
-                        f"Schema: {json.dumps(schema)}",
-                    ],
+                    model_tier=model_tier,
+                    instructions=instructions,
                     prompt=prompt,
                     schema=schema,
                     max_tokens=tok,
@@ -674,6 +720,7 @@ class MobkitOrchestratorBackend:
         *,
         member_id: str,
         profile: str,
+        model_tier: str = "tier2_standard",
         instructions: List[str],
         prompt: str,
         schema: Dict[str, Any],
@@ -701,7 +748,8 @@ class MobkitOrchestratorBackend:
                 {
                     "member_id": member_id,
                     "role": profile,
-                    "model": None,
+                    "model": model_tier,
+                    "profile": profile,
                     "success": True,
                     "usage": None,
                 }
@@ -766,11 +814,13 @@ class MobkitOrchestratorBackend:
         lead_draft = await self._collect_run_result(
             lead_id, timeout=float(_lead_max_tokens * 0.05 + 60)
         )
+        lead_profile = _TIER_TO_PROFILE.get(lead_role.model_tier, "standard-worker")
         member_traces.append(
             {
                 "member_id": lead_id,
                 "role": lead_role.role,
                 "model": lead_role.model_tier,
+                "profile": lead_profile,
                 "success": True,
                 "usage": None,
             }
@@ -795,12 +845,14 @@ class MobkitOrchestratorBackend:
                 review_text = await self._collect_run_result(
                     rev_id, timeout=float(reviewer.max_tokens * 0.05 + 30)
                 )
+                rev_profile = _TIER_TO_PROFILE.get(reviewer.model_tier, "cheap-reviewer")
                 review_texts.append(f"[{reviewer.role}]: {review_text}")
                 member_traces.append(
                     {
                         "member_id": rev_id,
                         "role": reviewer.role,
                         "model": reviewer.model_tier,
+                        "profile": rev_profile,
                         "success": True,
                         "usage": None,
                     }
@@ -812,11 +864,13 @@ class MobkitOrchestratorBackend:
                 logger.warning(
                     "MobkitBackend: non-required reviewer %s failed: %s", reviewer.role, exc
                 )
+                rev_profile = _TIER_TO_PROFILE.get(reviewer.model_tier, "cheap-reviewer")
                 member_traces.append(
                     {
                         "member_id": rev_id,
                         "role": reviewer.role,
                         "model": reviewer.model_tier,
+                        "profile": rev_profile,
                         "success": False,
                         "fallback_reason": str(exc),
                         "usage": None,
@@ -901,12 +955,20 @@ def _make_run_result(
     payload = backend_result.get("payload", {})
     traces = backend_result.get("member_traces", [])
     roles = [t.get("role", "") for t in traces if t.get("role")]
+    # Surface the lead member's profile name for trace visibility.
+    lead_trace = next((t for t in traces if t.get("role") and "lead" in t.get("role", "")), None)
+    if lead_trace is None and traces:
+        lead_trace = traces[0]
+    model_label = (
+        f"mobkit/{lead_trace['profile']}" if lead_trace and lead_trace.get("profile")
+        else "mobkit"
+    )
     return AgentRunResult(
         run_id=str(uuid.uuid4()),
         task_type=task_type,
         model_class=model_class,
         provider="mobkit",
-        model="mobkit",
+        model=model_label,
         reasoning_effort="standard",
         success=success,
         fallback_used=fallback_used,

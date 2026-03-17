@@ -215,6 +215,15 @@ class GoldfishClient:
         except GoldfishUnavailableError:
             raise
         except Exception as exc:
+            # Idempotency: treat "already exists" as success so repeated preflight
+            # runs and orchestrator retries never degrade the provenance service.
+            err_str = str(exc).lower()
+            if "already exists" in err_str:
+                logger.debug(
+                    "GoldfishClient.ensure_workspace(%r): workspace already exists — OK",
+                    workspace_id,
+                )
+                return {"workspace_id": workspace_id, "status": "already_exists"}
             raise GoldfishWriteError(f"ensure_workspace({workspace_id!r}) failed: {exc}") from exc
 
     # ------------------------------------------------------------------
