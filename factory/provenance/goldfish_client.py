@@ -81,11 +81,13 @@ def _check_goldfish_available() -> bool:
             _goldfish_module = _gf
             _GOLDFISH_AVAILABLE = True
             logger.debug("goldfish library found: %s", getattr(_gf, "__version__", "unknown"))
-        except ImportError:
+        except (ImportError, AttributeError):
             _GOLDFISH_AVAILABLE = False
             logger.warning(
-                "goldfish library not installed. Provenance writes will raise "
-                "GoldfishUnavailableError. Install lukacf/goldfish to enable."
+                "goldfish library not installed or incompatible with this Python version "
+                "(%d.%d). Provenance writes will raise GoldfishUnavailableError. "
+                "Install lukacf/goldfish and use Python ≥3.10 to enable.",
+                *__import__("sys").version_info[:2],
             )
     return bool(_GOLDFISH_AVAILABLE)
 

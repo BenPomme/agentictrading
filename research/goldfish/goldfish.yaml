@@ -1,0 +1,15 @@
+project_name: agentictrading
+dev_repo_path: agentictrading-dev
+workspaces_dir: workspaces
+slots:
+- w1
+- w2
+- w3
+state_md:
+  path: STATE.md
+  max_recent_actions: 15
+audit:
+  min_reason_length: 15
+jobs:
+  backend: gce
+  experiments_dir: experiments

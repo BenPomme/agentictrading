@@ -25,7 +25,7 @@
     "last_write_time": null,
     "last_error": "Goldfish provenance is enabled (FACTORY_ENABLE_GOLDFISH_PROVENANCE=true) but the goldfish library is not installed or daemon is unreachable. Install lukacf/goldfish or set FACTORY_ENABLE_GOLDFISH_PROVENANCE=false."
   },
-  "as_of": "2026-03-17T12:48:01.900906+00:00",
+  "as_of": "2026-03-17T13:22:08.612920+00:00",
   "staging_guards": {
     "idea_source_file": "./IDEAS.md",
     "web_idea_research_enabled": false,

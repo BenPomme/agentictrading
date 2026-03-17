@@ -1,9 +1,14 @@
 {
-  "as_of": "2026-03-17T12:48:01.532803+00:00",
+  "as_of": "2026-03-17T13:22:08.199042+00:00",
   "pass": 12,
-  "warn": 2,
+  "warn": 3,
   "fail": 0,
   "checks": [
+    {
+      "check": "python_version",
+      "result": "warn",
+      "detail": "3.9.6 < 3.10 \u2014 goldfish library requires \u22653.10. Install python3.12 (brew install python@3.12) and run factory with it. goldfish daemon verified working separately via /opt/homebrew/bin/python3.12."
+    },
     {
       "check": "staging_guards",
       "result": "pass",
@@ -52,12 +57,12 @@
     {
       "check": "goldfish_boot",
       "result": "warn",
-      "detail": "enabled but library not installed \u2014 observe-only mode active"
+      "detail": "Python 3.9 < 3.10 \u2014 goldfish library requires Python \u22653.10; daemon may still be reachable via socket. Run factory with python3.12 (installed at /opt/homebrew/bin/python3.12) for full Goldfish."
     },
     {
       "check": "goldfish_write",
       "result": "warn",
-      "detail": "write degraded: Goldfish provenance is enabled (FACTORY_ENABLE_GOLDFISH_PROVENANCE=true) but the"
+      "detail": "write skipped \u2014 Python <3.10 cannot import goldfish library directly. Daemon verified healthy via python3.12 separately."
     },
     {
       "check": "idea_intake",

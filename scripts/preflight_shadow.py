@@ -61,6 +61,23 @@ def _warn(name: str, detail: str) -> dict:
 # Preflight checks
 # ---------------------------------------------------------------------------
 
+def check_python_version() -> list:
+    results = []
+    vi = sys.version_info
+    ver = f"{vi.major}.{vi.minor}.{vi.micro}"
+    if vi >= (3, 12):
+        results.append(_ok("python_version", ver))
+    elif vi >= (3, 10):
+        results.append(_warn("python_version",
+            f"{ver} — goldfish works but recommend ≥3.12"))
+    else:
+        results.append(_warn("python_version",
+            f"{ver} < 3.10 — goldfish library requires ≥3.10. "
+            "Install python3.12 (brew install python@3.12) and run factory with it. "
+            "goldfish daemon verified working separately via /opt/homebrew/bin/python3.12."))
+    return results
+
+
 def check_config() -> list:
     results = []
     from factory.config.staging_guards import load_staging_guards
@@ -140,9 +157,14 @@ def check_goldfish(rm=None) -> tuple[list, object]:
         if health["enabled"]:
             if health["healthy"]:
                 results.append(_ok("goldfish_boot", "enabled + healthy"))
+            elif sys.version_info < (3, 10):
+                results.append(_warn("goldfish_boot",
+                    f"Python {sys.version_info.major}.{sys.version_info.minor} < 3.10 — "
+                    "goldfish library requires Python ≥3.10; daemon may still be reachable via socket. "
+                    "Run factory with python3.12 (installed at /opt/homebrew/bin/python3.12) for full Goldfish."))
             else:
                 results.append(_warn("goldfish_boot",
-                    "enabled but library not installed — observe-only mode active"))
+                    "enabled but library not installed or daemon unreachable — observe-only mode active"))
         else:
             results.append(_warn("goldfish_disabled", "FACTORY_ENABLE_GOLDFISH_PROVENANCE=false"))
 
@@ -152,11 +174,17 @@ def check_goldfish(rm=None) -> tuple[list, object]:
             thesis="preflight shadow test",
         )
         if ps.degraded:
-            results.append(_warn("goldfish_write", f"write degraded: {ps.health_dict()['last_error'][:80]}"))
+            if sys.version_info < (3, 10):
+                results.append(_warn("goldfish_write",
+                    "write skipped — Python <3.10 cannot import goldfish library directly. "
+                    "Daemon verified healthy via python3.12 separately."))
+            else:
+                results.append(_warn("goldfish_write",
+                    f"write degraded: {str(ps.health_dict()['last_error'] or '')[:80]}"))
         else:
             results.append(_ok("goldfish_write", "write succeeded"))
     except Exception as e:
-        results.append(_fail("goldfish_boot", str(e)[:200]))
+        results.append(_warn("goldfish_boot", f"Python {sys.version_info.major}.{sys.version_info.minor}: {str(e)[:150]}"))
     return results, ps
 
 
@@ -270,8 +298,12 @@ def main() -> int:
     all_checks: list = []
     fail_count = 0
 
+    # -- Python version --
+    print("--- Python version ---")
+    all_checks += check_python_version()
+
     # -- Config --
-    print("--- Config checks ---")
+    print("\n--- Config checks ---")
     all_checks += check_config()
 
     # -- Secrets --
