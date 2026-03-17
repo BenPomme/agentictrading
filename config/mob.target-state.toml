@@ -8,9 +8,8 @@
 #   tier2_standard → standard-worker
 #   tier3_lead     → lead-researcher
 #
-# Model strings map to the provider order configured in FACTORY_PROVIDER_ORDER.
-# In cost_saver mode the factory never issues live LLM calls; profiles are
-# used for member lifecycle bookkeeping only.
+# All profiles require [profiles.<name>.tools] comms = true so mob meerkats
+# can communicate (required for ensure_member() to succeed).
 
 [mob]
 id = "agentictrading-factory"
@@ -24,15 +23,24 @@ id = "agentictrading-factory"
 model = "gpt-4.1-mini"
 external_addressable = false
 
+[profiles.cheap-reviewer.tools]
+comms = true
+
 # tier2_standard — standard strategy codegen and evaluation worker
 [profiles.standard-worker]
 model = "gpt-5.2"
 external_addressable = true
 
+[profiles.standard-worker.tools]
+comms = true
+
 # tier3_lead — lead analyst; generates theses and synthesises reviewer feedback
 [profiles.lead-researcher]
 model = "gpt-5.2"
 external_addressable = true
+
+[profiles.lead-researcher.tools]
+comms = true
 
 # ---------------------------------------------------------------------------
 # Factory-specific extended profiles (used by named workflow profiles)
@@ -43,10 +51,16 @@ external_addressable = true
 model = "gpt-5.2"
 external_addressable = true
 
+[profiles.codegen-specialist.tools]
+comms = true
+
 # Deterministic evaluator — no LLM required; profile exists for lifecycle tracking
 [profiles.deterministic-evaluator]
 model = "gpt-4.1-mini"
 external_addressable = false
+
+[profiles.deterministic-evaluator.tools]
+comms = true
 
 # ---------------------------------------------------------------------------
 # Mob-level defaults — inherited by any profile that does not override them
