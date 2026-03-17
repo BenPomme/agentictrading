@@ -447,6 +447,19 @@ class FactoryOrchestrator:
             experiment=experiment,
             lineage=lineage,
         )
+        # Goldfish: ensure workspace and record proposal creation
+        self.provenance.ensure_family_workspace(
+            family_id=family_id,
+            thesis=family.thesis,
+        )
+        self.provenance.record_proposal(
+            workspace_id=family_id,
+            family_id=family_id,
+            hypothesis_id=hypothesis_id,
+            thesis=family.thesis,
+            source=family_origin,
+            accepted=True,
+        )
         return family
 
     def _design_model_for_family(
@@ -499,6 +512,15 @@ class FactoryOrchestrator:
                     genome.parameters["model_code_path"] = str(code_path)
                     genome.parameters["model_class_name"] = class_name
                     self.registry.save_genome(champion.lineage_id, genome)
+                # Goldfish: record code generation event
+                self.provenance.record_codegen(
+                    workspace_id=family.family_id,
+                    family_id=family.family_id,
+                    lineage_id=champion.lineage_id,
+                    code_path=str(code_path),
+                    class_name=class_name,
+                    code_model=str(getattr(design_result, "model", None) or "unknown"),
+                )
             return True
 
         logger.error(
@@ -2428,6 +2450,59 @@ class FactoryOrchestrator:
         )
         self.registry.save_learning_memory(memory)
         lineage.last_memory_id = memory.memory_id
+        # Goldfish: log the learning note
+        self.provenance.record_learning_note(
+            workspace_id=lineage.family_id,
+            lineage_id=lineage.lineage_id,
+            family_id=lineage.family_id,
+            outcome=memory.outcome,
+            summary=memory.summary,
+            domains=list(memory.scientific_domains or []),
+            recommendations=list(memory.recommendations or []),
+        )
+
+    def _provenance_retire(
+        self,
+        lineage: "LineageRecord",
+        row: Dict[str, Any],
+    ) -> None:
+        """Emit a Goldfish retirement record for a lineage. Error-safe."""
+        try:
+            self.provenance.record_retirement(
+                workspace_id=lineage.family_id,
+                lineage_id=lineage.lineage_id,
+                family_id=lineage.family_id,
+                reason=str(lineage.retirement_reason or "unknown"),
+                cost_summary={},
+                best_metrics={
+                    "monthly_roi_pct": float(row.get("monthly_roi_pct", 0.0) or 0.0),
+                    "fitness_score": float(row.get("fitness_score", 0.0) or 0.0),
+                    "trade_count": int(row.get("trade_count", 0) or 0),
+                },
+                lessons=list(row.get("hard_vetoes") or [str(lineage.retirement_reason or "unknown")]),
+            )
+        except Exception:
+            logger.exception("_provenance_retire: unexpected error for %s", lineage.lineage_id)
+
+    def _provenance_promote(
+        self,
+        lineage: "LineageRecord",
+        from_stage: str,
+        to_stage: str,
+        reasons: List[str],
+    ) -> None:
+        """Emit a Goldfish promotion record for a lineage. Error-safe."""
+        try:
+            self.provenance.record_promotion(
+                workspace_id=lineage.family_id,
+                lineage_id=lineage.lineage_id,
+                family_id=lineage.family_id,
+                from_stage=from_stage,
+                to_stage=to_stage,
+                decision={"reasons": reasons},
+            )
+        except Exception:
+            logger.exception("_provenance_promote: unexpected error for %s", lineage.lineage_id)
 
     def _isolated_challenger_first_assessment_failure_reason(self, row: Dict[str, Any]) -> str | None:
         if str(row.get("runtime_lane_kind") or "").strip() != "isolated_challenger":
@@ -2824,6 +2899,7 @@ class FactoryOrchestrator:
                 self._record_learning_memory(lineage, row, reason=isolated_first_assessment_failure)
                 retired_ids.add(lineage.lineage_id)
                 self.registry.save_lineage(lineage)
+                self._provenance_retire(lineage, row)
                 _append_recent_action(
                     recent_actions,
                     (
@@ -2842,6 +2918,7 @@ class FactoryOrchestrator:
                 self._record_learning_memory(lineage, row, reason=persistent_stall_retirement)
                 retired_ids.add(lineage.lineage_id)
                 self.registry.save_lineage(lineage)
+                self._provenance_retire(lineage, row)
                 _append_recent_action(
                     recent_actions,
                     (
@@ -2924,6 +3001,9 @@ class FactoryOrchestrator:
                     recent_actions,
                     f"[cycle {self._cycle_count}] Retired {lineage.lineage_id} from {family.family_id}: {lineage.retirement_reason}.",
                 )
+                self.registry.save_lineage(lineage)
+                self._provenance_retire(lineage, row)
+                continue
             self.registry.save_lineage(lineage)
         family.retired_lineage_ids = sorted(retired_ids)
         family.shadow_challenger_ids = [lineage_id for lineage_id in family.shadow_challenger_ids if lineage_id not in retired_ids]
@@ -2964,6 +3044,7 @@ class FactoryOrchestrator:
                 )
                 retired_ids.add(lineage.lineage_id)
                 self.registry.save_lineage(lineage)
+                self._provenance_retire(lineage, row)
                 _append_recent_action(
                     recent_actions,
                     f"[cycle {self._cycle_count}] Retired {lineage.lineage_id}: loss streak {loss_streak} >= {max_streak}",
@@ -3018,12 +3099,14 @@ class FactoryOrchestrator:
             )
 
             if not has_traded:
+                old_stage = lineage.current_stage
                 lineage.current_stage = PromotionStage.PAPER.value
                 lineage.iteration_status = "paper_trial_no_backtest"
                 lineage.blockers = list(dict.fromkeys(
                     list(lineage.blockers) + [f"paper_trial:{gate_reason}"]
                 ))
                 self.registry.save_lineage(lineage)
+                self._provenance_promote(lineage, old_stage, PromotionStage.PAPER.value, [gate_reason])
                 _append_recent_action(
                     recent_actions,
                     f"[cycle {self._cycle_count}] Promoted {lineage.lineage_id} to paper trial (no backtest data, no trades yet)",
@@ -3039,6 +3122,7 @@ class FactoryOrchestrator:
             ))
             retired_ids.add(lineage.lineage_id)
             self.registry.save_lineage(lineage)
+            self._provenance_retire(lineage, {})
             _append_recent_action(
                 recent_actions,
                 f"[cycle {self._cycle_count}] Retired {lineage.lineage_id}: backtest TTL {age_hours:.0f}h > {ttl_hours:.0f}h without positive results",
@@ -3346,6 +3430,7 @@ class FactoryOrchestrator:
                             lineage.blockers = list(dict.fromkeys(list(lineage.blockers or []) + [failure_reason]))
                             self._record_learning_memory(lineage, summary, reason=failure_reason)
                             self.registry.save_lineage(lineage)
+                            self._provenance_retire(lineage, summary)
                             summary["active"] = False
                             summary["iteration_status"] = "retired"
                             summary["retired_at"] = lineage.retired_at
@@ -4311,6 +4396,7 @@ class FactoryOrchestrator:
                 summary["retirement_reason"] = reason
             self._record_learning_memory(lineage, row, reason=reason)
             self.registry.save_lineage(lineage)
+            self._provenance_retire(lineage, row)
         family.incubation_status = "retired"
         family.incubation_decided_at = utc_now_iso()
         family.incubation_decision_reason = reason
@@ -5093,6 +5179,28 @@ class FactoryOrchestrator:
             previous = by_stage.get(bundle.stage)
             if previous is None or str(bundle.generated_at) > str(previous.generated_at):
                 by_stage[bundle.stage] = bundle
+            # Goldfish: record every evaluation as a provenance run
+            self.provenance.record_evaluation(
+                workspace_id=lineage.family_id,
+                run_id=bundle.evaluation_id,
+                lineage_id=lineage.lineage_id,
+                family_id=lineage.family_id,
+                cycle_id=str(self._cycle_count),
+                evaluation_payload={
+                    "stage": bundle.stage,
+                    "source": bundle.source,
+                    "monthly_roi_pct": float(getattr(bundle, "monthly_roi_pct", 0.0) or 0.0),
+                    "max_drawdown_pct": float(getattr(bundle, "max_drawdown_pct", 0.0) or 0.0),
+                    "fitness_score": float(getattr(bundle, "fitness_score", 0.0) or 0.0),
+                    "trade_count": int(getattr(bundle, "trade_count", 0) or 0),
+                    "paper_days": int(getattr(bundle, "paper_days", 0) or 0),
+                },
+                correlation={
+                    "stage": bundle.stage,
+                    "source": bundle.source,
+                    "cycle_id": str(self._cycle_count),
+                },
+            )
         return by_stage
 
     def _maybe_run_post_eval_critique(

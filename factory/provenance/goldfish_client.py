@@ -403,6 +403,23 @@ class NullGoldfishClient:
     def healthcheck(self) -> bool:
         return False
 
+    # New methods mirror GoldfishClient surface so ProvenanceService._call works uniformly.
+    # All are no-ops; real writes only happen when GoldfishClient is active.
+    def record_proposal(self, **_: Any) -> None:
+        logger.debug("NullGoldfishClient: record_proposal (provenance disabled)")
+
+    def record_codegen(self, **_: Any) -> None:
+        logger.debug("NullGoldfishClient: record_codegen (provenance disabled)")
+
+    def record_paper_snapshot(self, **_: Any) -> None:
+        logger.debug("NullGoldfishClient: record_paper_snapshot (provenance disabled)")
+
+    def record_challenger_mutation(self, **_: Any) -> None:
+        logger.debug("NullGoldfishClient: record_challenger_mutation (provenance disabled)")
+
+    def record_promotion_readiness(self, **_: Any) -> None:
+        logger.debug("NullGoldfishClient: record_promotion_readiness (provenance disabled)")
+
 
 # ---------------------------------------------------------------------------
 # ProvenanceService — the high-level facade used by the orchestrator
@@ -417,15 +434,21 @@ class ProvenanceService:
     - feature-flag gating (FACTORY_ENABLE_GOLDFISH_PROVENANCE)
     - error surfacing policy (fail vs warn based on config)
     - correlation ID propagation
-    - projection cache updates (via registry callbacks)
+    - health state tracking (last write time, last error, degraded flag)
 
     Usage::
 
         svc = ProvenanceService.create(project_root)
-        svc.record_evaluation(bundle, lineage, cycle_id=cycle_id)
-        svc.record_retirement(lineage, memory, ...)
-        svc.record_promotion(lineage, stage, ...)
-        svc.record_learning_note(memory)
+        svc.ensure_family_workspace(family_id=..., thesis=...)
+        svc.record_proposal(family_id=..., hypothesis_id=..., thesis=..., source=...)
+        svc.record_codegen(family_id=..., lineage_id=..., code_path=..., class_name=...)
+        svc.record_evaluation(workspace_id=..., run_id=..., ...)
+        svc.record_retirement(workspace_id=..., lineage_id=..., ...)
+        svc.record_promotion(workspace_id=..., lineage_id=..., ...)
+        svc.record_learning_note(workspace_id=..., lineage_id=..., ...)
+        svc.record_paper_snapshot(workspace_id=..., lineage_id=..., ...)
+        svc.record_challenger_mutation(workspace_id=..., lineage_id=..., ...)
+        svc.record_promotion_readiness(workspace_id=..., lineage_id=..., ...)
     """
 
     def __init__(
@@ -438,6 +461,10 @@ class ProvenanceService:
         self._client = client
         self._enabled = enabled
         self._fail_on_error = fail_on_error
+        # Health tracking — updated by _call
+        self._degraded: bool = False
+        self._last_error: Optional[str] = None
+        self._last_write_time: Optional[str] = None
 
     @classmethod
     def create(cls, project_root: str | Path) -> "ProvenanceService":
@@ -454,8 +481,24 @@ class ProvenanceService:
     def enabled(self) -> bool:
         return self._enabled
 
+    @property
+    def degraded(self) -> bool:
+        """True if a provenance write was suppressed due to an error (observe-only mode)."""
+        return self._degraded
+
     def healthcheck(self) -> bool:
         return self._client.healthcheck()
+
+    def health_dict(self) -> Dict[str, Any]:
+        """Return a dict suitable for embedding in OperatorStatus."""
+        return {
+            "enabled": self._enabled,
+            "strict": self._fail_on_error,
+            "healthy": self.healthcheck() if self._enabled else None,
+            "degraded": self._degraded,
+            "last_write_time": self._last_write_time,
+            "last_error": self._last_error,
+        }
 
     # ------------------------------------------------------------------
     # Domain-level provenance methods
@@ -516,23 +559,24 @@ class ProvenanceService:
         self,
         *,
         workspace_id: str,
-        record_id: str,
         lineage_id: str,
         family_id: str,
         reason: str,
         cost_summary: Dict[str, Any],
         best_metrics: Dict[str, Any],
         lessons: List[str],
+        record_id: Optional[str] = None,
     ) -> None:
-        """Tag a record as retired and log the retirement rationale as a thought."""
+        """Log retirement rationale as a Goldfish thought. Tags the record if record_id provided."""
         if not self._enabled:
             return
-        self._call(
-            "tag_record",
-            record_id=record_id,
-            workspace_id=workspace_id,
-            tags=["retired"],
-        )
+        if record_id:
+            self._call(
+                "tag_record",
+                record_id=record_id,
+                workspace_id=workspace_id,
+                tags=["retired"],
+            )
         thought = (
             f"RETIREMENT [{lineage_id}]: {reason}\n"
             f"Best metrics: {best_metrics}\n"
@@ -550,22 +594,23 @@ class ProvenanceService:
         self,
         *,
         workspace_id: str,
-        record_id: str,
         lineage_id: str,
         family_id: str,
         from_stage: str,
         to_stage: str,
         decision: Dict[str, Any],
+        record_id: Optional[str] = None,
     ) -> None:
-        """Tag a record as promoted and log the promotion decision."""
+        """Log a stage promotion as a Goldfish thought. Tags the record if record_id provided."""
         if not self._enabled:
             return
-        self._call(
-            "tag_record",
-            record_id=record_id,
-            workspace_id=workspace_id,
-            tags=[f"promoted_to_{to_stage}"],
-        )
+        if record_id:
+            self._call(
+                "tag_record",
+                record_id=record_id,
+                workspace_id=workspace_id,
+                tags=[f"promoted_to_{to_stage}"],
+            )
         thought = (
             f"PROMOTION [{lineage_id}]: {from_stage} → {to_stage}\n"
             f"Decision: {decision.get('reasons', [])}"
@@ -606,6 +651,144 @@ class ProvenanceService:
             "domains": domains,
         })
 
+    def record_proposal(
+        self,
+        *,
+        workspace_id: str,
+        family_id: str,
+        hypothesis_id: str,
+        thesis: str,
+        source: str = "IDEAS.md",
+        lead_model: Optional[str] = None,
+        accepted: bool = True,
+    ) -> None:
+        """Record a thesis/proposal creation event in Goldfish."""
+        if not self._enabled:
+            return
+        thought = (
+            f"PROPOSAL [{family_id}]: {hypothesis_id}\n"
+            f"Source: {source}\n"
+            f"Thesis: {thesis[:500]}\n"
+            f"Accepted: {accepted}"
+        )
+        self._call("log_thought", workspace_id=workspace_id, thought=thought, metadata={
+            "event": "proposal",
+            "family_id": family_id,
+            "hypothesis_id": hypothesis_id,
+            "source": source,
+            "lead_model": lead_model,
+            "accepted": accepted,
+        })
+
+    def record_codegen(
+        self,
+        *,
+        workspace_id: str,
+        family_id: str,
+        lineage_id: str,
+        code_path: str,
+        class_name: str,
+        code_model: Optional[str] = None,
+        parent_hypothesis_id: Optional[str] = None,
+    ) -> None:
+        """Record a code generation event (model_code.py created) in Goldfish."""
+        if not self._enabled:
+            return
+        thought = (
+            f"CODEGEN [{family_id}/{lineage_id}]: {class_name}\n"
+            f"Artifact: {code_path}"
+        )
+        self._call("log_thought", workspace_id=workspace_id, thought=thought, metadata={
+            "event": "codegen",
+            "family_id": family_id,
+            "lineage_id": lineage_id,
+            "class_name": class_name,
+            "code_path": code_path,
+            "code_model": code_model,
+            "parent_hypothesis_id": parent_hypothesis_id,
+        })
+
+    def record_paper_snapshot(
+        self,
+        *,
+        workspace_id: str,
+        family_id: str,
+        lineage_id: str,
+        status: str,
+        metrics: Dict[str, Any],
+        cycle_id: str,
+    ) -> None:
+        """Record a paper-trading lifecycle snapshot in Goldfish."""
+        if not self._enabled:
+            return
+        thought = (
+            f"PAPER_SNAPSHOT [{family_id}/{lineage_id}]: status={status}\n"
+            f"Metrics: roi={metrics.get('monthly_roi_pct', 'n/a')} "
+            f"fitness={metrics.get('fitness_score', 'n/a')}"
+        )
+        self._call("log_thought", workspace_id=workspace_id, thought=thought, metadata={
+            "event": "paper_snapshot",
+            "family_id": family_id,
+            "lineage_id": lineage_id,
+            "status": status,
+            "cycle_id": cycle_id,
+            "metrics": metrics,
+        })
+
+    def record_challenger_mutation(
+        self,
+        *,
+        workspace_id: str,
+        family_id: str,
+        parent_lineage_id: str,
+        challenger_lineage_id: str,
+        mutation_reason: str,
+        evidence_summary: Dict[str, Any],
+        mutation_model: Optional[str] = None,
+    ) -> None:
+        """Record a challenger/mutation creation event in Goldfish."""
+        if not self._enabled:
+            return
+        thought = (
+            f"CHALLENGER [{family_id}]: {parent_lineage_id} → {challenger_lineage_id}\n"
+            f"Reason: {mutation_reason}"
+        )
+        self._call("log_thought", workspace_id=workspace_id, thought=thought, metadata={
+            "event": "challenger_mutation",
+            "family_id": family_id,
+            "parent_lineage_id": parent_lineage_id,
+            "challenger_lineage_id": challenger_lineage_id,
+            "mutation_reason": mutation_reason,
+            "evidence_summary": evidence_summary,
+            "mutation_model": mutation_model,
+        })
+
+    def record_promotion_readiness(
+        self,
+        *,
+        workspace_id: str,
+        family_id: str,
+        lineage_id: str,
+        recommendation: str,
+        evidence_pack: Dict[str, Any],
+        surfaced_at: str,
+    ) -> None:
+        """Record a promotion-readiness / human-surface event in Goldfish."""
+        if not self._enabled:
+            return
+        thought = (
+            f"PROMOTION_READINESS [{family_id}/{lineage_id}]: {recommendation}\n"
+            f"Surfaced at: {surfaced_at}"
+        )
+        self._call("log_thought", workspace_id=workspace_id, thought=thought, metadata={
+            "event": "promotion_readiness",
+            "family_id": family_id,
+            "lineage_id": lineage_id,
+            "recommendation": recommendation,
+            "evidence_pack": evidence_pack,
+            "surfaced_at": surfaced_at,
+        })
+
     # ------------------------------------------------------------------
     # Internal error handling
     # ------------------------------------------------------------------
@@ -614,14 +797,22 @@ class ProvenanceService:
         """
         Call a GoldfishClient method with uniform error handling.
 
-        If fail_on_error=True → re-raises GoldfishError (visible operator signal).
-        If fail_on_error=False → logs warning and returns None.
+        If fail_on_error=True  → re-raises GoldfishError (visible operator signal).
+        If fail_on_error=False → marks service degraded, logs warning, returns None.
+
+        On success, updates _last_write_time and clears _degraded/_last_error.
         """
+        from datetime import datetime, timezone as _tz
         fn = getattr(self._client, method, None)
         if fn is None:
             raise AttributeError(f"GoldfishClient has no method {method!r}")
         try:
-            return fn(**kwargs)
+            result = fn(**kwargs)
+            # Success — record write time and clear degraded state
+            self._last_write_time = datetime.now(_tz.utc).isoformat()
+            self._last_error = None
+            self._degraded = False
+            return result
         except GoldfishUnavailableError:
             msg = (
                 "Goldfish provenance is enabled (FACTORY_ENABLE_GOLDFISH_PROVENANCE=true) "
@@ -629,16 +820,24 @@ class ProvenanceService:
                 "Install lukacf/goldfish or set FACTORY_ENABLE_GOLDFISH_PROVENANCE=false."
             )
             logger.error(msg)
+            self._degraded = True
+            self._last_error = msg
             if self._fail_on_error:
                 raise
             return None
         except GoldfishError as exc:
-            logger.error("Goldfish provenance write failed [%s]: %s", method, exc)
+            msg = f"Goldfish provenance write failed [{method}]: {exc}"
+            logger.error(msg)
+            self._degraded = True
+            self._last_error = msg
             if self._fail_on_error:
                 raise
             return None
         except Exception as exc:
-            logger.error("Unexpected goldfish error [%s]: %s", method, exc)
+            msg = f"Unexpected goldfish error [{method}]: {exc}"
+            logger.error(msg)
+            self._degraded = True
+            self._last_error = msg
             if self._fail_on_error:
                 raise GoldfishWriteError(f"Unexpected error in {method}: {exc}") from exc
             return None

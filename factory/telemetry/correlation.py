@@ -64,8 +64,16 @@ class OperatorStatus:
     downgrade_events_today: int
     stop_events_today: int
 
+    # Goldfish provenance health
+    goldfish_enabled: bool = False
+    goldfish_strict: bool = False
+    goldfish_healthy: Optional[bool] = None
+    goldfish_degraded: bool = False
+    goldfish_last_write_time: Optional[str] = None
+    goldfish_last_error: Optional[str] = None
+
     # Timestamp
-    as_of: str
+    as_of: str = ""
 
     # ------------------------------------------------------------------
     # Serialization
@@ -91,6 +99,14 @@ class OperatorStatus:
             "last_runtime_run_id": self.last_runtime_run_id,
             "downgrade_events_today": self.downgrade_events_today,
             "stop_events_today": self.stop_events_today,
+            "goldfish": {
+                "enabled": self.goldfish_enabled,
+                "strict": self.goldfish_strict,
+                "healthy": self.goldfish_healthy,
+                "degraded": self.goldfish_degraded,
+                "last_write_time": self.goldfish_last_write_time,
+                "last_error": self.goldfish_last_error,
+            },
             "as_of": self.as_of,
         }
 
@@ -104,6 +120,7 @@ def build_operator_status(
     runtime_manager: Any,
     *,
     governor: Optional[Any] = None,
+    provenance_service: Optional[Any] = None,
     last_goldfish_record_id: Optional[str] = None,
     last_runtime_run_id: Optional[str] = None,
     recent_fallback_reasons: Optional[List[str]] = None,
@@ -180,6 +197,26 @@ def build_operator_status(
         except Exception:
             pass  # Governor errors must not break operator status
 
+    # --- Goldfish provenance health ----------------------------------------
+    gf_enabled = False
+    gf_strict = False
+    gf_healthy: Optional[bool] = None
+    gf_degraded = False
+    gf_last_write: Optional[str] = None
+    gf_last_error: Optional[str] = None
+
+    if provenance_service is not None:
+        try:
+            health = provenance_service.health_dict()
+            gf_enabled = bool(health.get("enabled", False))
+            gf_strict = bool(health.get("strict", False))
+            gf_healthy = health.get("healthy")
+            gf_degraded = bool(health.get("degraded", False))
+            gf_last_write = health.get("last_write_time")
+            gf_last_error = health.get("last_error")
+        except Exception:
+            pass  # Provenance health must never break operator status
+
     return OperatorStatus(
         active_backend=backend_name,
         backend_healthy=backend_healthy,
@@ -195,5 +232,11 @@ def build_operator_status(
         last_runtime_run_id=last_runtime_run_id,
         downgrade_events_today=downgrade_count,
         stop_events_today=stop_count,
+        goldfish_enabled=gf_enabled,
+        goldfish_strict=gf_strict,
+        goldfish_healthy=gf_healthy,
+        goldfish_degraded=gf_degraded,
+        goldfish_last_write_time=gf_last_write,
+        goldfish_last_error=gf_last_error,
         as_of=datetime.now(timezone.utc).isoformat(),
     )
