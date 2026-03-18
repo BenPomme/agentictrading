@@ -80,8 +80,30 @@ def _is_sparse_venue(target_venues: list, family_id: str) -> bool:
     """
     venues = {str(v).lower() for v in target_venues}
     sparse = {"binance", "polymarket", "betfair"}
-    # If ANY target venue is sparse and none are rich, classify as sparse
     rich = {"yahoo", "alpaca"}
+
+    # Fallback: lineage.target_venues is often empty because the field is not populated
+    # during lineage creation. In that case, look up the family JSON for its venue list.
+    if not venues:
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _fam_path = _Path(__file__).parent.parent / "data" / "factory" / "families" / f"{family_id}.json"
+            if _fam_path.exists():
+                _fam = _json.loads(_fam_path.read_text(encoding="utf-8"))
+                _fam_venues = _fam.get("target_venues") or _fam.get("venues") or []
+                if _fam_venues:
+                    venues = {str(v).lower() for v in _fam_venues}
+        except Exception:
+            pass
+        # Last resort: infer from family_id keywords
+        if not venues:
+            fid = family_id.lower()
+            if any(k in fid for k in ("binance", "polymarket", "betfair")):
+                return True
+            return False
+
+    # If ANY target venue is sparse and none are rich, classify as sparse
     has_sparse = bool(venues & sparse)
     has_rich = bool(venues & rich)
     # Mixed venue: treat as sparse (more permissive) since sparse data limits overall quality

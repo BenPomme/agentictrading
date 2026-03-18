@@ -221,7 +221,9 @@ function VenueCard({ v }: { v: VenueData }) {
 }
 
 export function VenueReadinessPage({ snapshot, snapshotV2 }: Props) {
-  const connectors = snapshot?.factory?.connectors ?? [];
+  // api_feeds.connectors has status + latest_age_seconds computed by the backend.
+  // factory.connectors is the raw list without those computed fields.
+  const connectors = (snapshot?.api_feeds?.connectors ?? snapshot?.factory?.connectors ?? []) as ConnectorHealth[];
   const families = snapshot?.factory?.families ?? [];
   const lineages = snapshot?.factory?.lineages ?? [];
   const venueScope = snapshotV2?.runtime?.venue_scope;
