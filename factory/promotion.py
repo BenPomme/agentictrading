@@ -72,8 +72,43 @@ _FAMILY_SCORECARDS: Dict[str, Dict[str, float]] = {
 }
 
 
+def _is_sparse_venue(target_venues: list, family_id: str) -> bool:
+    """True for venues with sparse/weak backtest data (Binance, Polymarket, Betfair).
+
+    These venues get more permissive pre-paper entry gates because their
+    backtest data is structurally weaker than equity markets.
+    """
+    venues = {str(v).lower() for v in target_venues}
+    sparse = {"binance", "polymarket", "betfair"}
+    # If ANY target venue is sparse and none are rich, classify as sparse
+    rich = {"yahoo", "alpaca"}
+    has_sparse = bool(venues & sparse)
+    has_rich = bool(venues & rich)
+    # Mixed venue: treat as sparse (more permissive) since sparse data limits overall quality
+    return has_sparse and not has_rich
+
+
 @dataclass
 class PromotionGateConfig:
+    """Gate thresholds for paper promotion lifecycle.
+
+    PRE-PAPER thresholds control entry into paper testing.
+    POST-PAPER thresholds control advancement beyond paper (to canary/live).
+    Venue-differentiated: sparse venues get permissive pre-paper entry.
+    """
+    # --- Pre-paper entry: rich-history venues (yahoo/alpaca) ---
+    pre_paper_rich_min_roi_pct: float = 3.0
+    pre_paper_rich_max_drawdown_pct: float = 10.0
+    pre_paper_rich_min_beaten_windows: int = 2
+    pre_paper_rich_require_stress: bool = True
+
+    # --- Pre-paper entry: sparse-history venues (binance/polymarket/betfair) ---
+    pre_paper_sparse_min_roi_pct: float = 0.0  # any positive backtest
+    pre_paper_sparse_max_drawdown_pct: float = 15.0
+    pre_paper_sparse_min_beaten_windows: int = 0
+    pre_paper_sparse_require_stress: bool = False
+
+    # --- Post-paper validation (for advancement beyond paper) ---
     monthly_roi_pct: float = float(getattr(config, "FACTORY_PAPER_GATE_MONTHLY_ROI_PCT", 5.0))
     max_drawdown_pct: float = float(getattr(config, "FACTORY_PAPER_GATE_MAX_DRAWDOWN_PCT", 8.0))
     min_paper_days: int = int(getattr(config, "FACTORY_PAPER_GATE_MIN_DAYS", 30))
@@ -87,6 +122,54 @@ class PromotionController:
 
     def scorecard_for_family(self, family_id: str) -> Dict[str, float]:
         return dict(_FAMILY_SCORECARDS.get(family_id, _FAMILY_SCORECARDS["default"]))
+
+    def pre_paper_entry_blockers(
+        self,
+        walkforward_bundle: Optional['EvaluationBundle'],
+        stress_bundle: Optional['EvaluationBundle'],
+        *,
+        sparse_venue: bool,
+    ) -> List[str]:
+        """Determine if a model is promising enough to START paper testing.
+
+        This gate uses backtest/stress evidence only. It must NOT require
+        paper_days, paper trade_count, or any metric that can only exist
+        after paper trading has begun.
+        """
+        blockers: List[str] = []
+
+        if walkforward_bundle is None:
+            blockers.append("no_walkforward_evidence_for_paper_entry")
+            return blockers
+
+        if sparse_venue:
+            # Sparse venues: permissive entry — paper is where real learning happens
+            if walkforward_bundle.monthly_roi_pct <= self.gates.pre_paper_sparse_min_roi_pct:
+                blockers.append("backtest_roi_non_positive")
+            if walkforward_bundle.max_drawdown_pct > self.gates.pre_paper_sparse_max_drawdown_pct:
+                blockers.append("backtest_drawdown_above_15pct")
+            if walkforward_bundle.baseline_beaten_windows < self.gates.pre_paper_sparse_min_beaten_windows:
+                blockers.append("baseline_windows_insufficient_sparse")
+            if self.gates.pre_paper_sparse_require_stress:
+                if stress_bundle is None or not stress_bundle.stress_positive:
+                    blockers.append("stress_not_positive")
+        else:
+            # Rich venues: stricter entry — backtest data is meaningful
+            if walkforward_bundle.monthly_roi_pct < self.gates.pre_paper_rich_min_roi_pct:
+                blockers.append("backtest_roi_below_3pct")
+            if walkforward_bundle.max_drawdown_pct > self.gates.pre_paper_rich_max_drawdown_pct:
+                blockers.append("backtest_drawdown_above_10pct")
+            if walkforward_bundle.baseline_beaten_windows < self.gates.pre_paper_rich_min_beaten_windows:
+                blockers.append("baseline_windows_insufficient_rich")
+            if self.gates.pre_paper_rich_require_stress:
+                if stress_bundle is None or not stress_bundle.stress_positive:
+                    blockers.append("stress_not_positive")
+
+        # Universal hard vetoes
+        if walkforward_bundle.hard_vetoes:
+            blockers.extend(list(walkforward_bundle.hard_vetoes))
+
+        return blockers
 
     def compare_to_incumbent(
         self,
@@ -133,7 +216,12 @@ class PromotionController:
             "incumbent_lineage_id": incumbent.lineage_id,
         }
 
-    def paper_gate_blockers(self, bundle: EvaluationBundle, *, slow_strategy: bool) -> List[str]:
+    def post_paper_validation_blockers(self, bundle: EvaluationBundle, *, slow_strategy: bool) -> List[str]:
+        """Determine if a model has survived paper testing well enough to advance.
+
+        This gate requires paper-period evidence: paper_days, trade_count, etc.
+        It runs AFTER the model has been paper trading, not before.
+        """
         blockers: List[str] = []
         if bundle.baseline_beaten_windows < 3:
             blockers.append("baseline_not_beaten_on_3_windows")
@@ -154,6 +242,9 @@ class PromotionController:
             blockers.extend(list(bundle.hard_vetoes))
         return blockers
 
+    # Backward-compatible alias
+    paper_gate_blockers = post_paper_validation_blockers
+
     def decide(
         self,
         lineage: LineageRecord,
@@ -167,6 +258,7 @@ class PromotionController:
         incumbent_paper_bundle: Optional[EvaluationBundle],
         manifest_status: Optional[str],
         approved_by: Optional[str],
+        autonomous_paper_allowed: bool = False,
     ) -> PromotionDecision:
         current_index = _STAGE_ORDER.index(lineage.current_stage)
         target_stage = lineage.current_stage
@@ -200,16 +292,39 @@ class PromotionController:
             )
         else:
             blockers.append("missing_walkforward_evidence")
+        # Venue-aware stress gating: sparse venues can bypass stress requirement
+        sparse_venue = _is_sparse_venue(
+            lineage.target_venues if hasattr(lineage, "target_venues") else [],
+            lineage.family_id,
+        )
+        _stress_required = not sparse_venue or self.gates.pre_paper_sparse_require_stress
         if stress_bundle is not None and stress_bundle.stress_positive:
             target_stage = PromotionStage.STRESS.value
             if bool(backtest_review["passed"]):
                 target_stage = PromotionStage.SHADOW.value
             else:
                 blockers.extend(list(backtest_review["blockers"]))
+        elif not _stress_required and bool(backtest_review.get("passed", True)):
+            # Sparse venue: stress not required — advance to SHADOW on backtest alone
+            target_stage = PromotionStage.SHADOW.value
         elif stress_bundle is not None and not stress_bundle.stress_positive:
             blockers.append("stress_eval_negative")
         else:
             blockers.append("missing_stress_evidence")
+        # --- PRE-PAPER ENTRY: decide if model can START paper testing ---
+        # This runs when the model has reached SHADOW and has backtest evidence.
+        # It must NOT require paper-period evidence (paper_days, trade_count).
+        if target_stage == PromotionStage.SHADOW.value:
+            entry_blockers = self.pre_paper_entry_blockers(
+                walkforward_bundle, stress_bundle, sparse_venue=sparse_venue,
+            )
+            if not entry_blockers:
+                target_stage = PromotionStage.PAPER.value
+            else:
+                blockers.extend(entry_blockers)
+
+        # --- POST-PAPER VALIDATION: has paper period been strong enough? ---
+        # This runs when paper_bundle exists (model has been paper trading).
         incumbent_review: Dict[str, object] = {
             "required": False,
             "passed": True,
@@ -218,19 +333,23 @@ class PromotionController:
             "scorecard": self.scorecard_for_family(lineage.family_id),
             "incumbent_lineage_id": None,
         }
-        if paper_bundle is not None and bool(backtest_review["passed"]):
-            target_stage = PromotionStage.PAPER.value
+        if paper_bundle is not None and target_stage == PromotionStage.PAPER.value:
             slow_strategy = "slow" in lineage.family_id or "polymarket" in lineage.family_id
-            paper_blockers = self.paper_gate_blockers(paper_bundle, slow_strategy=slow_strategy)
+            paper_blockers = self.post_paper_validation_blockers(paper_bundle, slow_strategy=slow_strategy)
             incumbent_review = self.compare_to_incumbent(paper_bundle, incumbent_paper_bundle)
             if not paper_blockers and bool(incumbent_review["passed"]):
-                target_stage = PromotionStage.CANARY_READY.value
-                target_stage = PromotionStage.LIVE_READY.value
-            else:
-                blockers.extend(paper_blockers)
-                blockers.extend(list(incumbent_review["blockers"]))
-        elif paper_bundle is None:
-            blockers.append("missing_paper_evidence")
+                if autonomous_paper_allowed:
+                    # Autonomous paper mode: stay at PAPER — do not advance to
+                    # CANARY/LIVE which require human signoff. Paper trading
+                    # proceeds autonomously; live remains blocked.
+                    target_stage = PromotionStage.PAPER.value
+                else:
+                    target_stage = PromotionStage.CANARY_READY.value
+                    target_stage = PromotionStage.LIVE_READY.value
+            elif paper_blockers:
+                # Paper is running but validation not yet met — this is normal.
+                # Don't add these as blockers since the model should CONTINUE paper.
+                pass
         requires_human_signoff = target_stage in {
             PromotionStage.CANARY_READY.value,
             PromotionStage.LIVE_READY.value,

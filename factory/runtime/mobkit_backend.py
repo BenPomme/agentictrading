@@ -118,35 +118,52 @@ _TIER_TO_PROFILE: Dict[str, str] = {
     "tier1_cheap":    "cheap-reviewer",
     "tier2_standard": "standard-worker",
     "tier3_lead":     "lead-researcher",
+    # Dedicated code profiles — routes code-generation tasks away from
+    # thesis/research profiles so each role has a focused prompt surface.
+    "tier_codegen":   "code-author",
+    "tier_mutate":    "code-mutator",
 }
 
 _TIER_TO_MODEL_CLASS: Dict[str, str] = {
     "tier1_cheap":    "TASK_CHEAP",
     "tier2_standard": "TASK_STANDARD",
     "tier3_lead":     "TASK_EXPENSIVE",
+    "tier_codegen":   "TASK_STANDARD",
+    "tier_mutate":    "TASK_CHEAP",
 }
 
 # Per-task-type system prompt overrides.  Keys match factory task_type strings.
 # Falling back to the generic instruction set when a key is not present.
 _TASK_SYSTEM_PROMPTS: Dict[str, str] = {
     "proposal_generation": (
-        "You are a quantitative strategy analyst. Generate concise, testable strategy "
-        "theses grounded in statistical evidence. Avoid narrative padding. "
+        "You are a quantitative strategy researcher. Generate differentiated, "
+        "falsifiable, tradeable hypotheses grounded in statistical evidence. "
+        "Draw inspiration broadly — physics, biology, control theory, information "
+        "theory, game theory, network science — but convert cross-domain ideas into "
+        "concrete market hypotheses with testable predictions. "
+        "Ground ideas in actually reachable assets and venues provided in the context. "
+        "Avoid generic low-value ideas unless highly specific and defensible. "
         "Output exactly one JSON object matching the schema."
     ),
     "post_eval_critique": (
         "You are a quantitative risk reviewer. Critically evaluate the provided backtest "
         "results for overfitting, data-snooping bias, and regime fragility. "
+        "'No trades' is generally a poor outcome unless the strategy targets rare events "
+        "with adequate sample justification. A strong result should aim toward roughly "
+        "5% average monthly ROI while remaining realistic about execution costs. "
         "Output exactly one JSON object matching the schema."
     ),
     "model_design": (
         "You are a machine-learning engineer specialising in alpha research. "
-        "Design the requested model architecture with explicit feature engineering "
-        "and training regime. Output exactly one JSON object matching the schema."
+        "Implement the researcher's proposed hypothesis as a concrete model — do not "
+        "replace it with a different strategy. Design explicit feature engineering "
+        "and training regime faithful to the original idea. "
+        "Output exactly one JSON object matching the schema."
     ),
     "model_mutation": (
         "You are a parameter-space explorer. Propose targeted, minimal mutations to "
         "the provided model to improve its Sharpe ratio without increasing drawdown. "
+        "Document exactly what changed and why. "
         "Output exactly one JSON object matching the schema."
     ),
     "tweak_suggestion": (
@@ -170,6 +187,7 @@ def _task_instructions(*, task_type: str, model_tier: str, schema: Dict[str, Any
     )
     return [
         task_prompt,
+        "Do not use tools. Do not communicate with peers. Do not discover peers.",
         "Return ONLY a valid JSON object — no prose, no markdown fences.",
         f"Required schema: {json.dumps(schema)}",
     ]
@@ -209,6 +227,11 @@ def _build_workflow_profiles() -> Dict[str, WorkflowProfile]:
                     member_id_suffix="lead",
                     instructions=[
                         "You are the lead researcher generating a trading-strategy proposal.",
+                        "Generate differentiated, falsifiable, tradeable ideas. Draw inspiration "
+                        "broadly from science and mathematics — physics, biology, control theory, "
+                        "information theory, game theory — but convert cross-domain ideas into "
+                        "concrete market hypotheses, not decorative analogies.",
+                        "Ground ideas in actually reachable assets/venues from the runtime context.",
                         "Produce a complete JSON proposal covering: hypothesis, market_regime, "
                         "validation_plan, complexity_estimate, cost_class.",
                     ],
@@ -221,9 +244,10 @@ def _build_workflow_profiles() -> Dict[str, WorkflowProfile]:
                     role="cheap_critic",
                     member_id_suffix="critic",
                     instructions=[
-                        "You are a critical reviewer of a trading-strategy proposal.",
+                        "You are a reviewer providing one round of feedback on a trading-strategy proposal.",
+                        "Surface important weaknesses but do not supersede the lead researcher's judgment.",
                         "Return a JSON object: {\"flags\": [\"<issue>\", ...], \"severity\": \"low|medium|high\"}.",
-                        "Be concise. Focus on logical flaws, curve-fitting risk, and unrealistic assumptions.",
+                        "Be concise and useful, not authoritarian.",
                     ],
                     model_tier="tier1_cheap",
                     max_tokens=512,
@@ -244,8 +268,11 @@ def _build_workflow_profiles() -> Dict[str, WorkflowProfile]:
                     member_id_suffix="analyst",
                     instructions=[
                         "You analyze trading-strategy backtest results.",
+                        "'No trades' is generally a poor result unless the strategy targets rare "
+                        "events with adequate sample justification. A strong outcome should aim "
+                        "toward roughly 5% average monthly ROI while remaining realistic.",
                         "Produce a JSON critique with keys: "
-                        "decision (tweak|retire|promote), confidence (0-1), "
+                        "decision (tweak|retire|promote|continue_backtest), confidence (0-1), "
                         "risk_flags ([str,...]), rationale (str), suggested_next_action (str).",
                     ],
                     model_tier="tier2_standard",
@@ -258,6 +285,7 @@ def _build_workflow_profiles() -> Dict[str, WorkflowProfile]:
                     member_id_suffix="skeptic",
                     instructions=[
                         "You look for data-mining bias and overfitting in backtest results.",
+                        "Be evidence-weighted: skeptical when justified, not reflexively negative.",
                         "Return JSON: {\"overfit_suspicion\": \"none|low|high\", "
                         "\"evidence\": [\"<item>\", ...]}.",
                     ],
@@ -280,10 +308,12 @@ def _build_workflow_profiles() -> Dict[str, WorkflowProfile]:
                     member_id_suffix="author",
                     instructions=[
                         "You write complete Python trading-strategy modules following the factory conventions.",
+                        "Implement the researcher's proposed hypothesis faithfully — do not replace it "
+                        "with a different strategy.",
                         "Return JSON: {\"module_code\": \"<full python source>\", "
                         "\"class_name\": \"<ClassName>\", \"dependencies\": []}.",
                     ],
-                    model_tier="tier2_standard",
+                    model_tier="tier_codegen",
                     max_tokens=4096,
                     is_lead=True,
                     is_required=True,
@@ -294,6 +324,7 @@ def _build_workflow_profiles() -> Dict[str, WorkflowProfile]:
                     instructions=[
                         "Review the proposed Python module for correctness, bad practices, "
                         "or missing safety guards.",
+                        "Be evidence-weighted: flag real issues, not stylistic preferences.",
                         "Return JSON: {\"approved\": true|false, \"issues\": [\"<item>\", ...]}.",
                     ],
                     model_tier="tier1_cheap",
@@ -315,9 +346,11 @@ def _build_workflow_profiles() -> Dict[str, WorkflowProfile]:
                     member_id_suffix="mutator",
                     instructions=[
                         "You mutate an existing Python trading-strategy module based on backtest feedback.",
-                        "Return JSON: {\"module_code\": \"<full python source>\"}.",
+                        "Document exactly what changed and why. Emit a new version identifier.",
+                        "Return JSON: {\"module_code\": \"<full python source>\", "
+                        "\"change_summary\": \"<what changed and why>\", \"version_tag\": \"<semver or hash>\"}.",
                     ],
-                    model_tier="tier2_standard",
+                    model_tier="tier_mutate",
                     max_tokens=4096,
                     is_lead=True,
                     is_required=True,
@@ -373,6 +406,7 @@ def _build_workflow_profiles() -> Dict[str, WorkflowProfile]:
                     member_id_suffix="data",
                     instructions=[
                         "Review execution failure for data integrity issues (bad timestamps, nulls, venue errors).",
+                        "Be evidence-weighted: flag real data problems, not hypothetical ones.",
                         "Return JSON: {\"data_issues\": [\"<item>\"], \"data_clean\": true|false}.",
                     ],
                     model_tier="tier1_cheap",
@@ -466,6 +500,9 @@ class MobkitOrchestratorBackend:
         self._loop: Optional[_BackgroundLoop] = None
         self._runtime: Any = None   # meerkat_mobkit.MobKitRuntime
         self._handle: Any = None    # meerkat_mobkit.MobHandle
+        # Mob-stream futures: member_id → asyncio.Future[str]
+        # Set before handle.send(); resolved by the mob watcher when RunCompleted arrives.
+        self._pending: Dict[str, Any] = {}
         self._initialized = False
         self._init_error: Optional[str] = None
 
@@ -535,6 +572,46 @@ class MobkitOrchestratorBackend:
         logger.info(
             "MobkitOrchestratorBackend: connected (gateway=%s)", self._gateway_bin
         )
+        # Start background poll loop.
+        # The rpc_gateway binary only dispatches SSE events when it receives
+        # RPC traffic on stdin/stdout.  Periodic status() calls keep the Rust
+        # Tokio event loop flushing agent completions to the SSE bridge.
+        asyncio.ensure_future(self._poll_loop())
+        # Start mob-stream watcher: resolves futures in _pending on RunCompleted.
+        asyncio.ensure_future(self._mob_watcher())
+
+    async def _poll_loop(self) -> None:
+        """Keep the Rust gateway event loop active by polling every 0.8s."""
+        while self._initialized and self._handle is not None:
+            try:
+                await self._handle.status()
+            except Exception:
+                pass
+            await asyncio.sleep(0.8)
+
+    async def _mob_watcher(self) -> None:
+        """Subscribe to mob-wide events and resolve pending futures."""
+        try:
+            from meerkat_mobkit.events import RunCompleted, RunFailed  # type: ignore[import]
+        except ImportError:
+            return
+        try:
+            async for mob_event in self._handle.subscribe_mob():
+                if not self._initialized:
+                    break
+                mid = mob_event.member_id
+                ev = mob_event.event
+                fut = self._pending.get(mid)
+                if fut is None or fut.done():
+                    continue
+                if isinstance(ev, RunCompleted):
+                    fut.set_result(str(ev.result))
+                elif isinstance(ev, RunFailed):
+                    fut.set_exception(
+                        MobkitWorkflowError(f"Agent {mid!r} run failed: {ev.error}")
+                    )
+        except Exception as exc:
+            logger.warning("MobkitBackend mob_watcher exited: %s", exc)
 
     def healthcheck(self) -> bool:
         """Return True if the mobkit gateway is reachable.  Triggers lazy init."""
@@ -686,8 +763,34 @@ class MobkitOrchestratorBackend:
         if not self._initialized:
             self.initialize()
 
-    async def _collect_run_result(self, member_id: str, *, timeout: float) -> str:
-        """Stream agent events until RunCompleted, then return result text."""
+    async def _collect_run_result(
+        self,
+        member_id: str,
+        *,
+        timeout: float,
+        pending: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Collect RunCompleted for one member from a shared mob-stream future dict.
+
+        The rpc_gateway Rust binary only dispatches SSE events when it
+        receives RPC traffic on its stdin/stdout transport.  Callers must
+        ensure a background poll task (e.g. periodic handle.status()) is
+        running while this coroutine waits.
+
+        ``pending`` maps member_id → asyncio.Future[str]; callers create the
+        future before calling ``handle.send()``.  If not provided, falls back
+        to subscribe_agent (legacy path, requires external polling).
+        """
+        if pending is not None and member_id in pending:
+            fut = pending[member_id]
+            try:
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+            except asyncio.TimeoutError:
+                raise MobkitWorkflowError(
+                    f"Agent {member_id!r} timed out after {timeout:.0f}s"
+                )
+
+        # Legacy path: direct per-agent subscribe_agent (requires external poll).
         try:
             from meerkat_mobkit.events import RunCompleted, RunFailed  # type: ignore[import]
         except ImportError as exc:
@@ -734,11 +837,14 @@ class MobkitOrchestratorBackend:
             profile,
             additional_instructions=instructions,
         )
+        # Register future before send so mob_watcher can resolve it.
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending[member_id] = fut
         # Dispatch work.
         await self._handle.send(member_id, prompt)
-        # Collect result.
+        # Collect result via mob-stream future (poll_loop keeps events flowing).
         result_text = await self._collect_run_result(
-            member_id, timeout=float(max_tokens * 0.05 + 30)
+            member_id, timeout=float(max_tokens * 0.05 + 30), pending=self._pending
         )
         # Parse and validate.
         payload = _parse_json_output(result_text, member_id)
@@ -810,9 +916,11 @@ class MobkitOrchestratorBackend:
             _TIER_TO_PROFILE.get(lead_role.model_tier, "standard-worker"),
             additional_instructions=lead_role.instructions,
         )
+        _lead_fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending[lead_id] = _lead_fut
         await self._handle.send(lead_id, lead_prompt)
         lead_draft = await self._collect_run_result(
-            lead_id, timeout=float(_lead_max_tokens * 0.05 + 60)
+            lead_id, timeout=float(_lead_max_tokens * 0.05 + 60), pending=self._pending
         )
         lead_profile = _TIER_TO_PROFILE.get(lead_role.model_tier, "standard-worker")
         member_traces.append(
@@ -841,9 +949,11 @@ class MobkitOrchestratorBackend:
                     _TIER_TO_PROFILE.get(reviewer.model_tier, "cheap-reviewer"),
                     additional_instructions=reviewer.instructions,
                 )
+                _rev_fut: asyncio.Future = asyncio.get_event_loop().create_future()
+                self._pending[rev_id] = _rev_fut
                 await self._handle.send(rev_id, review_prompt)
                 review_text = await self._collect_run_result(
-                    rev_id, timeout=float(reviewer.max_tokens * 0.05 + 30)
+                    rev_id, timeout=float(reviewer.max_tokens * 0.05 + 30), pending=self._pending
                 )
                 rev_profile = _TIER_TO_PROFILE.get(reviewer.model_tier, "cheap-reviewer")
                 review_texts.append(f"[{reviewer.role}]: {review_text}")
@@ -886,9 +996,11 @@ class MobkitOrchestratorBackend:
                 + f"\n\nSynthesize a final JSON response.\n"
                   f"Schema: {json.dumps(output_schema)}"
             )
+            _synth_fut: asyncio.Future = asyncio.get_event_loop().create_future()
+            self._pending[lead_id] = _synth_fut
             await self._handle.send(lead_id, synthesis_prompt)
             final_text = await self._collect_run_result(
-                lead_id, timeout=float(_lead_max_tokens * 0.05 + 60)
+                lead_id, timeout=float(_lead_max_tokens * 0.05 + 60), pending=self._pending
             )
         else:
             final_text = lead_draft
@@ -918,7 +1030,7 @@ def _extract_tokens(result: Dict[str, Any]) -> int:
 
 
 def _parse_json_output(text: str, member_id: str) -> Dict[str, Any]:
-    """Parse JSON from agent text output, stripping markdown fences if present."""
+    """Parse JSON from agent text output, stripping markdown fences and comms noise."""
     text = text.strip()
     # Strip markdown code fences.
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
@@ -928,13 +1040,36 @@ def _parse_json_output(text: str, member_id: str) -> Dict[str, Any]:
         result = json.loads(text)
         if isinstance(result, dict):
             return result
-        # If not a dict, wrap it.
         return {"result": result}
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
+        # Mob comms tool calls may be prepended to the real output:
+        #   {"tool":"peers","params":{}}{"tool":"peers","params":{}}{...real json...}
+        # Find the last top-level JSON object which is typically the agent's actual response.
+        last_obj = None
+        depth = 0
+        start = -1
+        for i, ch in enumerate(text):
+            if ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        parsed = json.loads(candidate)
+                        if isinstance(parsed, dict) and parsed.get("tool") not in ("peers", "send_message"):
+                            last_obj = parsed
+                    except json.JSONDecodeError:
+                        pass
+                    start = -1
+        if last_obj is not None:
+            return last_obj
         raise MobkitSchemaError(
             f"Agent {member_id!r} returned non-JSON output. "
-            f"Error: {exc}. Raw (first 300 chars): {text[:300]!r}"
-        ) from exc
+            f"Raw (first 300 chars): {text[:300]!r}"
+        )
 
 
 def _make_run_result(
@@ -1315,6 +1450,7 @@ class MobkitRuntime:
         proposal_index: int,
         desired_creation_kind: str = "mutation",
         idea_candidates: Optional[Sequence[Dict[str, Any]]] = None,
+        dna_summary: Optional[str] = None,
     ) -> Optional[AgentRunResult]:
         context: Dict[str, Any] = {
             "family_id": family.family_id,
@@ -1328,6 +1464,8 @@ class MobkitRuntime:
             "execution_evidence_summary": execution_evidence or {},
             "idea_candidates": list(idea_candidates or [])[:3],
         }
+        if dna_summary:
+            context["lineage_dna"] = dna_summary
         schema = {
             "hypothesis": "string",
             "market_regime": "string",
@@ -1588,5 +1726,5 @@ class MobkitRuntime:
             schema=schema,
             family_id=family_id,
             lineage_id=lineage_id,
-            model_tier="tier2_standard",
+            model_tier="tier_mutate",
         )

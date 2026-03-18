@@ -5,6 +5,9 @@ __pycache__/
 venv/
 *.pyc
 .env
+.env.staging
+.env.local
+.env.*.local
 logs/
 build/
 

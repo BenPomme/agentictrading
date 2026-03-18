@@ -14,11 +14,18 @@ try:
     # Priority: shell > .env.staging > .env
     # Read both files without touching os.environ, merge with staging winning,
     # then only inject values that are not already set in the shell.
+    # Skip placeholder values of the form <...> so template lines in
+    # .env.staging never override real credentials from .env or the shell.
+    import re as _re
+    _PLACEHOLDER = _re.compile(r"^\s*<[^>]+>\s*$")
+
     _merged: dict = {}
     if _base_env.exists():
         _merged.update(dotenv_values(_base_env))
     if _staging_env.exists():
-        _merged.update(dotenv_values(_staging_env))  # staging overwrites base
+        for _k, _v in dotenv_values(_staging_env).items():
+            if _v is not None and not _PLACEHOLDER.match(_v):
+                _merged[_k] = _v  # staging wins only when value is non-placeholder
     for _k, _v in _merged.items():
         if _k not in os.environ and _v is not None:
             os.environ[_k] = _v
@@ -178,6 +185,10 @@ BF_LOCALE: str = os.getenv("BF_LOCALE", "spain")
 PAPER_TRADING: bool = os.getenv("PAPER_TRADING", "true").lower() == "true"
 INITIAL_BALANCE_EUR: Decimal = Decimal(os.getenv("INITIAL_BALANCE_EUR", "1000.00"))
 STAKE_FRACTION: Decimal = Decimal(os.getenv("STAKE_FRACTION", "0.10"))
+# Per-lineage paper balance for research-factory models (default matches INITIAL_BALANCE_EUR).
+FACTORY_PAPER_LINEAGE_INITIAL_BALANCE: float = float(
+    os.getenv("FACTORY_PAPER_LINEAGE_INITIAL_BALANCE", str(os.getenv("INITIAL_BALANCE_EUR", "1000.00")))
+)
 PAPER_STATE_PATH: str = os.getenv("PAPER_STATE_PATH", "data/state/paper_executor_state.json")
 PAPER_TRADES_LOG_PATH: str = os.getenv("PAPER_TRADES_LOG_PATH", "data/state/paper_trades.jsonl")
 
@@ -398,6 +409,17 @@ FACTORY_BUDGET_FORCE_CHEAP_RATIO: float = float(
 )
 FACTORY_BUDGET_SINGLE_AGENT_RATIO: float = float(
     os.getenv("FACTORY_BUDGET_SINGLE_AGENT_RATIO", "0.90")
+)
+
+# Paper window: venue scope enforcement and holdoff policy.
+FACTORY_PAPER_WINDOW_VENUE_SCOPE: str = os.getenv(
+    "FACTORY_PAPER_WINDOW_VENUE_SCOPE", ""
+).strip().lower()
+FACTORY_PAPER_HOLDOFF_ENABLED: bool = (
+    os.getenv("FACTORY_PAPER_HOLDOFF_ENABLED", "false").lower() == "true"
+)
+FACTORY_FAMILY_MAX_PAPER_ATTEMPTS: int = int(
+    os.getenv("FACTORY_FAMILY_MAX_PAPER_ATTEMPTS", "3")
 )
 
 # Observability output paths.

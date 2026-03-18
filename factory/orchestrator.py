@@ -46,6 +46,7 @@ from factory.experiment_runner import FactoryExperimentRunner
 from factory.experiment_sources import family_model_rankings, portfolio_scorecards
 from factory.goldfish_bridge import GoldfishBridge
 from factory.provenance.goldfish_client import ProvenanceService
+from factory.provenance.dna_extractor import build_family_dna_packet, enrich_dna_from_goldfish
 from factory.idea_intake import all_ideas, annotate_idea_statuses, maybe_run_manual_idea_watch, relevant_ideas_for_family
 from factory.idea_scout import maybe_run_idea_scout
 from factory.promotion import PromotionController
@@ -1196,6 +1197,11 @@ class FactoryOrchestrator:
         budget_sequence = ["incumbent", "adjacent", "moonshot", "incumbent", "adjacent"]
         champion_hypothesis = self.registry.load_hypothesis(champion.lineage_id)
         learning_memory = self.registry.learning_memories(family_id=family.family_id, limit=12)
+        # Build Goldfish DNA packet — compact lineage memory for proposal/mutation
+        dna_packet = build_family_dna_packet(family.family_id, learning_memory)
+        goldfish_thoughts = self.provenance.read_family_thoughts(family.family_id, limit=30)
+        if goldfish_thoughts:
+            dna_packet = enrich_dna_from_goldfish(dna_packet, goldfish_thoughts)
         while len(existing_shadow) < desired_shadow:
             mutation_index = len(lineages_by_family.get(family.family_id, []))
             creation_kind = self._proposal_creation_kind(existing_shadow)
@@ -1214,6 +1220,7 @@ class FactoryOrchestrator:
                 cycle_count=self._cycle_count,
                 proposal_index=mutation_index,
                 desired_creation_kind=creation_kind,
+                dna_summary=dna_packet.as_prompt_text() if not dna_packet.is_empty() else None,
             )
             proposal = (
                 apply_real_agent_proposal(
@@ -1231,6 +1238,7 @@ class FactoryOrchestrator:
                     proposal_index=mutation_index,
                     desired_creation_kind=creation_kind,
                     idea_candidates=idea_candidates,
+                    dna_packet=dna_packet,
                 )
             )
             budget_bucket = proposal.budget_bucket or budget_sequence[(mutation_index - 1) % len(budget_sequence)]
@@ -2823,7 +2831,13 @@ class FactoryOrchestrator:
                 return (True, "betfair_relaxed_walkforward_only")
             return (False, "betfair_no_walkforward")
 
-        # Full gate for Yahoo/Binance families
+        # Sparse venue (Binance): positive ROI is sufficient if fitness_score is missing
+        if "binance" in venues_set and "yahoo" not in venues_set and "alpaca" not in venues_set:
+            roi = float(getattr(walkforward_bundle, "monthly_roi_pct", 0) or 0)
+            if roi > 0:
+                return (True, f"binance_sparse_positive_roi_{roi:.2f}")
+
+        # Full gate for Yahoo/Alpaca families (rich-history venues)
         fitness = float(
             getattr(walkforward_bundle, "fitness_score", 0)
             if hasattr(walkforward_bundle, "fitness_score")
@@ -4922,6 +4936,65 @@ class FactoryOrchestrator:
             net_pnl=monthly_roi,
         )
 
+    @staticmethod
+    def _lineage_portfolio_id(lineage_id: str) -> str:
+        """Return a filesystem-safe portfolio ID scoped to a specific lineage."""
+        safe = lineage_id.replace(":", "__").replace("/", "_").replace(" ", "_")
+        return f"lineage__{safe}"
+
+    def _lineage_paper_state_bundle(
+        self,
+        lineage: LineageRecord,
+        *,
+        stage: str,
+    ) -> Optional[EvaluationBundle]:
+        """Read per-lineage paper state for research-factory lineages.
+
+        Uses a dedicated PortfolioStateStore directory for each lineage so that
+        multiple lineages in the same family never pool their paper P&L,
+        drawdown, or trade count.
+        """
+        portfolio_id = self._lineage_portfolio_id(lineage.lineage_id)
+        initial_balance = float(
+            getattr(config, "INITIAL_BALANCE_EUR", None)
+            or getattr(config, "FACTORY_PAPER_LINEAGE_INITIAL_BALANCE", 1000.0)
+            or 1000.0
+        )
+        # Ensure the per-lineage portfolio directory is initialized
+        store = PortfolioStateStore(portfolio_id)
+        if not store.account_path.exists():
+            # Write a fresh account baseline so the store is readable immediately
+            import json as _json
+            from datetime import datetime as _dt, timezone as _tz
+            store.account_path.parent.mkdir(parents=True, exist_ok=True)
+            store.account_path.write_text(
+                _json.dumps({
+                    "portfolio_id": portfolio_id,
+                    "lineage_id": lineage.lineage_id,
+                    "family_id": lineage.family_id,
+                    "currency": "USD",
+                    "current_balance": initial_balance,
+                    "cash": initial_balance,
+                    "initial_balance": initial_balance,
+                    "realized_pnl": 0.0,
+                    "roi_pct": 0.0,
+                    "drawdown_pct": 0.0,
+                    "peak_equity": initial_balance,
+                    "wins": 0,
+                    "losses": 0,
+                    "trade_count": 0,
+                    "last_updated": _dt.now(_tz.utc).isoformat(),
+                    "positions": [],
+                }, indent=2)
+            )
+        return self._portfolio_state_bundle(
+            lineage,
+            portfolio_id=portfolio_id,
+            stage=stage,
+            capacity_score=0.50,
+            regime_robustness=0.50,
+        )
+
     def _portfolio_state_bundle(
         self,
         lineage: LineageRecord,
@@ -5159,6 +5232,33 @@ class FactoryOrchestrator:
                 )
         else:
             bundles.extend(experiment_bundles)
+            # Per-lineage paper state for research-factory models.
+            # When a lineage reaches paper stage, read its own isolated balance
+            # and P&L rather than pooling with other lineages in the same family.
+            if lineage.current_stage in {
+                PromotionStage.PAPER.value,
+                PromotionStage.SHADOW.value,
+            }:
+                paper_bundle = self._lineage_paper_state_bundle(
+                    lineage,
+                    stage=lineage.current_stage,
+                )
+                if paper_bundle is not None:
+                    shadow_bundle = self._blend_runtime_and_offline_bundle(
+                        lineage=lineage,
+                        runtime_bundle=paper_bundle,
+                        walkforward_bundle=experiment_by_stage.get(EvaluationStage.WALKFORWARD.value),
+                        stress_bundle=experiment_by_stage.get(EvaluationStage.STRESS.value),
+                        stage=EvaluationStage.SHADOW.value,
+                    )
+                    paper_eval_bundle = self._blend_runtime_and_offline_bundle(
+                        lineage=lineage,
+                        runtime_bundle=paper_bundle,
+                        walkforward_bundle=experiment_by_stage.get(EvaluationStage.WALKFORWARD.value),
+                        stress_bundle=experiment_by_stage.get(EvaluationStage.STRESS.value),
+                        stage=EvaluationStage.PAPER.value,
+                    )
+                    bundles.extend([shadow_bundle, paper_eval_bundle])
         if lineage.family_id not in {
             "betfair_prediction_value_league",
             "binance_funding_contrarian",
@@ -5355,7 +5455,15 @@ class FactoryOrchestrator:
                 recent_actions,
                 f"[cycle {self._cycle_count}] Runtime mode cost_saver kept deterministic evaluation active while token-consuming agentic work stayed paused.",
             )
+        # Venue scope enforcement: when FACTORY_PAPER_WINDOW_VENUE_SCOPE is set,
+        # only process families whose target_venues overlap the scope.
+        _venue_scope = str(getattr(config, "FACTORY_PAPER_WINDOW_VENUE_SCOPE", "") or "").strip().lower()
+        _venue_scope_set = set(_venue_scope.split(",")) if _venue_scope else set()
         for family in families:
+            if _venue_scope_set:
+                family_venues = {str(v).lower() for v in family.target_venues}
+                if not family_venues.issubset(_venue_scope_set):
+                    continue  # skip families that target venues outside scope
             self._seed_challengers(
                 family,
                 lineages_by_family,
@@ -5383,7 +5491,20 @@ class FactoryOrchestrator:
                 incumbent_latest = self.registry.latest_evaluation_by_stage(family.champion_lineage_id)
                 incumbent_walkforward_bundle = incumbent_latest.get(EvaluationStage.WALKFORWARD.value)
                 incumbent_paper_bundle = incumbent_latest.get(EvaluationStage.PAPER.value)
-            if family is not None and lineage.active:
+            # Paper holdoff: skip agentic compute for healthy paper-stage lineages.
+            _paper_holdoff = bool(getattr(config, "FACTORY_PAPER_HOLDOFF_ENABLED", False))
+            _in_paper_holdoff = (
+                _paper_holdoff
+                and lineage.active
+                and lineage.current_stage == PromotionStage.PAPER.value
+                and lineage.iteration_status not in {"failed", "retiring", "review_requested_rework"}
+            )
+            # Venue scope enforcement for lineage-level agentic work
+            _lineage_in_scope = True
+            if _venue_scope_set and lineage.active:
+                lineage_venues = {str(v).lower() for v in getattr(lineage, "target_venues", [])}
+                _lineage_in_scope = lineage_venues.issubset(_venue_scope_set)
+            if family is not None and lineage.active and not _in_paper_holdoff and _lineage_in_scope:
                 self._maybe_run_debug_agent(
                     family,
                     lineage,

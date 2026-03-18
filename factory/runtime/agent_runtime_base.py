@@ -45,6 +45,7 @@ class AgentRuntime(Protocol):
         proposal_index: int,
         desired_creation_kind: str = "mutation",
         idea_candidates: Optional[Sequence[Dict[str, Any]]] = None,
+        dna_summary: Optional[str] = None,
     ) -> Optional[AgentRunResult]: ...
 
     def generate_family_proposal(

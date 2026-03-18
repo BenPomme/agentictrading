@@ -1,0 +1,61 @@
+{
+  "family_id": "funding_term_structure_dislocation",
+  "label": "Funding Term Structure Dislocation",
+  "thesis": "We believe we can create alpha by trading short-horizon dislocations between Binance perpetual funding expectations and nearby dated futures basis, capturing cases where perpetual crowding overshoots while the local term structure implies incomplete transmission or reversal.",
+  "target_portfolios": [
+    "research_factory"
+  ],
+  "target_venues": [
+    "binance"
+  ],
+  "primary_connector_ids": [
+    "binance_core"
+  ],
+  "champion_lineage_id": "funding_term_structure_dislocation:challenger:7",
+  "shadow_challenger_ids": [
+    "funding_term_structure_dislocation:challenger:10",
+    "funding_term_structure_dislocation:challenger:1",
+    "funding_term_structure_dislocation:challenger:9",
+    "funding_term_structure_dislocation:challenger:6",
+    "funding_term_structure_dislocation:challenger:8"
+  ],
+  "paper_challenger_ids": [],
+  "budget_split": {
+    "incumbent": 70.0,
+    "adjacent": 20.0,
+    "moonshot": 10.0
+  },
+  "queue_stage": "walkforward",
+  "explainer": "This is a new family because it does not simply fade an extreme funding print in isolation. Instead, it models the relative shape between the perp-implied carry state and the front-end futures curve on the same venue. The core hypothesis is that temporary leverage crowding first appears in perpetuals, but the adjustment into quarterly or next-dated futures is uneven. When funding is unusually positive yet the annualized basis of nearby futures is not confirming, the perp may be overextended and vulnerable to mean reversion. Symmetrically, deeply negative funding with muted or lagging negative basis may indicate forced shorting in the perp that later normalizes. The family is bounded and local-first because all required observations can be paper-collected from Binance market data for BTCUSDT, ETHUSDT, and SOLUSDT using only venue-native perp and dated futures instruments. Initial incubation can focus on event studies around funding windows, cross-sectional ranking by dislocation score, and simple paper portfolios that enter around funding observation times and exit over the next 1 to 3 funding intervals.",
+  "origin": "real_agent_openai_api",
+  "source_idea_id": "idea_001",
+  "incubation_status": "incubating",
+  "incubation_cycle_created": 0,
+  "incubation_notes": [
+    "Research tier: deep_review.",
+    "Construct a dislocation score using current and recent 8-hour funding rates versus annualized basis on the nearest liquid dated futures contract for the same underlying.",
+    "Start with BTCUSDT, ETHUSDT, and SOLUSDT and only include symbols with both perp and sufficiently liquid dated futures history.",
+    "Run event studies around each funding timestamp to test whether basis-confirmed versus basis-divergent funding extremes have materially different forward returns.",
+    "Test holding windows of 8h, 16h, and 24h, with and without waiting for the next funding print confirmation.",
+    "Compare absolute threshold rules against cross-sectional z-score ranking of dislocations to avoid hard-coding one funding level across assets.",
+    "Keep the first incubator paper-only and directionally simple: long perp on negative funding/basis underconfirmation, short perp on positive funding/basis underconfirmation.",
+    "Add a market-neutral paper variant that pairs perp exposure against dated futures to isolate convergence in carry structure rather than outright price direction.",
+    "Measure sensitivity to major event periods, contract roll windows, and hours immediately before settlement to avoid spurious seasonality.",
+    "Require local data quality checks for symbol mapping, annualization conventions, missing funding prints, and futures basis calculations before any promotion discussion.",
+    "provider=openai_api",
+    "model=gpt-5.4",
+    "task_type=family_bootstrap_generation",
+    "task_class=deep_review",
+    "multi_agent_requested=false"
+  ],
+  "incubation_decided_at": null,
+  "incubation_decision_reason": null,
+  "last_cycle_at": "2026-03-18T13:01:57.769102+00:00",
+  "retired_lineage_ids": [
+    "funding_term_structure_dislocation:challenger:2",
+    "funding_term_structure_dislocation:challenger:3",
+    "funding_term_structure_dislocation:challenger:4",
+    "funding_term_structure_dislocation:challenger:5",
+    "funding_term_structure_dislocation:champion"
+  ]
+}

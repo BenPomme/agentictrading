@@ -421,7 +421,7 @@ class TestWorkflowProfiles:
         assert "tweak_suggestion" in single
 
     def test_all_roles_have_valid_model_tier(self):
-        valid_tiers = {"tier1_cheap", "tier2_standard", "tier3_lead"}
+        valid_tiers = {"tier1_cheap", "tier2_standard", "tier3_lead", "tier_codegen", "tier_mutate"}
         for name, profile in WORKFLOW_PROFILES.items():
             for role in profile.member_roles:
                 assert role.model_tier in valid_tiers, (

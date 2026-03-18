@@ -7,9 +7,21 @@
 #   tier1_cheap    → cheap-reviewer
 #   tier2_standard → standard-worker
 #   tier3_lead     → lead-researcher
+#   tier_codegen   → code-author
+#   tier_mutate    → code-mutator
 #
 # All profiles require [profiles.<name>.tools] comms = true so mob meerkats
 # can communicate (required for ensure_member() to succeed).
+#
+# STAGING PHASE: OpenAI-only model mapping.
+# Gateway catalog (via handle.models_catalog()) currently exposes:
+#   openai:    gpt-5.2 (recommended), gpt-5.2-pro (supported)
+#   anthropic: claude-opus-4-6, claude-sonnet-4-6, claude-sonnet-4-5, claude-opus-4-5
+#   gemini:    gemini-3-flash-preview, gemini-3-pro-preview
+#
+# Multi-provider intent preserved for post-staging:
+#   cheap-reviewer   → gemini-3-flash-preview  (when GOOGLE_API_KEY validated)
+#   lead-researcher  → claude-sonnet-4-6        (when ANTHROPIC_API_KEY validated)
 
 [mob]
 id = "agentictrading-factory"
@@ -19,14 +31,16 @@ id = "agentictrading-factory"
 # ---------------------------------------------------------------------------
 
 # tier1_cheap — cheap reviewer / fast critique pass
+# external_addressable=true required: production _async_mob_workflow sends
+# messages to reviewers via handle.send(); false blocks the RPC gateway.
 [profiles.cheap-reviewer]
-model = "gpt-4.1-mini"
-external_addressable = false
+model = "gpt-5.2"
+external_addressable = true
 
 [profiles.cheap-reviewer.tools]
 comms = true
 
-# tier2_standard — standard strategy codegen and evaluation worker
+# tier2_standard — standard strategy worker
 [profiles.standard-worker]
 model = "gpt-5.2"
 external_addressable = true
@@ -35,6 +49,9 @@ external_addressable = true
 comms = true
 
 # tier3_lead — lead analyst; generates theses and synthesises reviewer feedback
+# gpt-5.2-pro causes consistent timeouts in mob workflows (gateway event-delivery).
+# Using gpt-5.2 (proven stable) until gateway reliability improves.
+# Target: gpt-5.2-pro once event delivery is fixed.
 [profiles.lead-researcher]
 model = "gpt-5.2"
 external_addressable = true
@@ -42,21 +59,31 @@ external_addressable = true
 [profiles.lead-researcher.tools]
 comms = true
 
-# ---------------------------------------------------------------------------
-# Factory-specific extended profiles (used by named workflow profiles)
-# ---------------------------------------------------------------------------
-
-# Code generation specialist — kept alive across cycle to amortise warm-up
-[profiles.codegen-specialist]
+# tier_codegen — code generation specialist for strategy model design
+[profiles.code-author]
 model = "gpt-5.2"
 external_addressable = true
 
-[profiles.codegen-specialist.tools]
+[profiles.code-author.tools]
 comms = true
+
+# tier_mutate — targeted mutation/tweak worker
+# external_addressable=true required: mutate_model._run_single uses
+# _async_single_member which calls handle.send() directly.
+[profiles.code-mutator]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.code-mutator.tools]
+comms = true
+
+# ---------------------------------------------------------------------------
+# Extended profiles
+# ---------------------------------------------------------------------------
 
 # Deterministic evaluator — no LLM required; profile exists for lifecycle tracking
 [profiles.deterministic-evaluator]
-model = "gpt-4.1-mini"
+model = "gpt-5.2"
 external_addressable = false
 
 [profiles.deterministic-evaluator.tools]

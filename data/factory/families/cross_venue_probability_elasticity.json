@@ -1,0 +1,83 @@
+{
+  "family_id": "cross_venue_probability_elasticity",
+  "label": "Cross-Venue Probability Elasticity",
+  "thesis": "We believe we can create alpha by modeling the nonlinear elasticity between centralized exchange spot returns and delayed repricing in binary prediction markets, then trading only when the prediction market's implied probability surface underreacts relative to a locally estimated mapping from underlying price shocks to contract fair value.",
+  "target_portfolios": [
+    "research_factory"
+  ],
+  "target_venues": [
+    "polymarket",
+    "binance"
+  ],
+  "primary_connector_ids": [
+    "polymarket_core",
+    "polymarket_history",
+    "binance_core"
+  ],
+  "champion_lineage_id": "cross_venue_probability_elasticity:challenger:29",
+  "shadow_challenger_ids": [],
+  "paper_challenger_ids": [],
+  "budget_split": {
+    "incumbent": 70.0,
+    "adjacent": 20.0,
+    "moonshot": 10.0
+  },
+  "queue_stage": "walkforward",
+  "explainer": "This family is not a simple lag-arbitrage trigger on raw price moves. It treats prediction market contracts as bounded probability instruments whose response to underlying spot moves depends on contract moneyness, time-to-resolution, distance from payout threshold, and local market liquidity. The core research object is a local response model: when Binance BTC spot moves, how should a specific Polymarket BTC contract's implied probability change over the next 10 to 180 seconds? The strategy family seeks edges where observed Polymarket repricing is materially smaller or slower than the model-implied repricing, after accounting for spread, fee assumptions, and bounded payoff geometry. This creates a distinct family centered on cross-venue probability elasticity estimation rather than generic latency arbitrage.",
+  "origin": "real_agent_openai_api",
+  "source_idea_id": "idea_002",
+  "incubation_status": "incubating",
+  "incubation_cycle_created": 0,
+  "incubation_notes": [
+    "Research tier is deep_review and should remain paper-only during incubation.",
+    "Start with a single bounded contract universe: BTC-linked Polymarket contracts with clearly machine-readable rules and near-term resolution windows.",
+    "Build local historical event-time datasets aligning Binance spot ticks with Polymarket order book and trade updates at sub-minute granularity.",
+    "Estimate contract-specific response curves using features such as spot return magnitude, direction, recent volatility, time-to-expiry, current implied probability, and distance to salient strike or threshold language in contract rules.",
+    "Define candidate entry signals as residual mispricing between observed Polymarket probability and model-implied probability after a Binance move, with residual persistence thresholds rather than fixed move thresholds.",
+    "Constrain exits to simple incubatable rules: convergence to modeled fair value, timeout, or adverse spot continuation beyond residual tolerance.",
+    "Paper assumptions must include Polymarket spread, taker fee assumptions if applicable, slippage haircuts, and stale quote filtering.",
+    "Explicitly test whether apparent edge survives rule ambiguity, market halts, oracle timing, and resolution-specific jumps that are unique to prediction contracts.",
+    "Reject samples where contract settlement semantics are not cleanly linked to Binance BTC spot behavior, to avoid false lead-lag conclusions.",
+    "Use local-first backtesting with walk-forward validation by contract cohort and date block to separate structural elasticity from overfit contract-specific heuristics.",
+    "Do not assume executable live arbitrage, borrowing, or inventory netting across venues; this family should incubate as directional paper trades on the prediction venue conditioned on external spot information.",
+    "Primary failure mode to test is that observed lag is just compensation for contract design frictions, low depth, or event-risk asymmetry rather than mispricing.",
+    "provider=openai_api",
+    "model=gpt-5.4",
+    "task_type=family_bootstrap_generation",
+    "task_class=deep_review",
+    "multi_agent_requested=false"
+  ],
+  "incubation_decided_at": null,
+  "incubation_decision_reason": null,
+  "last_cycle_at": "2026-03-18T13:01:57.742215+00:00",
+  "retired_lineage_ids": [
+    "cross_venue_probability_elasticity:challenger:1",
+    "cross_venue_probability_elasticity:challenger:12",
+    "cross_venue_probability_elasticity:challenger:13",
+    "cross_venue_probability_elasticity:challenger:14",
+    "cross_venue_probability_elasticity:challenger:15",
+    "cross_venue_probability_elasticity:challenger:16",
+    "cross_venue_probability_elasticity:challenger:17",
+    "cross_venue_probability_elasticity:challenger:18",
+    "cross_venue_probability_elasticity:challenger:19",
+    "cross_venue_probability_elasticity:challenger:2",
+    "cross_venue_probability_elasticity:challenger:20",
+    "cross_venue_probability_elasticity:challenger:21",
+    "cross_venue_probability_elasticity:challenger:22",
+    "cross_venue_probability_elasticity:challenger:23",
+    "cross_venue_probability_elasticity:challenger:24",
+    "cross_venue_probability_elasticity:challenger:25",
+    "cross_venue_probability_elasticity:challenger:26",
+    "cross_venue_probability_elasticity:challenger:27",
+    "cross_venue_probability_elasticity:challenger:28",
+    "cross_venue_probability_elasticity:challenger:3",
+    "cross_venue_probability_elasticity:challenger:30",
+    "cross_venue_probability_elasticity:challenger:31",
+    "cross_venue_probability_elasticity:challenger:4",
+    "cross_venue_probability_elasticity:challenger:5",
+    "cross_venue_probability_elasticity:challenger:6",
+    "cross_venue_probability_elasticity:challenger:7",
+    "cross_venue_probability_elasticity:challenger:9",
+    "cross_venue_probability_elasticity:champion"
+  ]
+}

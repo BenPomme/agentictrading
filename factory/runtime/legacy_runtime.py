@@ -58,6 +58,7 @@ class LegacyRuntime:
         proposal_index: int,
         desired_creation_kind: str = "mutation",
         idea_candidates: Optional[Sequence[Dict[str, Any]]] = None,
+        dna_summary: Optional[str] = None,
     ) -> Optional[AgentRunResult]:
         return self._inner.generate_proposal(
             family=family,
@@ -69,6 +70,7 @@ class LegacyRuntime:
             proposal_index=proposal_index,
             desired_creation_kind=desired_creation_kind,
             idea_candidates=idea_candidates,
+            dna_summary=dna_summary,
         )
 
     def generate_family_proposal(

@@ -1,0 +1,62 @@
+{
+  "family_id": "liquidation_rebound_absorption",
+  "label": "Liquidation Rebound Absorption",
+  "thesis": "We believe we can create alpha by identifying forced-deleveraging episodes where open interest collapses faster than price continues to trend, then trading the subsequent short-horizon rebound or stabilization once liquidation pressure is absorbed and funding normalizes.",
+  "target_portfolios": [
+    "research_factory"
+  ],
+  "target_venues": [
+    "binance"
+  ],
+  "primary_connector_ids": [
+    "binance_core"
+  ],
+  "champion_lineage_id": "liquidation_rebound_absorption:challenger:12",
+  "shadow_challenger_ids": [
+    "liquidation_rebound_absorption:challenger:9",
+    "liquidation_rebound_absorption:challenger:11",
+    "liquidation_rebound_absorption:challenger:8",
+    "liquidation_rebound_absorption:challenger:4",
+    "liquidation_rebound_absorption:challenger:7"
+  ],
+  "paper_challenger_ids": [
+    "liquidation_rebound_absorption:challenger:10"
+  ],
+  "budget_split": {
+    "incumbent": 70.0,
+    "adjacent": 20.0,
+    "moonshot": 10.0
+  },
+  "queue_stage": "walkforward",
+  "explainer": "This is a new family centered on post-cascade absorption rather than simple continuation on open-interest decline. The core hypothesis is that liquidation cascades create a temporary flow imbalance: leveraged positions are forcibly closed, open interest contracts sharply, and price initially overshoots. Once the deleveraging flow is largely exhausted, marginal selling pressure falls faster than realized volatility, creating a bounded opportunity for mean reversion or range stabilization. The family uses only local-first, incubatable signals from Binance perpetuals such as rolling open-interest change, funding-rate convergence toward zero, price displacement versus recent realized volatility, and evidence of decelerating downside impulse. Initial research should focus on BTCUSDT, ETHUSDT, and SOLUSDT perpetuals, compare continuation versus rebound regimes, and test whether the edge is strongest after large OI contraction coincides with diminishing incremental price impact.",
+  "origin": "real_agent_openai_api",
+  "source_idea_id": "idea_004",
+  "incubation_status": "incubating",
+  "incubation_cycle_created": 0,
+  "incubation_notes": [
+    "Bound the family to paper-only research on Binance perpetuals with no live deployment assumptions.",
+    "Start with event studies around 4-hour windows where open interest falls materially and funding moves toward neutral.",
+    "Test whether rebound alpha depends on price overshoot relative to trailing realized volatility rather than raw OI drop alone.",
+    "Include regime labeling for continuation, dead-cat bounce, and durable stabilization to avoid forcing one outcome.",
+    "Use local historical data snapshots first; avoid any dependency on unsupported liquidation-feed permissions.",
+    "Prefer small instrument set initially: BTCUSDT, ETHUSDT, SOLUSDT.",
+    "Research tier is deep_review, so require robustness checks across volatility regimes, funding environments, and event clustering.",
+    "Key falsification test: if OI collapse events do not show measurable post-event convexity in returns after accounting for volatility, retire the family early.",
+    "provider=openai_api",
+    "model=gpt-5.4",
+    "task_type=family_bootstrap_generation",
+    "task_class=deep_review",
+    "multi_agent_requested=false"
+  ],
+  "incubation_decided_at": null,
+  "incubation_decision_reason": null,
+  "last_cycle_at": "2026-03-18T13:01:57.799399+00:00",
+  "retired_lineage_ids": [
+    "liquidation_rebound_absorption:challenger:1",
+    "liquidation_rebound_absorption:challenger:2",
+    "liquidation_rebound_absorption:challenger:3",
+    "liquidation_rebound_absorption:challenger:5",
+    "liquidation_rebound_absorption:challenger:6",
+    "liquidation_rebound_absorption:champion"
+  ]
+}

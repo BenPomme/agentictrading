@@ -82,12 +82,31 @@ class StagingGuards:
 
     @property
     def is_safe_for_preflight(self) -> bool:
-        """True when all hard safety constraints for first bring-up are met."""
+        """True when all hard safety constraints for first bring-up are met.
+
+        Note: this is the *pre-paper* safety check. Once paper autonomy is
+        enabled, use ``is_safe_for_paper_autonomy`` instead.
+        """
         return (
             self.live_trading_blocked
             and not self.paper_trading_enabled
             and not self.allow_autonomous_paper_promotion
             and self.max_active_families <= 3
+            and self.max_challengers_per_family <= 3
+        )
+
+    @property
+    def is_safe_for_paper_autonomy(self) -> bool:
+        """True when paper-autonomous mode is safely configured.
+
+        Requires: live trading blocked, paper trading enabled,
+        autonomous paper promotion enabled, scope caps respected.
+        """
+        return (
+            self.live_trading_blocked
+            and self.paper_trading_enabled
+            and self.allow_autonomous_paper_promotion
+            and self.max_active_families <= 5
             and self.max_challengers_per_family <= 3
         )
 
@@ -134,6 +153,7 @@ class StagingGuards:
                 "promotion_report_path": self.promotion_report_path,
             },
             "is_safe_for_preflight": self.is_safe_for_preflight,
+            "is_safe_for_paper_autonomy": self.is_safe_for_paper_autonomy,
         }
 
 

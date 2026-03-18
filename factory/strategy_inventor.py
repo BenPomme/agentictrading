@@ -7,6 +7,7 @@ import re
 from typing import Any, Dict, List, Sequence
 
 from factory.contracts import FactoryFamily, LearningMemoryEntry, MutationBounds, ResearchHypothesis, StrategyGenome
+from factory.provenance.dna_extractor import FamilyDNAPacket
 
 
 @dataclass(frozen=True)
@@ -303,6 +304,7 @@ class ScientificStrategyInventor:
         proposal_index: int,
         desired_creation_kind: str = "mutation",
         idea_candidates: Sequence[Dict[str, Any]] | None = None,
+        dna_packet: "FamilyDNAPacket | None" = None,
     ) -> ScientificAgentProposal:
         swarms = list(_FAMILY_SWARMS.get(family.family_id) or [["econometrics", "microstructure", "information_theory"]])
         recent_signatures = {
@@ -381,12 +383,16 @@ class ScientificStrategyInventor:
             f"{', '.join(role.lower() for role in collaborator_roles)} to test "
             f"{'; '.join(thesis_parts)}."
         )
-        memory_hint = self._memory_hint(learning_memory)
+        memory_hint = self._memory_hint(learning_memory, dna_packet=dna_packet)
         notes = [
             f"proposal_kind={desired_creation_kind}",
             f"lead_agent={lead_profile.role}",
             f"collaborators={','.join(collaborator_roles) or 'none'}",
         ]
+        if dna_packet and not dna_packet.is_empty():
+            dna_text = dna_packet.as_prompt_text()
+            if dna_text:
+                notes.append(dna_text)
         selected_idea = dict((list(idea_candidates or []) or [None])[0] or {})
         if selected_idea.get("idea_id"):
             notes.append(f"source_idea_id={selected_idea['idea_id']}")
@@ -442,13 +448,28 @@ class ScientificStrategyInventor:
             return "adjacent" if budget_split.get("adjacent", 0.0) > 0.0 else "incumbent"
         return "incumbent"
 
-    def _memory_hint(self, learning_memory: Sequence[LearningMemoryEntry]) -> str:
-        if not learning_memory:
-            return ""
-        latest = learning_memory[-1]
-        if latest.recommendations:
-            return f"memory_hint={latest.recommendations[0]}"
-        return f"memory_hint=avoid repeating {','.join(latest.scientific_domains)} without a structural change"
+    def _memory_hint(
+        self,
+        learning_memory: Sequence[LearningMemoryEntry],
+        *,
+        dna_packet: "FamilyDNAPacket | None" = None,
+    ) -> str:
+        parts: List[str] = []
+        if learning_memory:
+            latest = learning_memory[-1]
+            if latest.recommendations:
+                parts.append(f"memory_hint={latest.recommendations[0]}")
+            else:
+                parts.append(
+                    f"memory_hint=avoid repeating {','.join(latest.scientific_domains)} "
+                    "without a structural change"
+                )
+        if dna_packet and not dna_packet.is_empty():
+            if dna_packet.dominant_failure_pattern():
+                parts.append(f"dna_top_failure={dna_packet.dominant_failure_pattern()}")
+            if dna_packet.best_known_roi() > 0:
+                parts.append(f"dna_best_roi={dna_packet.best_known_roi():.1f}%")
+        return " | ".join(parts) if parts else ""
 
     def _memory_adjustments(self, learning_memory: Sequence[LearningMemoryEntry]) -> Dict[str, Any]:
         edge_bump = 0.0

@@ -304,14 +304,39 @@ class GoldfishClient:
         workspace_id: str,
         limit: int = 50,
     ) -> List[Dict[str, Any]]:
-        """Return recent records for a workspace."""
+        """Return recent experiment records for a workspace."""
         try:
             result = self._call_tool("list_history", workspace=workspace_id, limit=limit)
+            # The daemon returns {"workspace": str, "records": [...], "total": int, "has_more": bool}.
+            # Extract the records list; fall back to wrapping non-dict results.
+            if isinstance(result, dict):
+                return list(result.get("records", []))
             return list(result or [])
         except GoldfishUnavailableError:
             raise
         except Exception as exc:
             raise GoldfishError(f"list_history({workspace_id!r}) failed: {exc}") from exc
+
+    def list_thoughts(
+        self,
+        *,
+        workspace_id: str,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Return logged thoughts from the workspace audit trail.
+
+        log_thought() writes to the audit trail, not to experiment records.
+        Use this method (not list_history) to verify that log_thought writes persisted.
+        """
+        try:
+            result = self._call_tool("get_workspace_thoughts", workspace=workspace_id, limit=limit)
+            if isinstance(result, dict):
+                return list(result.get("thoughts", result.get("records", [])))
+            return list(result or [])
+        except GoldfishUnavailableError:
+            raise
+        except Exception as exc:
+            raise GoldfishError(f"list_thoughts({workspace_id!r}) failed: {exc}") from exc
 
     # ------------------------------------------------------------------
     # Tags and notes
@@ -407,6 +432,9 @@ class NullGoldfishClient:
 
     def tag_record(self, *, record_id: str, workspace_id: str, tags: List[str]) -> None:
         logger.debug("NullGoldfishClient: tag_record(%s, %s) (provenance disabled)", record_id, tags)
+
+    def list_thoughts(self, *, workspace_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        return []
 
     def log_thought(self, *, workspace_id: str, thought: str, metadata=None) -> None:
         logger.debug("NullGoldfishClient: log_thought (provenance disabled)")
@@ -510,6 +538,24 @@ class ProvenanceService:
             "last_write_time": self._last_write_time,
             "last_error": self._last_error,
         }
+
+    def read_family_thoughts(
+        self,
+        family_id: str,
+        *,
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """Read Goldfish thought records for a family workspace.
+
+        Returns the raw thought list. Empty list if Goldfish is disabled,
+        unavailable, or returns no thoughts. Never raises.
+        """
+        if not self._enabled:
+            return []
+        try:
+            return self._client.list_thoughts(workspace_id=family_id, limit=limit)
+        except Exception:
+            return []
 
     # ------------------------------------------------------------------
     # Domain-level provenance methods

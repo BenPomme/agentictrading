@@ -1,0 +1,34 @@
+{
+  "as_of": "2026-03-18T09:31:14.995415+00:00",
+  "operation": "paper_unvalidated_family_revival",
+  "candidates_found": 2,
+  "revivals_executed": 2,
+  "results": [
+    {
+      "lineage_id": "funding_term_structure_dislocation:champion",
+      "family_id": "funding_term_structure_dislocation",
+      "old_status": "retired",
+      "new_status": "revived_for_paper",
+      "old_stage": "walkforward",
+      "new_stage": "walkforward",
+      "probationary": false,
+      "best_roi": 5.828306264100139,
+      "best_trades": 14,
+      "revival_reason": "Positive backtest ROI (5.83%), 14 trades, never paper tested. Retired by TTL, not by evidence failure.",
+      "revived_at": "2026-03-18T09:31:14.994853+00:00"
+    },
+    {
+      "lineage_id": "liquidation_rebound_absorption:champion",
+      "family_id": "liquidation_rebound_absorption",
+      "old_status": "retired",
+      "new_status": "revived_for_paper",
+      "old_stage": "walkforward",
+      "new_stage": "walkforward",
+      "probationary": true,
+      "best_roi": 295.1172,
+      "best_trades": 417,
+      "revival_reason": "High backtest ROI (289%) likely inflated but 417 trades shows signal. Never paper tested. Retired by TTL. Probationary: paper is the truth test.",
+      "revived_at": "2026-03-18T09:31:14.995385+00:00"
+    }
+  ]
+}
