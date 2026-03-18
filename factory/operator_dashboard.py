@@ -617,6 +617,10 @@ def _portfolio_dirs() -> List[Path]:
     tracked = [item.strip() for item in tracked_raw.split(",") if item.strip()]
     if tracked:
         dirs = [root / name for name in tracked if (root / name).is_dir()]
+        # Also include lineage-scoped paper portfolios (lineage__*) for Paper Models visibility
+        for lineage_dir in sorted(root.glob("lineage__*")):
+            if lineage_dir.is_dir() and lineage_dir not in dirs:
+                dirs.append(lineage_dir)
         return sorted(dirs)
     return sorted(path for path in root.iterdir() if path.is_dir())
 

@@ -130,7 +130,7 @@ export function FactoryHealthPage({ snapshot, snapshotV2 }: Props) {
       </ErrorBoundary>
 
       {/* ── Execution bridge health ── */}
-      {bridge && (
+      {bridge != null && (
         <SectionPanel
           title="Execution Bridge"
           tag={bridgeHealthy ? 'healthy' : 'gap detected'}
@@ -138,24 +138,24 @@ export function FactoryHealthPage({ snapshot, snapshotV2 }: Props) {
         >
           <div className="exec-bridge">
             <div
-              className={`exec-bridge-card${bridge.running_portfolio_count < bridge.desired_portfolio_count ? ' exec-bridge-card--warn' : ' exec-bridge-card--ok'}`}
+              className={`exec-bridge-card${(bridge.running_portfolio_count ?? 0) < (bridge.desired_portfolio_count ?? 0) ? ' exec-bridge-card--warn' : ' exec-bridge-card--ok'}`}
             >
               <span className="exec-bridge-card__label">Running / Desired</span>
               <span className="exec-bridge-card__value">
-                {bridge.running_portfolio_count} / {bridge.desired_portfolio_count}
+                {bridge.running_portfolio_count ?? 0} / {bridge.desired_portfolio_count ?? 0}
               </span>
             </div>
             <div className="exec-bridge-card">
               <span className="exec-bridge-card__label">Runtime mode</span>
-              <span className="exec-bridge-card__value">{bridge.runtime_mode}</span>
+              <span className="exec-bridge-card__value">{bridge.runtime_mode ?? '—'}</span>
             </div>
             <div className="exec-bridge-card">
               <span className="exec-bridge-card__label">Auto-start</span>
-              <span className={`exec-bridge-card__value${bridge.auto_start_enabled ? '' : ''}`}>
+              <span className="exec-bridge-card__value">
                 {bridge.auto_start_enabled ? 'enabled' : 'disabled'}
               </span>
             </div>
-            {bridge.suppressed_portfolio_count > 0 && (
+            {(bridge.suppressed_portfolio_count ?? 0) > 0 && (
               <div className="exec-bridge-card exec-bridge-card--warn">
                 <span className="exec-bridge-card__label">Suppressed</span>
                 <span className="exec-bridge-card__value">

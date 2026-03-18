@@ -421,6 +421,9 @@ FACTORY_PAPER_HOLDOFF_ENABLED: bool = (
 FACTORY_FAMILY_MAX_PAPER_ATTEMPTS: int = int(
     os.getenv("FACTORY_FAMILY_MAX_PAPER_ATTEMPTS", "3")
 )
+FACTORY_MAX_ACTIVE_LINEAGES_PER_FAMILY: int = int(
+    os.getenv("FACTORY_MAX_ACTIVE_LINEAGES_PER_FAMILY", "10")
+)
 
 # Observability output paths.
 FACTORY_LOG_LEVEL: str = os.getenv("FACTORY_LOG_LEVEL", "INFO").strip().upper()

@@ -35,9 +35,20 @@ function resolveCards(
           : undefined
     : undefined;
 
-  const pnl = execution?.realized_pnl_total;
-  const pnlAccent = pnl != null ? (pnl >= 0 ? 'ok' : 'crit') : undefined;
-  const pnlClass = pnl != null ? (pnl >= 0 ? 'kpi__value--positive' : 'kpi__value--negative') : undefined;
+  // Paper P&L: sum realized_pnl from lineage-scoped portfolios only
+  const lineagePortfolios = (execution?.portfolios ?? []).filter(
+    (p) => p.portfolio_id.startsWith('lineage__'),
+  );
+  const paperPnl =
+    lineagePortfolios.length > 0
+      ? lineagePortfolios.reduce((sum, p) => sum + (p.realized_pnl ?? 0), 0)
+      : factory?.research_summary?.paper_pnl ?? null;
+  const paperPnlAccent = paperPnl != null ? (paperPnl >= 0 ? 'ok' : 'crit') : undefined;
+  const paperPnlClass =
+    paperPnl != null ? (paperPnl >= 0 ? 'kpi__value--positive' : 'kpi__value--negative') : undefined;
+
+  // Legacy portfolio P&L (non-lineage portfolios)
+  const legacyPnl = execution?.realized_pnl_total;
 
   return [
     {
@@ -63,16 +74,18 @@ function resolveCards(
       subtitle: '24h',
     },
     {
-      label: 'TOTAL P&L',
-      value: pnl != null ? `$${formatPnl(pnl)}` : dash,
-      accent: pnlAccent,
-      valueClass: pnlClass,
+      label: 'PAPER P&L',
+      value: paperPnl != null ? `$${formatPnl(paperPnl)}` : dash,
+      accent: paperPnlAccent,
+      valueClass: paperPnlClass,
+      subtitle: lineagePortfolios.length > 0 ? `${lineagePortfolios.length} lineages` : undefined,
     },
     {
       label: 'PORTFOLIOS',
       value: execution
         ? `${execution.running_count}/${execution.portfolio_count}`
         : dash,
+      subtitle: legacyPnl != null ? `total $${formatPnl(legacyPnl)}` : undefined,
     },
     {
       label: 'IDEAS',

@@ -39,10 +39,10 @@ DEFAULT_UNIVERSE = [
 ]
 
 
-def refresh_bars(client, tickers: list[str], days: int, output_dir: Path) -> int:
-    """Fetch recent daily bars for the given tickers."""
+def refresh_bars(client, tickers: list[str], days: int, output_dir: Path, timeframe_str: str = "1Hour") -> int:
+    """Fetch recent bars for the given tickers."""
     from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
     bars_dir = output_dir / "bars"
     bars_dir.mkdir(parents=True, exist_ok=True)
@@ -50,14 +50,28 @@ def refresh_bars(client, tickers: list[str], days: int, output_dir: Path) -> int
     end = datetime.now()
     start = end - timedelta(days=days)
 
+    # Map string shortcuts to TimeFrame objects
+    _tf_map = {
+        "1Min": TimeFrame(1, TimeFrameUnit.Minute),
+        "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+        "15Min": TimeFrame(15, TimeFrameUnit.Minute),
+        "1Hour": TimeFrame(1, TimeFrameUnit.Hour),
+        "1Day": TimeFrame(1, TimeFrameUnit.Day),
+    }
+    timeframe = _tf_map.get(timeframe_str)
+    if timeframe is None:
+        logger.error("Invalid timeframe: %s. Use one of: %s", timeframe_str, list(_tf_map.keys()))
+        return 0
+
     success = 0
     for ticker in tickers:
         try:
             request = StockBarsRequest(
                 symbol_or_symbols=ticker,
-                timeframe=TimeFrame.Day,
+                timeframe=timeframe,
                 start=start,
                 end=end,
+                feed="iex",
             )
             bars = client.get_stock_bars(request)
             df = bars.df
@@ -118,16 +132,18 @@ def refresh_quotes(client, tickers: list[str], output_dir: Path) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description="Refresh Alpaca stock data for NEBULA")
-    parser.add_argument("--days", type=int, default=5, help="Days of bar history (default: 5)")
+    parser.add_argument("--days", type=int, default=2, help="Days of bar history (default: 2 for intraday)")
+    parser.add_argument("--timeframe", type=str, default="1Hour", help="Bar timeframe (default: 1Hour, e.g. '1Min', '5Min', '15Min', '1Hour', '1Day')")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory (default: data/alpaca)")
     parser.add_argument("--universe", type=str, default=None, help="Comma-separated ticker list")
     args = parser.parse_args()
 
-    api_key = os.getenv("ALPACA_API_KEY", "").strip()
-    api_secret = os.getenv("ALPACA_API_SECRET", "").strip()
+    # Fallback chain: try ALPACA_API_KEY first, then ALPACA_PAPER_API_KEY
+    api_key = os.getenv("ALPACA_API_KEY", "").strip() or os.getenv("ALPACA_PAPER_API_KEY", "").strip()
+    api_secret = os.getenv("ALPACA_API_SECRET", "").strip() or os.getenv("ALPACA_PAPER_API_SECRET", "").strip()
 
     if not api_key or not api_secret:
-        logger.error("ALPACA_API_KEY and ALPACA_API_SECRET must be set in .env")
+        logger.error("API credentials not found. Set either ALPACA_API_KEY/ALPACA_API_SECRET or ALPACA_PAPER_API_KEY/ALPACA_PAPER_API_SECRET in .env")
         logger.info("Get free paper trading keys at https://app.alpaca.markets/")
         return 1
 
@@ -142,9 +158,9 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     tickers = args.universe.split(",") if args.universe else DEFAULT_UNIVERSE
-    logger.info("Refreshing %d tickers from Alpaca (last %d days)", len(tickers), args.days)
+    logger.info("Refreshing %d tickers from Alpaca (last %d days, timeframe: %s)", len(tickers), args.days, args.timeframe)
 
-    bars_ok = refresh_bars(client, tickers, args.days, output_dir)
+    bars_ok = refresh_bars(client, tickers, args.days, output_dir, args.timeframe)
     quotes_ok = refresh_quotes(client, tickers, output_dir)
 
     metadata = {

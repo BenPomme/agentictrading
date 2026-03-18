@@ -143,6 +143,53 @@ def _write_operator_status(state: dict) -> None:
         print(f"[paper-window] operator status write failed: {exc}", flush=True)
 
 
+def _ensure_dashboard_running(project_root: Path) -> None:
+    """Start the dashboard server if not already running, then open browser."""
+    import subprocess
+    import webbrowser
+
+    port = int(getattr(config, "FACTORY_DASHBOARD_PORT", 8787) or 8787)
+    pid_path = project_root / "data" / "factory" / "dashboard.pid"
+
+    # Check if already running via PID file
+    if pid_path.exists():
+        try:
+            existing_pid = int(pid_path.read_text().strip())
+            os.kill(existing_pid, 0)  # Check if process exists
+            print(f"[paper-window] Dashboard already running (PID {existing_pid}, port {port})", flush=True)
+            webbrowser.open(f"http://localhost:{port}")
+            return
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass  # Stale PID file, proceed to start
+
+    # Start dashboard server as background process
+    dashboard_script = project_root / "factory" / "operator_dashboard.py"
+    if not dashboard_script.exists():
+        print("[paper-window] Dashboard script not found, skipping auto-launch", flush=True)
+        return
+
+    log_path = project_root / "data" / "factory" / f"dashboard_{port}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with open(log_path, "a") as log_fh:
+            proc = subprocess.Popen(
+                [sys.executable, str(dashboard_script), "--port", str(port)],
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                cwd=str(project_root),
+                start_new_session=True,
+            )
+        pid_path.write_text(str(proc.pid))
+        print(f"[paper-window] Dashboard started (PID {proc.pid}, port {port})", flush=True)
+
+        # Brief pause to let server bind, then open browser
+        time.sleep(2)
+        webbrowser.open(f"http://localhost:{port}")
+    except Exception as exc:
+        print(f"[paper-window] Dashboard auto-launch failed: {exc}", flush=True)
+
+
 def _safety_preflight() -> list[str]:
     """Run pre-flight safety checks. Return list of blockers (empty = safe)."""
     blockers: list[str] = []
@@ -247,6 +294,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print("\n[DRY RUN] Preflight passed. Exiting without running cycles.", flush=True)
         return 0
+
+    # ---- Auto-launch dashboard ----
+    _ensure_dashboard_running(PROJECT_ROOT)
 
     # ---- Initialize orchestrator ----
     orchestrator = FactoryOrchestrator(PROJECT_ROOT)

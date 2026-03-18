@@ -31,8 +31,22 @@ function labelClass(status: string): string {
   return 'afs__status-label afs__status-label--critical';
 }
 
+function ageColor(ageSeconds: number | null | undefined): string {
+  if (ageSeconds == null) return 'var(--muted)';
+  if (ageSeconds < 3600) return 'var(--ok)';          // < 1h
+  if (ageSeconds < 86400) return 'var(--warn)';        // < 24h
+  if (ageSeconds < 604800) return '#e67e22';           // < 7d (orange)
+  return 'var(--crit)';                                // > 7d
+}
+
+function ageTooltip(c: ConnectorHealth): string {
+  const freshness = c.latest_data_ts ? `Data: ${relativeTime(c.latest_data_ts)}` : 'Data: unknown';
+  const connectivity = `Connector: ${STATUS_LABEL[c.status] ?? c.status}`;
+  return `${freshness}\n${connectivity}\n${formatNumber(c.record_count, 0)} records`;
+}
+
 const ConnectorCard: React.FC<{ c: ConnectorHealth }> = ({ c }) => (
-  <div className="afs__card">
+  <div className="afs__card" title={ageTooltip(c)}>
     <span className="afs__card-icon">{venueIcon(c.venue)}</span>
     <div className="afs__card-body">
       <span className="afs__card-venue">{c.venue}</span>
@@ -41,7 +55,9 @@ const ConnectorCard: React.FC<{ c: ConnectorHealth }> = ({ c }) => (
         <span className={labelClass(c.status)}>
           {STATUS_LABEL[c.status] ?? c.status.toUpperCase()}
         </span>
-        <span>{relativeTime(c.latest_data_ts)}</span>
+        <span style={{ color: ageColor(c.latest_age_seconds) }}>
+          {relativeTime(c.latest_data_ts)}
+        </span>
         <span className="afs__card-records">{formatNumber(c.record_count, 0)} rec</span>
       </div>
     </div>

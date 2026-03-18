@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sys
 import time
 from collections import defaultdict, deque
@@ -1164,6 +1165,18 @@ class FactoryOrchestrator:
         }:
             return
         active = [lineage for lineage in lineages_by_family.get(family.family_id, []) if lineage.active]
+        # Hard ceiling: do not spawn challengers if family already has too many active lineages.
+        max_active = int(os.environ.get("FACTORY_MAX_ACTIVE_LINEAGES_PER_FAMILY", "10"))
+        if len(active) >= max_active:
+            return
+        # Guard: block challenger seeding while any active lineage in this family
+        # is in paper or shadow stage (unless that lineage has failed/retiring).
+        # This prevents queue explosion: finish validating before spawning more.
+        for lin in active:
+            if lin.current_stage in {PromotionStage.PAPER.value, PromotionStage.SHADOW.value}:
+                if lin.iteration_status in {"failed", "retiring"}:
+                    continue
+                return
         champion = next((lineage for lineage in active if lineage.lineage_id == family.champion_lineage_id), None)
         if champion is None and active:
             champion = active[0]

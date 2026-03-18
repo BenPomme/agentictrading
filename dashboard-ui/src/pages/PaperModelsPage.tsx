@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { PnlChart } from '../components/PnlChart';
 import SectionPanel from '../components/SectionPanel';
 import type {
   DashboardSnapshot,
@@ -443,6 +444,13 @@ function PaperConsole({ rows }: { rows: MergedRow[] }) {
                     </div>
                   );
                 })()}
+
+                {row.paper_portfolio_id && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="gate-drilldown__title">P&L Chart</div>
+                    <PnlChart portfolioId={row.paper_portfolio_id} />
+                  </div>
+                )}
               </div>
             )}
           </div>

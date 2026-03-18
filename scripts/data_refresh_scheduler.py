@@ -87,11 +87,11 @@ def run_script(name, script_path, timeout=300):
 
 def main():
     parser = argparse.ArgumentParser(description="Data refresh scheduler daemon")
-    parser.add_argument("--yahoo-interval-hours", type=float, default=6)
-    parser.add_argument("--alpaca-interval-hours", type=float, default=6)
-    parser.add_argument("--binance-interval-hours", type=float, default=4)
-    parser.add_argument("--polymarket-interval-hours", type=float, default=6)
-    parser.add_argument("--check-interval-seconds", type=int, default=60)
+    parser.add_argument("--yahoo-interval-hours", type=float, default=0.25)
+    parser.add_argument("--alpaca-interval-hours", type=float, default=0.083)
+    parser.add_argument("--binance-interval-hours", type=float, default=0.25)
+    parser.add_argument("--polymarket-interval-hours", type=float, default=0.25)
+    parser.add_argument("--check-interval-seconds", type=int, default=30)
     args = parser.parse_args()
 
     intervals = {
