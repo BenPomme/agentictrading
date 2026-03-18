@@ -58,10 +58,10 @@ export function PnlChart({ portfolioId }: PnlChartProps) {
   const trades = data.trades ?? [];
 
   const opens = trades
-    .filter(t => t.kind === 'open')
+    .filter(t => t.kind === 'trade_opened')
     .map(t => ({ x: new Date(t.ts).getTime(), y: findBalanceAt(data, t.ts) }));
 
-  const closes = trades.filter(t => t.kind === 'close');
+  const closes = trades.filter(t => t.kind === 'trade_closed');
   const winCloses = closes
     .filter(t => (t.pnl ?? 0) >= 0)
     .map(t => ({ x: new Date(t.ts).getTime(), y: findBalanceAt(data, t.ts) }));

@@ -1,0 +1,132 @@
+/* ─── NavSidebar ─── */
+
+.nav-sidebar {
+  width: 168px;
+  flex-shrink: 0;
+  height: 100%;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: rgba(8, 12, 20, 0.6);
+  padding: 8px 0;
+}
+
+.nav-sidebar__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-sidebar__item-wrap {
+  padding: 0 6px;
+}
+
+.nav-sidebar__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition), color var(--transition);
+  position: relative;
+}
+
+.nav-sidebar__item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.nav-sidebar__item--active {
+  background: rgba(0, 255, 208, 0.07);
+  color: var(--ok);
+}
+
+.nav-sidebar__item--active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  height: 60%;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--ok);
+}
+
+.nav-sidebar__icon {
+  font-size: 0.95rem;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.nav-sidebar__label {
+  font-family: var(--font-display);
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-sidebar__badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(255, 176, 0, 0.2);
+  border: 1px solid rgba(255, 176, 0, 0.4);
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.nav-sidebar__badge--crit {
+  background: rgba(255, 59, 59, 0.2);
+  border-color: rgba(255, 59, 59, 0.4);
+  color: var(--crit);
+}
+
+/* ── Responsive: collapse to icon bar below 1024px ── */
+@media (max-width: 1024px) {
+  .nav-sidebar {
+    width: 48px;
+  }
+  .nav-sidebar__label {
+    display: none;
+  }
+  .nav-sidebar__badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    min-width: 14px;
+    height: 14px;
+    font-size: 0.5rem;
+  }
+  .nav-sidebar__item {
+    justify-content: center;
+    padding: 10px 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .nav-sidebar {
+    display: none;
+  }
+}

@@ -149,6 +149,8 @@ export interface Lineage {
   family_id: string;
   role: string;
   current_stage: string;
+  /** Iteration lifecycle status: active, failed, retiring, revived_for_paper, etc. */
+  iteration_status?: string;
   roi_pct: number;
   monthly_roi_pct?: number;
   backtest_roi_pct?: number | null;
@@ -156,6 +158,10 @@ export interface Lineage {
   backtest_gate_status?: string | null;
   trade_count: number;
   paper_days: number;
+  /** Deterministic gate blockers as opaque strings from the registry */
+  blockers?: string[];
+  /** Structured promotion scorecard from promotion.decide() */
+  promotion_scorecard?: Record<string, unknown>;
   assessment: Assessment;
   first_assessment: Assessment;
   runtime_lane_selected: boolean;
@@ -166,6 +172,8 @@ export interface Lineage {
   suppressed_runtime_sibling: boolean;
   debug_agent: Record<string, unknown>;
   proposal_agent: Record<string, unknown>;
+  /** Paper runtime status: paper_running | paper_starting | paper_candidate | retired | etc. */
+  paper_runtime_status?: string;
   [key: string]: unknown;
 }
 
@@ -490,10 +498,123 @@ export interface ChartPayload {
 
 export interface ChartTrade {
   ts: string;
-  kind: string;
+  /** Backend emits "trade_opened" or "trade_closed" — not "open"/"close" */
+  kind: 'trade_opened' | 'trade_closed' | string;
   trade_id: string;
   symbol: string;
   side: string;
   pnl: number | null;
   status?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot v2 — versioned contract
+// ---------------------------------------------------------------------------
+
+export interface DeterministicBlocker {
+  code: string;
+  description: string;
+  evidence: string | null;
+}
+
+export interface RuntimeV2 {
+  backend: 'mobkit' | 'legacy' | string;
+  mode: string;
+  paused: boolean;
+  paper_holdoff_enabled: boolean;
+  venue_scope: string[] | null;
+}
+
+export interface LineageV2 {
+  lineage_id: string;
+  family_id: string;
+  venue: string;
+  canonical_stage: string;
+  deterministic_blockers: DeterministicBlocker[];
+  holdoff_reason: string | null;
+  venue_scope_reason: string | null;
+  paper_portfolio_id: string | null;
+  /** ISO timestamp from registry lineage record — used for time-in-stage calculations */
+  created_at: string | null;
+}
+
+// ── Mobkit health proxy ──────────────────────────────────────────────────────
+
+export interface MobkitHealth {
+  configured: boolean;
+  backend: string;
+  /** null until direct gateway health check is implemented */
+  rpc_healthy: boolean | null;
+  recent_runs_24h: number;
+  recent_failures_24h: number;
+  fallback_used_24h: number;
+  success_rate_pct: number | null;
+  runs_by_provider: Record<string, number>;
+  runs_by_task: Record<string, number>;
+  runs_by_model_class: Record<string, number>;
+  note: string;
+}
+
+// ── Budget governance ────────────────────────────────────────────────────────
+
+export interface BudgetGovernance {
+  daily_budget_usd: number | null;
+  weekly_budget_usd: number | null;
+  strict_budgets: boolean;
+  force_cheap_ratio: number;
+  single_agent_ratio: number;
+  reviewer_removal_ratio: number;
+  /** null — not tracked yet, backend gap */
+  daily_spend_usd: number | null;
+  weekly_spend_usd: number | null;
+  token_count_total: number | null;
+  note?: string;
+}
+
+// ── DNA packets per family ───────────────────────────────────────────────────
+
+export interface DNAAncestor {
+  lineage_id: string;
+  roi: number;
+  trades: number;
+  outcome: string;
+  domains: string[];
+}
+
+export interface DNAPacket {
+  family_id: string;
+  total_lineages_seen: number;
+  failure_motifs: string[];
+  success_motifs: string[];
+  hard_veto_causes: string[];
+  retirement_reasons: string[];
+  dominant_failure: string | null;
+  best_known_roi: number | null;
+  best_ancestors: DNAAncestor[];
+  worst_relatives: { lineage_id: string; roi: number; outcome: string }[];
+  prompt_text: string;
+}
+
+// ── Goldfish health ──────────────────────────────────────────────────────────
+
+export interface GoldfishHealth {
+  enabled: boolean;
+  learning_files: number;
+  latest_write: string | null;
+  workspace_root: string;
+  artefact_root?: string;
+  strict_mode: boolean;
+  note: string;
+}
+
+// ── SnapshotV2 ───────────────────────────────────────────────────────────────
+
+export interface SnapshotV2 extends DashboardSnapshot {
+  schema_version: 'v2';
+  runtime: RuntimeV2;
+  lineage_v2: LineageV2[];
+  mobkit_health: MobkitHealth;
+  budget_governance: BudgetGovernance;
+  dna_packets: DNAPacket[];
+  goldfish_health: GoldfishHealth;
 }

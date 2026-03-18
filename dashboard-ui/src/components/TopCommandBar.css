@@ -164,6 +164,21 @@
   background: var(--crit-dim);
 }
 
+.tcb__schema-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: default;
+}
+
 /* ── Right: Telemetry ── */
 
 .tcb__right {

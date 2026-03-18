@@ -1,32 +1,28 @@
 import { useEffect, useState } from 'react';
 import { useSnapshot } from './hooks/useSnapshot';
+import { useSnapshotV2 } from './hooks/useSnapshotV2';
 import { useFactoryControl } from './hooks/useFactoryControl';
+import { useAudioAlerts } from './hooks/useAudioAlerts';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { TopCommandBar } from './components/TopCommandBar';
 import { APIFeedsStrip } from './components/APIFeedsStrip';
-import { KPIDeck } from './components/KPIDeck';
-import { AgentActivityPanel } from './components/AgentActivityPanel';
-import { PortfolioGrid } from './components/PortfolioGrid';
-import AlertsPanel from './components/AlertsPanel';
-import EscalationsPanel from './components/EscalationsPanel';
-import MaintenancePanel from './components/MaintenancePanel';
-import FamiliesPanel from './components/FamiliesPanel';
-import LeaguePanel from './components/LeaguePanel';
-import LineageBoard from './components/LineageBoard';
-import JournalPanel from './components/JournalPanel';
-import IdeasPanel from './components/IdeasPanel';
-import QueuePanel from './components/QueuePanel';
-import DesksPanel from './components/DesksPanel';
-import LineageAtlas from './components/LineageAtlas';
-import { useAudioAlerts } from './hooks/useAudioAlerts';
+import { NavSidebar } from './components/NavSidebar';
+import { FactoryHealthPage } from './pages/FactoryHealthPage';
+import { PipelinePage } from './pages/PipelinePage';
+import { PaperModelsPage } from './pages/PaperModelsPage';
+import { FamilyExplorerPage } from './pages/FamilyExplorerPage';
+import { GoldfishDNAPage } from './pages/GoldfishDNAPage';
+import { ComputeCostPage } from './pages/ComputeCostPage';
+import { VenueReadinessPage } from './pages/VenueReadinessPage';
+import { AlertsPage } from './pages/AlertsPage';
+import type { Zone } from './types/nav';
 import './App.css';
 
-type Tab = 'overview' | 'atlas';
-
 function App() {
+  const [zone, setZone] = useState<Zone>('factory-health');
   const { data, prev, loading, error } = useSnapshot();
+  const { data: dataV2 } = useSnapshotV2();
   const { toggle, pending } = useFactoryControl(data?.factory_paused);
-  const [activeTab, setActiveTab] = useState<Tab>('overview');
   const { audioEnabled, toggleAudio, playAgentRun, playPaperTrade } = useAudioAlerts();
 
   useEffect(() => {
@@ -37,29 +33,19 @@ function App() {
     if (currentRuns.length > 0) {
       const latest = currentRuns[0]?.run_id;
       const prevLatest = prevRuns[0]?.run_id;
-      if (latest && latest !== prevLatest) {
-        playAgentRun();
-      }
+      if (latest && latest !== prevLatest) playAgentRun();
     }
 
     const currentPortfolios = data.execution?.portfolios ?? [];
     const prevPortfolios = prev.execution?.portfolios ?? [];
     if (currentPortfolios.length && prevPortfolios.length) {
-      const prevTradeCounts = new Map<string, number>();
-      for (const p of prevPortfolios) {
-        prevTradeCounts.set(p.portfolio_id, p.trade_count);
-      }
-      let hasNewTrade = false;
-      for (const p of currentPortfolios) {
-        const prevCount = prevTradeCounts.get(p.portfolio_id);
-        if (prevCount != null && p.trade_count > prevCount) {
-          hasNewTrade = true;
-          break;
-        }
-      }
-      if (hasNewTrade) {
-        playPaperTrade();
-      }
+      const prevCounts = new Map<string, number>();
+      for (const p of prevPortfolios) prevCounts.set(p.portfolio_id, p.trade_count);
+      const hasNewTrade = currentPortfolios.some((p) => {
+        const prevCount = prevCounts.get(p.portfolio_id);
+        return prevCount != null && p.trade_count > prevCount;
+      });
+      if (hasNewTrade) playPaperTrade();
     }
   }, [data, prev, audioEnabled, playAgentRun, playPaperTrade]);
 
@@ -81,6 +67,14 @@ function App() {
     );
   }
 
+  const alerts = data?.company?.alerts ?? [];
+  const maintenance = data?.factory?.operator_signals?.maintenance_queue ?? [];
+  const escalations = data?.factory?.operator_signals?.escalation_candidates ?? [];
+  const badgeCount = alerts.length + maintenance.length + escalations.length;
+  const criticalCount = alerts.filter((a) => a.severity === 'critical').length;
+
+  const pageProps = { snapshot: data, snapshotV2: dataV2 };
+
   return (
     <div className="app">
       <TopCommandBar
@@ -92,96 +86,34 @@ function App() {
         togglePending={pending}
         audioEnabled={audioEnabled}
         onToggleAudio={toggleAudio}
+        schemaVersion={dataV2?.schema_version}
+        runtimeBackend={dataV2?.runtime?.backend}
       />
-
       <APIFeedsStrip feeds={data?.api_feeds} />
-
-      <nav className="app__tabs">
-        <button
-          className={`app__tab ${activeTab === 'overview' ? 'app__tab--active' : ''}`}
-          onClick={() => setActiveTab('overview')}
-        >
-          Overview
-        </button>
-        <button
-          className={`app__tab ${activeTab === 'atlas' ? 'app__tab--active' : ''}`}
-          onClick={() => setActiveTab('atlas')}
-        >
-          Lineage Atlas
-        </button>
-      </nav>
-
-      {activeTab === 'overview' ? (
-        <main className="app__main">
-          <ErrorBoundary name="KPIDeck">
-            <KPIDeck factory={data?.factory} execution={data?.execution} ideas={data?.ideas} />
-          </ErrorBoundary>
-
-          <div className="app__grid app__grid--primary">
-            <div className="app__col app__col--wide">
-              <ErrorBoundary name="AgentActivity">
-                <AgentActivityPanel agentRuns={data?.factory?.agent_runs} />
-              </ErrorBoundary>
-              <ErrorBoundary name="PortfolioGrid">
-                <PortfolioGrid
-                  portfolios={data?.execution?.portfolios}
-                  placeholders={data?.execution?.placeholders}
-                  lineages={data?.factory?.lineages}
-                  families={data?.factory?.families}
-                />
-              </ErrorBoundary>
-            </div>
-            <div className="app__col app__col--narrow">
-              <ErrorBoundary name="Alerts">
-                <AlertsPanel alerts={data?.company?.alerts} />
-              </ErrorBoundary>
-              <ErrorBoundary name="Escalations">
-                <EscalationsPanel signals={data?.factory?.operator_signals} />
-              </ErrorBoundary>
-              <ErrorBoundary name="Maintenance">
-                <MaintenancePanel items={data?.factory?.operator_signals?.maintenance_queue} />
-              </ErrorBoundary>
-            </div>
-          </div>
-
-          <div className="app__grid app__grid--secondary">
-            <ErrorBoundary name="Families">
-              <FamiliesPanel families={data?.factory?.families} />
-            </ErrorBoundary>
-            <ErrorBoundary name="League">
-              <LeaguePanel league={data?.factory?.model_league} />
-            </ErrorBoundary>
-          </div>
-
-          <div className="app__grid app__grid--tertiary">
-            <div className="app__col app__col--wide">
-              <ErrorBoundary name="LineageBoard">
-                <LineageBoard lineages={data?.factory?.lineages} />
-              </ErrorBoundary>
-            </div>
-            <div className="app__col app__col--narrow">
-              <ErrorBoundary name="Ideas">
-                <IdeasPanel ideas={data?.ideas} />
-              </ErrorBoundary>
-              <ErrorBoundary name="Queue">
-                <QueuePanel queue={data?.factory?.queue} />
-              </ErrorBoundary>
-              <ErrorBoundary name="Desks">
-                <DesksPanel desks={data?.company?.desks} />
-              </ErrorBoundary>
-              <ErrorBoundary name="Journal">
-                <JournalPanel actions={data?.company?.recent_actions} />
-              </ErrorBoundary>
-            </div>
-          </div>
-        </main>
-      ) : (
-        <main className="app__main">
-          <ErrorBoundary name="LineageAtlas">
-            <LineageAtlas atlas={data?.factory?.lineage_atlas} />
+      <div className="app__body">
+        <NavSidebar
+          activeZone={zone}
+          onNavigate={setZone}
+          alertCount={badgeCount}
+          criticalCount={criticalCount}
+        />
+        <main className="app__content">
+          <ErrorBoundary name="Page">
+            {zone === 'factory-health' && <FactoryHealthPage {...pageProps} />}
+            {zone === 'pipeline' && <PipelinePage {...pageProps} />}
+            {zone === 'paper-models' && <PaperModelsPage {...pageProps} />}
+            {zone === 'family-explorer' && (
+              <FamilyExplorerPage {...pageProps} />
+            )}
+            {zone === 'goldfish-dna' && <GoldfishDNAPage {...pageProps} />}
+            {zone === 'compute-cost' && <ComputeCostPage {...pageProps} />}
+            {zone === 'venue-readiness' && (
+              <VenueReadinessPage {...pageProps} />
+            )}
+            {zone === 'alerts' && <AlertsPage {...pageProps} />}
           </ErrorBoundary>
         </main>
-      )}
+      </div>
     </div>
   );
 }

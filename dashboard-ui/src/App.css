@@ -1,9 +1,11 @@
 .app {
-  min-height: 100vh;
-  padding-bottom: 2rem;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
 }
 
-/* Loader */
+/* ── Loader ── */
 .app-loader {
   display: flex;
   flex-direction: column;
@@ -12,6 +14,7 @@
   min-height: 100vh;
   gap: 1.5rem;
 }
+
 .app-loader__ring {
   width: 48px;
   height: 48px;
@@ -20,6 +23,7 @@
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
+
 .app-loader__text {
   font-family: var(--font-display);
   font-size: 0.85rem;
@@ -27,7 +31,7 @@
   color: var(--text-muted);
 }
 
-/* Error */
+/* ── Error ── */
 .app-error {
   display: flex;
   align-items: center;
@@ -37,58 +41,39 @@
   color: var(--crit);
   font-family: var(--font-mono);
 }
+
 .app-error__icon {
   font-size: 1.5rem;
 }
 
-/* Tabs */
-.app__tabs {
+/* ── Body: sidebar + content ── */
+.app__body {
   display: flex;
-  gap: 0;
-  padding: 0 1.5rem;
-  margin-top: 0.5rem;
-  border-bottom: 1px solid var(--border);
-}
-.app__tab {
-  font-family: var(--font-display);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  padding: 0.75rem 1.5rem;
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: color var(--transition), border-color var(--transition);
-}
-.app__tab:hover {
-  color: var(--text);
-}
-.app__tab--active {
-  color: var(--ok);
-  border-bottom-color: var(--ok);
+  flex: 1;
+  overflow: hidden;
 }
 
-/* Main layout */
-.app__main {
-  padding: 1rem 1.5rem;
+.app__content {
+  flex: 1;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
 }
 
-/* Grid layouts */
+/* ── Grid helpers (used by page components) ── */
 .app__grid {
   display: grid;
   gap: 1rem;
 }
+
 .app__grid--primary {
   grid-template-columns: 1.2fr 0.8fr;
 }
+
 .app__grid--secondary {
   grid-template-columns: 1fr 1fr;
 }
+
 .app__grid--tertiary {
   grid-template-columns: 1.3fr 0.7fr;
 }
@@ -99,7 +84,6 @@
   gap: 1rem;
 }
 
-/* Responsive */
 @media (max-width: 1200px) {
   .app__grid--primary,
   .app__grid--secondary,
@@ -108,15 +92,8 @@
   }
 }
 
-@media (max-width: 768px) {
-  .app__main {
-    padding: 0.75rem;
-  }
-  .app__tabs {
-    padding: 0 0.75rem;
-  }
-}
-
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }

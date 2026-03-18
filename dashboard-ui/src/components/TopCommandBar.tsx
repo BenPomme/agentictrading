@@ -11,6 +11,8 @@ interface TopCommandBarProps {
   togglePending: boolean;
   audioEnabled: boolean;
   onToggleAudio: () => void;
+  schemaVersion?: string;
+  runtimeBackend?: string;
 }
 
 function useUtcClock(): string {
@@ -42,6 +44,8 @@ export const TopCommandBar: React.FC<TopCommandBarProps> = ({
   togglePending,
   audioEnabled,
   onToggleAudio,
+  schemaVersion,
+  runtimeBackend,
 }) => {
   const utc = useUtcClock();
   const [showConfirm, setShowConfirm] = useState(false);
@@ -97,6 +101,15 @@ export const TopCommandBar: React.FC<TopCommandBarProps> = ({
           <span className={modeBadgeClass}>
             {factoryMode.replace('_', ' ')}
           </span>
+
+          {(schemaVersion || runtimeBackend) && (
+            <span
+              className="tcb__schema-badge"
+              title={`Schema: ${schemaVersion ?? 'v1'} · Runtime: ${runtimeBackend ?? 'unknown'}`}
+            >
+              {schemaVersion ?? 'v1'}{runtimeBackend ? ` · ${runtimeBackend}` : ''}
+            </span>
+          )}
         </div>
 
         <div className="tcb__right">

@@ -2432,6 +2432,232 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
     }
 
 
+def build_snapshot_v2() -> Dict[str, Any]:
+    """Snapshot v2 — versioned contract with explicit typed fields per lineage.
+
+    Calls build_dashboard_snapshot() for the full base payload, then augments
+    it with a schema_version tag, a structured runtime block, and a lineage_v2
+    array that makes previously implicit decisions explicit (holdoff state,
+    venue-scope exclusion, paper portfolio identity, deterministic blockers).
+    """
+    base = build_dashboard_snapshot()
+    base["schema_version"] = "v2"
+
+    # --- Runtime block ---
+    try:
+        runtime_backend = str(getattr(config, "FACTORY_RUNTIME_BACKEND", "legacy") or "legacy")
+        runtime_mode = str(getattr(config, "AGENTIC_FACTORY_MODE", "unknown") or "unknown")
+        paper_holdoff_enabled = bool(getattr(config, "FACTORY_PAPER_HOLDOFF_ENABLED", False))
+        venue_scope_raw = str(getattr(config, "FACTORY_PAPER_WINDOW_VENUE_SCOPE", "") or "")
+    except Exception:
+        runtime_backend = "unknown"
+        runtime_mode = "unknown"
+        paper_holdoff_enabled = False
+        venue_scope_raw = ""
+
+    venue_scope_set: set = {v.strip() for v in venue_scope_raw.split(",") if v.strip()} if venue_scope_raw else set()
+
+    base["runtime"] = {
+        "backend": runtime_backend,
+        "mode": runtime_mode,
+        "paused": base.get("factory_paused", False),
+        "paper_holdoff_enabled": paper_holdoff_enabled,
+        "venue_scope": sorted(venue_scope_set) if venue_scope_set else None,
+    }
+
+    # --- Lineage v2 ---
+    lineages = list((base.get("factory") or {}).get("lineages") or [])
+    families = list((base.get("factory") or {}).get("families") or [])
+
+    # Build venue lookup: family_id -> venue string
+    family_venue_map: Dict[str, str] = {}
+    family_venues_map: Dict[str, set] = {}
+    for fam in families:
+        fid = str(fam.get("family_id") or "")
+        venue_str = str(fam.get("venue") or "")
+        family_venue_map[fid] = venue_str
+        family_venues_map[fid] = {v.strip() for v in venue_str.split(",") if v.strip()} if venue_str else set()
+
+    _PAPER_STAGE = "paper"
+    _HOLDOFF_EXCLUDED_STATUSES = {"failed", "retiring", "review_requested_rework"}
+
+    lineage_v2: List[Dict[str, Any]] = []
+    for lin in lineages:
+        lineage_id = str(lin.get("lineage_id") or "")
+        family_id = str(lin.get("family_id") or "")
+        current_stage = str(lin.get("current_stage") or "")
+        iteration_status = str(lin.get("iteration_status") or "")
+
+        venue = family_venue_map.get(family_id, "")
+
+        # Convert string blockers to structured objects
+        raw_blockers = list(lin.get("blockers") or [])
+        deterministic_blockers = [
+            {"code": str(b), "description": str(b), "evidence": None}
+            for b in raw_blockers
+        ]
+
+        # Holdoff: active paper-stage lineage with healthy status is held off from agentic churn
+        holdoff_reason: str | None = None
+        if (
+            paper_holdoff_enabled
+            and current_stage == _PAPER_STAGE
+            and iteration_status not in _HOLDOFF_EXCLUDED_STATUSES
+        ):
+            holdoff_reason = f"paper_holdoff active: stage={current_stage} status={iteration_status}"
+
+        # Venue scope: flag lineages whose family targets venues outside the scope set
+        venue_scope_reason: str | None = None
+        if venue_scope_set:
+            lin_venues = family_venues_map.get(family_id, set())
+            if lin_venues and not lin_venues.issubset(venue_scope_set):
+                out_of_scope = lin_venues - venue_scope_set
+                venue_scope_reason = (
+                    f"venue_out_of_scope: {','.join(sorted(out_of_scope))} "
+                    f"not in scope={','.join(sorted(venue_scope_set))}"
+                )
+
+        # Paper portfolio id — lineage-scoped isolated accounting
+        safe_id = lineage_id.replace(":", "__")
+        paper_portfolio_id = f"lineage__{safe_id}" if lineage_id else None
+
+        lineage_v2.append({
+            "lineage_id": lineage_id,
+            "family_id": family_id,
+            "venue": venue,
+            "canonical_stage": current_stage,
+            "deterministic_blockers": deterministic_blockers,
+            "holdoff_reason": holdoff_reason,
+            "venue_scope_reason": venue_scope_reason,
+            "paper_portfolio_id": paper_portfolio_id,
+            # created_at for time-in-stage calculations in the UI
+            "created_at": str(lin.get("created_at") or "") or None,
+        })
+
+    base["lineage_v2"] = lineage_v2
+
+    # --- Mobkit health proxy (derived from agent run data + config) ---
+    _agent_runs = list((base.get("factory") or {}).get("agent_runs") or [])
+    _run_count = len(_agent_runs)
+    _fail_count = sum(1 for r in _agent_runs if not r.get("success", True))
+    _fallback_count = sum(1 for r in _agent_runs if r.get("fallback_used", False))
+    _by_provider: Dict[str, int] = {}
+    _by_task: Dict[str, int] = {}
+    _by_model_class: Dict[str, int] = {}
+    for _r in _agent_runs:
+        _prov = str(_r.get("provider") or "unknown")
+        _by_provider[_prov] = _by_provider.get(_prov, 0) + 1
+        _task = str(_r.get("task_type") or "unknown")
+        _by_task[_task] = _by_task.get(_task, 0) + 1
+        _mc = str(_r.get("model_class") or "unknown")
+        _by_model_class[_mc] = _by_model_class.get(_mc, 0) + 1
+
+    base["mobkit_health"] = {
+        "configured": runtime_backend == "mobkit",
+        "backend": runtime_backend,
+        "rpc_healthy": None,  # Not directly accessible without a live gateway call
+        "recent_runs_24h": _run_count,
+        "recent_failures_24h": _fail_count,
+        "fallback_used_24h": _fallback_count,
+        "success_rate_pct": round((1 - _fail_count / _run_count) * 100, 1) if _run_count > 0 else None,
+        "runs_by_provider": dict(sorted(_by_provider.items(), key=lambda x: -x[1])),
+        "runs_by_task": dict(sorted(_by_task.items(), key=lambda x: -x[1])),
+        "runs_by_model_class": dict(sorted(_by_model_class.items(), key=lambda x: -x[1])),
+        "note": "RPC gateway telemetry not accessible from snapshot; proxied from agent run data",
+    }
+
+    # --- Budget governance (from config) ---
+    try:
+        base["budget_governance"] = {
+            "daily_budget_usd": float(getattr(config, "FACTORY_DAILY_INFERENCE_BUDGET_USD", 15) or 15),
+            "weekly_budget_usd": float(getattr(config, "FACTORY_WEEKLY_INFERENCE_BUDGET_USD", 75) or 75),
+            "strict_budgets": bool(
+                getattr(config, "FACTORY_STRICT_BUDGETS", False)
+                or getattr(config, "FACTORY_ENABLE_STRICT_BUDGETS", False)
+            ),
+            "force_cheap_ratio": float(getattr(config, "FACTORY_BUDGET_FORCE_CHEAP_RATIO", 0.80) or 0.80),
+            "single_agent_ratio": float(getattr(config, "FACTORY_BUDGET_SINGLE_AGENT_RATIO", 0.90) or 0.90),
+            "reviewer_removal_ratio": float(getattr(config, "FACTORY_BUDGET_REVIEWER_REMOVAL_RATIO", 0.70) or 0.70),
+            # Backend gaps — not tracked yet
+            "daily_spend_usd": None,
+            "weekly_spend_usd": None,
+            "token_count_total": None,
+        }
+    except Exception:
+        base["budget_governance"] = {
+            "daily_budget_usd": None, "weekly_budget_usd": None,
+            "strict_budgets": False, "note": "Error reading budget config",
+        }
+
+    # --- DNA packets per family (from local registry learning memories) ---
+    _dna_packets: List[Dict[str, Any]] = []
+    try:
+        from factory.provenance.dna_extractor import build_family_dna_packet as _build_dna
+        _registry = FactoryRegistry(_project_root())
+        _family_ids = list({str(l.get("family_id") or "") for l in lineages if l.get("family_id")})
+        for _fid in _family_ids[:10]:  # cap at 10 families to stay fast
+            try:
+                _mems = _registry.learning_memories(family_id=_fid, limit=15)
+                _pkt = _build_dna(_fid, _mems)
+                _dna_packets.append({
+                    "family_id": _fid,
+                    "total_lineages_seen": _pkt.total_lineages_seen,
+                    "failure_motifs": list(_pkt.failure_motifs),
+                    "success_motifs": list(_pkt.success_motifs),
+                    "hard_veto_causes": list(_pkt.hard_veto_causes),
+                    "retirement_reasons": list(_pkt.retirement_reasons[:5]),
+                    "dominant_failure": _pkt.dominant_failure_pattern(),
+                    "best_known_roi": _pkt.best_known_roi(),
+                    "best_ancestors": [
+                        {
+                            "lineage_id": _a.lineage_id,
+                            "roi": round(_a.roi, 2),
+                            "trades": _a.trades,
+                            "outcome": _a.outcome,
+                            "domains": list(_a.domains),
+                        }
+                        for _a in _pkt.best_ancestors[:3]
+                    ],
+                    "worst_relatives": [
+                        {"lineage_id": _a.lineage_id, "roi": round(_a.roi, 2), "outcome": _a.outcome}
+                        for _a in _pkt.worst_relatives[:3]
+                    ],
+                    "prompt_text": _pkt.as_prompt_text(),
+                })
+            except Exception:
+                pass
+    except Exception:
+        pass
+    base["dna_packets"] = _dna_packets
+
+    # --- Goldfish health (from config + filesystem evidence) ---
+    try:
+        import datetime as _dt
+        _goldfish_enabled = bool(getattr(config, "FACTORY_ENABLE_GOLDFISH_PROVENANCE", False))
+        _gl_root = _project_root() / "data" / "factory" / "goldfish_learning"
+        _gl_files = list(_gl_root.glob("*.json")) if _gl_root.exists() else []
+        _latest_write: str | None = None
+        if _gl_files:
+            _latest_mtime = max(f.stat().st_mtime for f in _gl_files if f.exists())
+            _latest_write = _dt.datetime.fromtimestamp(_latest_mtime, tz=_dt.timezone.utc).isoformat()
+        base["goldfish_health"] = {
+            "enabled": _goldfish_enabled,
+            "learning_files": len(_gl_files),
+            "latest_write": _latest_write,
+            "workspace_root": str(getattr(config, "GOLDFISH_WORKSPACE_ROOT", ".goldfish") or ".goldfish"),
+            "artefact_root": str(getattr(config, "GOLDFISH_ARTEFACT_ROOT", "./artifacts/goldfish") or "./artifacts/goldfish"),
+            "strict_mode": bool(getattr(config, "FACTORY_GOLDFISH_STRICT_MODE", False)),
+            "note": "Daemon health state not accessible from snapshot; check goldfish_learning/ for write evidence",
+        }
+    except Exception as _ge:
+        base["goldfish_health"] = {
+            "enabled": False, "learning_files": 0, "latest_write": None,
+            "note": f"Error reading goldfish health: {_ge}",
+        }
+
+    return base
+
+
 def build_dashboard_snapshot_light() -> Dict[str, Any]:
     factory_state = _read_json(_factory_state_path(), default={}) or {}
     journal = _read_markdown_sections(_factory_journal_path())

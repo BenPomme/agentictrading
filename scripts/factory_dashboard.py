@@ -24,7 +24,7 @@ except ImportError:
     pass
 
 import config  # noqa: E402
-from factory.operator_dashboard import build_dashboard_snapshot  # noqa: E402
+from factory.operator_dashboard import build_dashboard_snapshot, build_snapshot_v2  # noqa: E402
 
 
 def _chart_execution_root() -> Path:
@@ -158,10 +158,18 @@ def _build_chart_payload(portfolio_id: str) -> dict | None:
 
 
 def _resolve_static_dir() -> Path:
-    """Prefer React build (dashboard-ui/dist), fall back to legacy dashboard."""
+    """Prefer React build (dashboard-ui/dist), fall back to legacy dashboard.
+
+    DEPRECATED: The legacy `dashboard/` HTML frontend is kept only as a last-
+    resort fallback when the React build is absent.  It is no longer maintained
+    and does not support snapshot v2, the 8-zone navigation, or any feature
+    added after 2026-03-18.  Run `npm run build` inside `dashboard-ui/` to
+    produce a fresh React build and make this fallback path unreachable.
+    """
     react_dist = project_root / "dashboard-ui" / "dist"
     if react_dist.is_dir() and (react_dist / "index.html").exists():
         return react_dist
+    # LEGACY FALLBACK — deprecated, not maintained
     return project_root / "dashboard"
 
 
@@ -174,6 +182,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/snapshot":
             self._serve_snapshot()
+            return
+        if parsed.path == "/api/snapshot/v2":
+            self._serve_snapshot_v2()
             return
         if parsed.path == "/api/healthz":
             self._serve_json({"ok": True}, status=HTTPStatus.OK)
@@ -198,6 +209,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _serve_snapshot(self) -> None:
         payload = build_dashboard_snapshot()
+        self._serve_json(payload, status=HTTPStatus.OK)
+
+    def _serve_snapshot_v2(self) -> None:
+        payload = build_snapshot_v2()
         self._serve_json(payload, status=HTTPStatus.OK)
 
     def _serve_portfolio_chart(self, portfolio_id: str) -> None:
