@@ -11,21 +11,25 @@ try:
     _base_env = _repo_root / ".env"
     _staging_env = _repo_root / ".env.staging"
 
-    # Priority: shell > .env.staging > .env
-    # Read both files without touching os.environ, merge with staging winning,
-    # then only inject values that are not already set in the shell.
+    # Priority: shell > .env > .env.staging
+    # Read both files without touching os.environ, merge with .env winning,
+    # and use .env.staging only as a fallback template/default layer.
     # Skip placeholder values of the form <...> so template lines in
     # .env.staging never override real credentials from .env or the shell.
     import re as _re
     _PLACEHOLDER = _re.compile(r"^\s*<[^>]+>\s*$")
 
-    _merged: dict = {}
-    if _base_env.exists():
-        _merged.update(dotenv_values(_base_env))
     if _staging_env.exists():
+        _merged = {}
         for _k, _v in dotenv_values(_staging_env).items():
             if _v is not None and not _PLACEHOLDER.match(_v):
-                _merged[_k] = _v  # staging wins only when value is non-placeholder
+                _merged[_k] = _v
+    else:
+        _merged = {}
+    if _base_env.exists():
+        for _k, _v in dotenv_values(_base_env).items():
+            if _v is not None and not _PLACEHOLDER.match(_v):
+                _merged[_k] = _v
     for _k, _v in _merged.items():
         if _k not in os.environ and _v is not None:
             os.environ[_k] = _v
@@ -71,7 +75,7 @@ FACTORY_AGENT_ENABLED_FAMILIES: str = os.getenv(
 )
 FACTORY_AGENT_DEMO_FAMILY: str = os.getenv("FACTORY_AGENT_DEMO_FAMILY", "binance_funding_contrarian")
 FACTORY_AGENT_CODEX_MODEL_CHEAP: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_CHEAP", "gpt-5.1-codex-mini")
-FACTORY_AGENT_CODEX_MODEL_PROPOSAL: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_PROPOSAL", "gpt-5.2-codex")
+FACTORY_AGENT_CODEX_MODEL_PROPOSAL: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_PROPOSAL", "gpt-5.4")
 FACTORY_AGENT_CODEX_MODEL_STANDARD: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_STANDARD", "gpt-5.1-codex")
 FACTORY_AGENT_CODEX_MODEL_HARD: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_HARD", "gpt-5.2-codex")
 FACTORY_AGENT_CODEX_MODEL_FRONTIER: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_FRONTIER", "gpt-5.3-codex")
@@ -428,6 +432,20 @@ FACTORY_MAX_ACTIVE_LINEAGES_PER_FAMILY: int = int(
 # Observability output paths.
 FACTORY_LOG_LEVEL: str = os.getenv("FACTORY_LOG_LEVEL", "INFO").strip().upper()
 FACTORY_LOG_JSON: bool = os.getenv("FACTORY_LOG_JSON", "true").lower() == "true"
+FACTORY_DATA_MIN_POLL_SECONDS_ALPACA: int = int(os.getenv("FACTORY_DATA_MIN_POLL_SECONDS_ALPACA", "60"))
+FACTORY_DATA_MIN_POLL_SECONDS_BINANCE: int = int(os.getenv("FACTORY_DATA_MIN_POLL_SECONDS_BINANCE", "60"))
+FACTORY_DATA_MIN_POLL_SECONDS_POLYMARKET: int = int(os.getenv("FACTORY_DATA_MIN_POLL_SECONDS_POLYMARKET", "60"))
+FACTORY_DATA_MIN_POLL_SECONDS_YAHOO: int = int(os.getenv("FACTORY_DATA_MIN_POLL_SECONDS_YAHOO", "900"))
+FACTORY_DATA_MIN_POLL_SECONDS_BETFAIR: int = int(os.getenv("FACTORY_DATA_MIN_POLL_SECONDS_BETFAIR", "60"))
+FACTORY_DATA_FEED_POLL_SECONDS_BARS_1M: int = int(os.getenv("FACTORY_DATA_FEED_POLL_SECONDS_BARS_1M", "60"))
+FACTORY_DATA_FEED_POLL_SECONDS_QUOTES: int = int(os.getenv("FACTORY_DATA_FEED_POLL_SECONDS_QUOTES", "60"))
+FACTORY_DATA_FEED_POLL_SECONDS_FUNDING: int = int(os.getenv("FACTORY_DATA_FEED_POLL_SECONDS_FUNDING", "300"))
+FACTORY_DATA_FEED_POLL_SECONDS_DEFAULT: int = int(os.getenv("FACTORY_DATA_FEED_POLL_SECONDS_DEFAULT", "300"))
+FACTORY_DATA_AGGREGATION_POLICY: str = os.getenv("FACTORY_DATA_AGGREGATION_POLICY", "local_resample_from_1m").strip()
+FACTORY_DATA_RETENTION_RAW_1M_MINUTES: int = int(os.getenv("FACTORY_DATA_RETENTION_RAW_1M_MINUTES", "2880"))
+FACTORY_DATA_API_RATE_LIMIT_PER_MINUTE_BINANCE: int = int(os.getenv("FACTORY_DATA_API_RATE_LIMIT_PER_MINUTE_BINANCE", "1200"))
+FACTORY_DATA_API_RATE_LIMIT_PER_MINUTE_ALPACA: int = int(os.getenv("FACTORY_DATA_API_RATE_LIMIT_PER_MINUTE_ALPACA", "200"))
+FACTORY_DATA_API_RATE_LIMIT_PER_MINUTE_POLYMARKET: int = int(os.getenv("FACTORY_DATA_API_RATE_LIMIT_PER_MINUTE_POLYMARKET", "120"))
 FACTORY_OPERATOR_STATUS_PATH: str = os.getenv(
     "FACTORY_OPERATOR_STATUS_PATH", "artifacts/operator_status.json"
 ).strip()

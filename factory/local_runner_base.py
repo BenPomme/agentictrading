@@ -89,16 +89,33 @@ class LocalPortfolioRunner(ABC):
             json.dumps(state, indent=0), encoding="utf-8"
         )
 
-    def write_runtime_health(self, health_status: str = "healthy", error: str | None = None) -> None:
+    def write_runtime_health(
+        self,
+        health_status: str = "healthy",
+        error: str | None = None,
+        *,
+        issue_codes: list[str] | None = None,
+        blockers: list[str] | None = None,
+        readiness: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         payload = {
             "schema_version": 1,
             "portfolio_id": self.portfolio_id,
             "process": {"pid": None, "running": True, "status": "running"},
             "publication": {"status": "publishing", "last_publish_at": datetime.now(timezone.utc).isoformat()},
-            "health": {"status": health_status, "issue_codes": [], "error": error},
+            "health": {
+                "status": health_status,
+                "issue_codes": list(issue_codes or []),
+                "error": error,
+                "blockers": list(blockers or []),
+            },
+            "readiness": dict(readiness or {}),
             "status": "running",
             "running": True,
         }
+        if extra:
+            payload.update(extra)
         self._store.runtime_health_path.parent.mkdir(parents=True, exist_ok=True)
         self._store.runtime_health_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -135,7 +152,15 @@ class LocalPortfolioRunner(ABC):
                 state["mode"] = "paper"
                 self.write_state(state)
                 self.write_heartbeat({"last_cycle_ts": time.time()})
-                self.write_runtime_health()
+                runtime_health = dict((cycle_out or {}).get("runtime_health") or {})
+                self.write_runtime_health(
+                    health_status=str(runtime_health.get("health_status") or "healthy"),
+                    error=str(runtime_health.get("error") or "") or None,
+                    issue_codes=list(runtime_health.get("issue_codes") or []),
+                    blockers=list(runtime_health.get("blockers") or []),
+                    readiness=dict(runtime_health.get("readiness") or {}),
+                    extra={k: v for k, v in runtime_health.items() if k not in {"health_status", "error", "issue_codes", "blockers", "readiness"}},
+                )
             except Exception as e:
                 logger.exception("Runner cycle error for %s: %s", self.portfolio_id, e)
                 self.write_heartbeat({"error": str(e)})

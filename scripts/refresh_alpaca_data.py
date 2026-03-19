@@ -169,6 +169,7 @@ def main():
         "quotes_success": quotes_ok,
         "tickers": tickers,
         "days": args.days,
+        "timeframe": args.timeframe,
     }
     meta_path = output_dir / "metadata.json"
     with open(meta_path, "w") as f:

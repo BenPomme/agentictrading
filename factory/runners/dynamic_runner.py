@@ -12,6 +12,7 @@ import pandas as pd
 from factory.data_loader import cycle_interval_for_source, load_data_for_requirements
 from factory.local_runner_base import LocalPortfolioRunner
 from factory.model_sandbox import load_model_from_code
+from factory.paper_data import assess_paper_data_readiness, build_paper_data_contract
 from factory.paper_book import PaperTradeBook
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,8 @@ class DynamicModelRunner(LocalPortfolioRunner):
         self._project_root = Path(_cfg.__file__).resolve().parent
         self._data: pd.DataFrame | None = None
         self._data_req: dict | None = None
+        self._paper_data_contract = None
+        self._last_readiness = None
         # Set after first load based on source
         self.requires_market_open = False
 
@@ -93,7 +96,26 @@ class DynamicModelRunner(LocalPortfolioRunner):
             if self._runtime_data_source:
                 self._data_req = dict(self._data_req)
                 self._data_req["source"] = self._runtime_data_source
-            self._data = load_data_for_requirements(self._data_req, self._project_root)
+            self._paper_data_contract = build_paper_data_contract(
+                self._genome_params,
+                model_requirement=self._data_req,
+            )
+            self._last_readiness = assess_paper_data_readiness(self._paper_data_contract, self._project_root)
+            if not self._last_readiness.ready:
+                self.write_runtime_health(
+                    health_status="warning",
+                    issue_codes=["data_not_ready"],
+                    blockers=[self._last_readiness.blocking_reason],
+                    readiness={
+                        "status": "validation_blocked",
+                        "blockers": [self._last_readiness.blocking_reason],
+                        "data_contract": self._paper_data_contract.to_dict(),
+                    },
+                    extra={"data_readiness": self._last_readiness.to_dict()},
+                )
+                self._model = None
+                return
+            self._data = load_data_for_requirements(self._paper_data_contract.requirements[0].loader_dict(), self._project_root)
 
             if self._data is None or len(self._data) == 0:
                 logger.warning("No data loaded for model %s", self._class_name)
@@ -119,16 +141,62 @@ class DynamicModelRunner(LocalPortfolioRunner):
             return {"ready": False, "reason": "model_not_loaded", "error": str(e)}
 
         if self._model is None:
-            return {"ready": False, "reason": "model_not_loaded"}
+            readiness = self._last_readiness.to_dict() if self._last_readiness else {}
+            return {
+                "ready": False,
+                "reason": "model_not_loaded",
+                "readiness_v2": readiness,
+                "paper_data_contract": self._paper_data_contract.to_dict() if self._paper_data_contract else None,
+                "runtime_health": {
+                    "health_status": "warning" if readiness else "healthy",
+                    "issue_codes": ["data_not_ready"] if readiness and not readiness.get("ready") else [],
+                    "blockers": [readiness.get("blocking_reason")] if readiness and not readiness.get("ready") else [],
+                    "readiness": {
+                        "status": "validation_blocked" if readiness and not readiness.get("ready") else "",
+                        "blockers": [readiness.get("blocking_reason")] if readiness and not readiness.get("ready") else [],
+                    },
+                    "data_readiness": readiness or {},
+                },
+            }
 
         book = self._book
 
         try:
             # Reload latest data (if OHLCV, re-read parquets)
-            self._data = load_data_for_requirements(
-                self._data_req or self._model.required_data(),
-                self._project_root,
+            self._paper_data_contract = build_paper_data_contract(
+                self._genome_params,
+                model_requirement=self._data_req or self._model.required_data(),
             )
+            self._last_readiness = assess_paper_data_readiness(self._paper_data_contract, self._project_root)
+            if not self._last_readiness.ready:
+                self.write_runtime_health(
+                    health_status="warning",
+                    issue_codes=["data_not_ready"],
+                    blockers=[self._last_readiness.blocking_reason],
+                    readiness={
+                        "status": "validation_blocked",
+                        "blockers": [self._last_readiness.blocking_reason],
+                        "data_contract": self._paper_data_contract.to_dict(),
+                    },
+                    extra={"data_readiness": self._last_readiness.to_dict()},
+                )
+                return {
+                    "ready": False,
+                    "reason": "data_not_ready",
+                    "readiness_v2": self._last_readiness.to_dict(),
+                    "paper_data_contract": self._paper_data_contract.to_dict(),
+                    "runtime_health": {
+                        "health_status": "warning",
+                        "issue_codes": ["data_not_ready"],
+                        "blockers": [self._last_readiness.blocking_reason],
+                        "readiness": {
+                            "status": "validation_blocked",
+                            "blockers": [self._last_readiness.blocking_reason],
+                        },
+                        "data_readiness": self._last_readiness.to_dict(),
+                    },
+                }
+            self._data = load_data_for_requirements(self._paper_data_contract.requirements[0].loader_dict(), self._project_root)
         except Exception as e:
             logger.warning("Failed to reload data: %s", e)
             if self._data is None or len(self._data) == 0:
@@ -210,4 +278,13 @@ class DynamicModelRunner(LocalPortfolioRunner):
             "model": self._class_name,
             "equity": book.equity(),
             "trade_count": book.trade_count,
+            "readiness_v2": self._last_readiness.to_dict() if self._last_readiness else None,
+            "paper_data_contract": self._paper_data_contract.to_dict() if self._paper_data_contract else None,
+            "runtime_health": {
+                "health_status": "healthy",
+                "issue_codes": [],
+                "blockers": [],
+                "readiness": {"status": "running", "blockers": []},
+                "data_readiness": self._last_readiness.to_dict() if self._last_readiness else {},
+            },
         }

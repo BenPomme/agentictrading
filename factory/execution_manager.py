@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import config
 from factory.execution_targets import parse_runtime_portfolio_alias
+from factory.paper_data import runner_interval_for_portfolio
+from factory.registry import FactoryRegistry
 from factory.state_store import PortfolioStateStore
 
 
@@ -119,29 +121,17 @@ def get_runtime_portfolio_spec(portfolio_id: str) -> RuntimePortfolioSpec:
 
 
 def _cycle_interval_for_portfolio(portfolio_id: str) -> float:
-    """Derive cycle interval from the portfolio's venue via registry, with defaults."""
+    """Derive cycle interval from active model data contracts, with legacy fallbacks."""
     try:
-        from factory.registry import FactoryRegistry
-
         project_root = _project_root()
         factory_root = Path(getattr(config, "FACTORY_ROOT", "data/factory"))
         if not factory_root.is_absolute():
             factory_root = project_root / factory_root
 
         registry = FactoryRegistry(str(factory_root))
-        for lineage in registry.lineages():
-            if not lineage.active:
-                continue
-            if portfolio_id in lineage.target_portfolios:
-                venues = lineage.target_venues
-                for v in venues:
-                    if v.startswith("yahoo") or v.startswith("alpaca"):
-                        return 3600.0
-                    if v == "binance":
-                        return 28800.0
-                    if v in {"betfair", "polymarket"}:
-                        return 300.0
-                break
+        interval = runner_interval_for_portfolio(portfolio_id, registry)
+        if interval > 0:
+            return interval
     except Exception:
         pass
 

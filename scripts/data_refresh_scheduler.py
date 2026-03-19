@@ -12,18 +12,15 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from factory.paper_data import build_refresh_plan
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_FILE = PROJECT_ROOT / "data" / "factory" / "data_refresh_state.json"
-
-TASKS = {
-    "yahoo": {"script": "scripts/refresh_yahoo_data.py"},
-    "alpaca": {"script": "scripts/refresh_alpaca_data.py"},
-    "binance": {"script": "scripts/refresh_binance_funding.py"},
-    "polymarket": {"script": "scripts/fetch_polymarket_history.py"},
-}
 
 _shutdown = False
 
@@ -52,7 +49,7 @@ def save_state(state):
         logger.warning("Could not save state to %s: %s", STATE_FILE, e)
 
 
-def run_script(name, script_path, timeout=300):
+def run_script(name, script_path, args=None, timeout=300):
     path = PROJECT_ROOT / script_path
     if not path.exists():
         logger.error("Script not found: %s", path)
@@ -60,7 +57,7 @@ def run_script(name, script_path, timeout=300):
     logger.info("%s refresh started at %s", name, time.strftime("%Y-%m-%d %H:%M:%S"))
     try:
         result = subprocess.run(
-            [sys.executable, str(path)],
+            [sys.executable, str(path), *(args or [])],
             cwd=str(PROJECT_ROOT),
             timeout=timeout,
             capture_output=True,
@@ -87,40 +84,37 @@ def run_script(name, script_path, timeout=300):
 
 def main():
     parser = argparse.ArgumentParser(description="Data refresh scheduler daemon")
-    parser.add_argument("--yahoo-interval-hours", type=float, default=0.25)
-    parser.add_argument("--alpaca-interval-hours", type=float, default=0.083)
-    parser.add_argument("--binance-interval-hours", type=float, default=0.25)
-    parser.add_argument("--polymarket-interval-hours", type=float, default=0.25)
     parser.add_argument("--check-interval-seconds", type=int, default=30)
     args = parser.parse_args()
-
-    intervals = {
-        "yahoo": args.yahoo_interval_hours * 3600,
-        "alpaca": args.alpaca_interval_hours * 3600,
-        "binance": args.binance_interval_hours * 3600,
-        "polymarket": args.polymarket_interval_hours * 3600,
-    }
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
     state = load_state()
-    for name in TASKS:
+    plan = build_refresh_plan(PROJECT_ROOT)
+    tasks = {item.task_id: item for item in plan}
+    for name in tasks:
         state.setdefault(name, 0)
 
-    for name, cfg in TASKS.items():
+    for name, task in tasks.items():
         logger.info("%s refresh (first run on startup)", name)
-        run_script(name, cfg["script"])
+        run_script(name, task.script, args=task.args)
         state[name] = time.time()
     save_state(state)
 
     while not _shutdown:
         now = time.time()
-        for name, cfg in TASKS.items():
-            interval = intervals[name]
+        plan = build_refresh_plan(PROJECT_ROOT)
+        tasks = {item.task_id: item for item in plan}
+        for name in list(state.keys()):
+            if name not in tasks:
+                state.pop(name, None)
+        for name, task in tasks.items():
+            state.setdefault(name, 0)
+            interval = task.interval_seconds
             last = state.get(name, 0)
             if now - last >= interval:
-                if run_script(name, cfg["script"]):
+                if run_script(name, task.script, args=task.args):
                     state[name] = now
                     save_state(state)
         time.sleep(args.check_interval_seconds)

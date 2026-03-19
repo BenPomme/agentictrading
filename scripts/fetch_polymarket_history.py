@@ -146,6 +146,7 @@ def run(
         json.dumps(
             {
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "interval": interval,
                 "active_count": len(active_markets),
                 "resolved_count": len(resolved_markets),
                 "markets": [

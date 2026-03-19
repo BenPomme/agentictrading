@@ -149,10 +149,20 @@ class FactoryRegistry:
         lineage: LineageRecord,
     ) -> None:
         with self._lock:
+            from factory.paper_data import build_paper_data_contract
+
             lineage_dir = self.lineages_dir / lineage.lineage_id
             lineage_dir.mkdir(parents=True, exist_ok=True)
             self._atomic_write_json(lineage_dir / "hypothesis.json", hypothesis.to_dict())
-            self._atomic_write_json(lineage_dir / "genome.json", genome.to_dict())
+            genome_dict = genome.to_dict()
+            params = dict(genome_dict.get("parameters") or {})
+            if "paper_data_contract" not in params:
+                params["paper_data_contract"] = build_paper_data_contract(
+                    params,
+                    target_venues=lineage.target_venues,
+                ).to_dict()
+                genome_dict["parameters"] = params
+            self._atomic_write_json(lineage_dir / "genome.json", genome_dict)
             self._atomic_write_json(lineage_dir / "experiment.json", experiment.to_dict())
             self._atomic_write_json(lineage_dir / "lineage.json", lineage.to_dict())
             catalog = self._catalog()
@@ -199,8 +209,16 @@ class FactoryRegistry:
 
     def save_genome(self, lineage_id: str, genome: StrategyGenome) -> None:
         with self._lock:
+            from factory.paper_data import build_paper_data_contract
+
             genome_dict = genome.to_dict()
             params = genome_dict.get("parameters", {})
+            lineage = self.load_lineage(lineage_id)
+            if "paper_data_contract" not in params:
+                params["paper_data_contract"] = build_paper_data_contract(
+                    params,
+                    target_venues=(lineage.target_venues if lineage is not None else []),
+                ).to_dict()
             if "model_code_path" in params and params["model_code_path"]:
                 try:
                     import config as _cfg

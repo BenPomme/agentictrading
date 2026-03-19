@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from factory.paper_data import aggregate_time_bars, cadence_to_seconds
+
 logger = logging.getLogger(__name__)
 
 _VENUE_DATA_SUBDIRS: dict[str, str] = {
@@ -54,23 +56,27 @@ def load_data_for_requirements(data_req: dict, project_root: Path) -> pd.DataFra
     """
     source = (data_req.get("source") or "").strip().lower()
     instruments = data_req.get("instruments") or []
+    feed_type = str(data_req.get("feed_type") or "bars").strip().lower()
+    cadence_seconds = cadence_to_seconds(data_req.get("cadence_seconds"))
     # fields is accepted but we load all available; caller can filter downstream
 
     if source == "yahoo":
-        return _load_yahoo(project_root, instruments)
+        return _load_yahoo(project_root, instruments, cadence_seconds=cadence_seconds)
     if source == "alpaca":
-        return _load_alpaca(project_root, instruments)
+        return _load_alpaca(project_root, instruments, cadence_seconds=cadence_seconds)
     if source == "binance":
-        return _load_binance(project_root, instruments)
+        if feed_type == "funding":
+            return _load_binance_funding(project_root, instruments)
+        return _load_binance_bars(project_root, instruments, cadence_seconds=cadence_seconds)
     if source == "betfair":
         return _load_betfair(project_root, instruments)
     if source == "polymarket":
-        return _load_polymarket(project_root)
+        return _load_polymarket(project_root, instruments, cadence_seconds=cadence_seconds)
 
     raise ValueError(f"Unknown source: {source}")
 
 
-def _load_yahoo(project_root: Path, instruments: list[str]) -> pd.DataFrame:
+def _load_yahoo(project_root: Path, instruments: list[str], *, cadence_seconds: int = 0) -> pd.DataFrame:
     base = project_root / "data" / "yahoo" / "ohlcv"
     if not base.exists():
         raise FileNotFoundError(f"No yahoo data directory found at {base}")
@@ -95,6 +101,8 @@ def _load_yahoo(project_root: Path, instruments: list[str]) -> pd.DataFrame:
 
     if len(per_symbol) == 1:
         sym, df = next(iter(per_symbol.items()))
+        if cadence_seconds and cadence_seconds > 86400:
+            df = aggregate_time_bars(df, cadence_seconds)
         df["symbol"] = sym
         return _sort_by_datetime(df)
 
@@ -105,7 +113,7 @@ def _load_yahoo(project_root: Path, instruments: list[str]) -> pd.DataFrame:
     return combined
 
 
-def _load_alpaca(project_root: Path, instruments: list[str]) -> pd.DataFrame:
+def _load_alpaca(project_root: Path, instruments: list[str], *, cadence_seconds: int = 0) -> pd.DataFrame:
     base = project_root / "data" / "alpaca" / "bars"
     if not base.exists():
         raise FileNotFoundError(f"No alpaca data directory found at {base}")
@@ -117,6 +125,8 @@ def _load_alpaca(project_root: Path, instruments: list[str]) -> pd.DataFrame:
         try:
             df = _read_ohlcv_file(base, instr, "alpaca")
             if df is not None:
+                if cadence_seconds:
+                    df = aggregate_time_bars(df, cadence_seconds)
                 df["symbol"] = instr
                 dfs.append(df)
         except Exception as e:
@@ -156,7 +166,7 @@ def _read_ohlcv_file(base: Path, stem: str, source: str) -> pd.DataFrame | None:
     return None
 
 
-def _load_binance(project_root: Path, instruments: list[str]) -> pd.DataFrame:
+def _load_binance_funding(project_root: Path, instruments: list[str]) -> pd.DataFrame:
     base = project_root / "data" / "funding_history" / "funding_rates"
     if not base.exists():
         raise FileNotFoundError(f"No binance funding directory found at {base}")
@@ -191,6 +201,30 @@ def _load_binance(project_root: Path, instruments: list[str]) -> pd.DataFrame:
         out = out.dropna(subset=["fundingTime"])
         out = out.sort_values("fundingTime").reset_index(drop=True)
     return out
+
+
+def _load_binance_bars(project_root: Path, instruments: list[str], *, cadence_seconds: int = 0) -> pd.DataFrame:
+    base = project_root / "data" / "binance" / "klines" / "1m"
+    if not base.exists():
+        raise FileNotFoundError(f"No binance kline directory found at {base}")
+
+    dfs: list[pd.DataFrame] = []
+    to_load = instruments if instruments else _stems_in_dir(base, (".parquet", ".csv"))
+    for instr in to_load:
+        try:
+            df = _read_ohlcv_file(base, instr, "binance")
+            if df is not None:
+                if cadence_seconds:
+                    df = aggregate_time_bars(df, cadence_seconds)
+                df["symbol"] = instr
+                dfs.append(df)
+        except Exception as exc:
+            logger.warning("Skipping binance instrument %s: %s", instr, exc)
+
+    if not dfs:
+        raise FileNotFoundError(f"No binance bar data loaded from {base}. Requested instruments: {instruments or 'all'}.")
+    out = pd.concat(dfs)
+    return _sort_by_datetime(out)
 
 
 def _load_betfair(
@@ -245,16 +279,33 @@ def _load_betfair(
     return _sort_by_datetime(out)
 
 
-def _load_polymarket(project_root: Path) -> pd.DataFrame:
+def _load_polymarket(project_root: Path, instruments: list[str] | None = None, *, cadence_seconds: int = 0) -> pd.DataFrame:
     data_root = resolve_data_root(project_root, "polymarket")
     base = data_root / "polymarket" / "prices_history"
     if not base.exists():
         raise FileNotFoundError(f"No polymarket prices directory found at {base}")
 
     dfs: list[pd.DataFrame] = []
+    requested = set(instruments or [])
     for p in base.glob("*.parquet"):
+        if requested and p.stem not in requested:
+            continue
         try:
-            dfs.append(pd.read_parquet(p))
+            df = pd.read_parquet(p)
+            if "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+                df = df.dropna(subset=["timestamp"]).set_index("timestamp")
+            elif not isinstance(df.index, pd.DatetimeIndex):
+                continue
+            if "price" in df.columns and "close" not in df.columns:
+                df["open"] = df["price"]
+                df["high"] = df["price"]
+                df["low"] = df["price"]
+                df["close"] = df["price"]
+            if cadence_seconds:
+                df = aggregate_time_bars(df, cadence_seconds)
+            df["symbol"] = p.stem
+            dfs.append(df.reset_index())
         except Exception as e:
             logger.warning("Skipping polymarket file %s: %s", p, e)
 
@@ -339,10 +390,10 @@ def venue_for_source(source: str) -> str:
 def cycle_interval_for_source(source: str) -> float:
     """Return the default cycle interval in seconds."""
     mapping = {
-        "yahoo": 3600.0,
-        "alpaca": 3600.0,
-        "binance": 28800.0,
+        "yahoo": 900.0,
+        "alpaca": 60.0,
+        "binance": 60.0,
         "betfair": 300.0,
-        "polymarket": 300.0,
+        "polymarket": 60.0,
     }
     return mapping.get((source or "").strip().lower(), 3600.0)
