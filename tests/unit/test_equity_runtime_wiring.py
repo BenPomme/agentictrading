@@ -197,3 +197,103 @@ class TestOrchestratorEquityPortfolioAssignment:
 
         non_equity_probe = {"target_venues": ["binance"], "primary_connector_ids": ["binance_core"]}
         assert is_equity_family(non_equity_probe) is False
+
+    def test_local_runner_blocks_stock_fallback_without_explicit_runtime_model(self, tmp_path, monkeypatch):
+        import json
+
+        from factory.contracts import (
+            ExperimentSpec,
+            FactoryFamily,
+            LineageRecord,
+            MutationBounds,
+            PromotionStage,
+            ResearchHypothesis,
+            StrategyGenome,
+        )
+        from factory.local_runner_base import BlockedLocalRunner
+        from factory.local_runner_main import get_runner
+        from factory.registry import FactoryRegistry
+
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True, exist_ok=True)
+        factory_root = project_root / "data" / "factory"
+        monkeypatch.setattr("config.FACTORY_ROOT", str(factory_root))
+
+        registry = FactoryRegistry(factory_root)
+        family = FactoryFamily(
+            family_id="oil_family",
+            label="oil",
+            thesis="thesis",
+            target_portfolios=["oil_portfolio"],
+            target_venues=["yahoo", "polymarket"],
+            primary_connector_ids=["yahoo_stocks", "polymarket_history"],
+            champion_lineage_id="oil_family:champion",
+            shadow_challenger_ids=[],
+            paper_challenger_ids=[],
+            budget_split={"research": 1.0},
+            queue_stage=PromotionStage.SHADOW.value,
+            explainer="explainer",
+        )
+        registry.save_family(family)
+        registry.save_research_pack(
+            hypothesis=ResearchHypothesis(
+                hypothesis_id="oil:h",
+                family_id="oil_family",
+                title="oil",
+                thesis="thesis",
+                scientific_domains=["econ"],
+                lead_agent_role="lead",
+                success_metric="roi",
+                guardrails=[],
+            ),
+            genome=StrategyGenome(
+                genome_id="oil:g",
+                lineage_id="oil_family:champion",
+                family_id="oil_family",
+                parent_genome_id=None,
+                role="champion",
+                parameters={},
+                mutation_bounds=MutationBounds(),
+                scientific_domains=["econ"],
+                budget_bucket="standard",
+                resource_profile="local",
+                budget_weight_pct=1.0,
+            ),
+            experiment=ExperimentSpec(
+                experiment_id="oil:e",
+                lineage_id="oil_family:champion",
+                family_id="oil_family",
+                hypothesis_id="oil:h",
+                genome_id="oil:g",
+                goldfish_workspace=str(project_root / "research" / "goldfish" / "oil_family"),
+                pipeline_stages=["dataset", "train"],
+                backend_mode="goldfish_sidecar",
+                resource_profile="local",
+                expected_outputs={
+                    "latest_run": {
+                        "mode": "hmm_regime_adaptive",
+                        "resolved_model_engine": "hmm_regime",
+                    }
+                },
+            ),
+            lineage=LineageRecord(
+                lineage_id="oil_family:champion",
+                family_id="oil_family",
+                label="oil",
+                role="champion",
+                current_stage=PromotionStage.SHADOW.value,
+                target_portfolios=["oil_portfolio"],
+                target_venues=["yahoo", "polymarket"],
+                hypothesis_id="oil:h",
+                genome_id="oil:g",
+                experiment_id="oil:e",
+                budget_bucket="standard",
+                budget_weight_pct=1.0,
+                connector_ids=[],
+                goldfish_workspace=str(project_root / "research" / "goldfish" / "oil_family"),
+            ),
+        )
+
+        runner = get_runner("oil_portfolio")
+
+        assert isinstance(runner, BlockedLocalRunner)

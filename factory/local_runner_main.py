@@ -7,7 +7,8 @@ import logging
 import sys
 from pathlib import Path
 
-from factory.local_runner_base import LocalPortfolioRunner
+from factory.local_runner_base import BlockedLocalRunner, LocalPortfolioRunner
+from factory.runtime_admission import assess_lineage_runtime_admission
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
                 runtime_venue = family_runtime_venue(family_cfg) if family_cfg else None
 
                 genome = registry.load_genome(lineage.lineage_id)
+                runtime_admission = assess_lineage_runtime_admission(project_root, registry, lineage)
                 if genome is not None:
                     code_path = str(genome.parameters.get("model_code_path") or "").strip()
                     class_name = str(genome.parameters.get("model_class_name") or "").strip()
@@ -67,6 +69,16 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
                             genome_params=dict(genome.parameters),
                             runtime_data_source=runtime_ds,
                         )
+                if not runtime_admission.admitted:
+                    logger.warning(
+                        "Blocking runner startup for %s: %s",
+                        portfolio_id,
+                        runtime_admission.reason or "runtime admission failed",
+                    )
+                    return BlockedLocalRunner(
+                        portfolio_id,
+                        reason=str(runtime_admission.reason or "runtime admission failed"),
+                    )
                 
                 # Legacy dispatch for funding rate strategies (which use custom runner)
                 venues = set(lineage.target_venues)

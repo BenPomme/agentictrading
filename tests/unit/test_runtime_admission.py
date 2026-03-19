@@ -118,7 +118,7 @@ def test_runtime_admission_blocks_stock_hmm_fallback(tmp_path, monkeypatch):
 
     assert result.admitted is False
     assert result.runner_kind == "stock_hmm_fallback"
-    assert result.reason == "runtime_model_missing:stock_fallback_requires_explicit_runtime_model"
+    assert result.reason == "runtime_model_missing:research_only_engine:stock_fallback"
 
 
 def test_runtime_admission_accepts_explicit_sandbox_safe_model(tmp_path, monkeypatch):

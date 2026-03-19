@@ -177,3 +177,28 @@ class StubLocalRunner(LocalPortfolioRunner):
             "mode": "paper",
             "runner": "stub",
         }
+
+
+class BlockedLocalRunner(LocalPortfolioRunner):
+    """Runner that stays alive but clearly reports a runtime admission block."""
+
+    def __init__(self, portfolio_id: str, *, reason: str) -> None:
+        super().__init__(portfolio_id)
+        self._reason = reason
+
+    def run_cycle(self) -> Dict[str, Any]:
+        return {
+            "ready": False,
+            "mode": "paper",
+            "reason": "runtime_admission_blocked",
+            "runtime_health": {
+                "health_status": "critical",
+                "error": self._reason,
+                "issue_codes": ["runtime_error", "readiness_blocked", "runtime_admission_blocked"],
+                "blockers": [self._reason],
+                "readiness": {
+                    "status": "runtime_admission_blocked",
+                    "blockers": [self._reason],
+                },
+            },
+        }
