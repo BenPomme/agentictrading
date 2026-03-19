@@ -2337,6 +2337,7 @@ def _build_family_view(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "active_lineage_count": int(family.get("active_lineage_count", 0) or 0),
                 "retired_lineage_count": int(family.get("retired_lineage_count", 0) or 0),
                 "target_portfolios": list(family.get("target_portfolios") or []),
+                "metadata": dict(family.get("metadata") or {}),
                 "champion_lineage_id": champion.get("lineage_id"),
                 "champion_stage": champion.get("current_stage"),
                 "champion_paper_state": family.get("champion_paper_state"),
@@ -2766,6 +2767,7 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
             family_row.setdefault("target_portfolios", list(registry_family.target_portfolios or []))
             family_row.setdefault("origin", registry_family.origin)
             family_row.setdefault("source_idea_id", registry_family.source_idea_id)
+            family_row.setdefault("metadata", dict(registry_family.metadata or {}))
         merged_families.append(family_row)
     factory_state["families"] = merged_families
     journal = _read_markdown_sections(_factory_journal_path())

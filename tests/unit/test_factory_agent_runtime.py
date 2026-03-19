@@ -1679,6 +1679,72 @@ def test_dashboard_snapshot_blocks_active_label_when_runner_is_not_ready(tmp_pat
     assert "model_not_loaded" in str(family_row["runner_gate_reason"])
 
 
+def test_dashboard_snapshot_surfaces_research_metadata_for_equity_family(tmp_path, monkeypatch):
+    from factory.registry import FactoryRegistry
+
+    factory_root = tmp_path / "factory"
+    state_root = factory_root / "state"
+    state_root.mkdir(parents=True, exist_ok=True)
+    family_id = "vol_surface_dispersion_rotation"
+    champion_id = f"{family_id}:champion"
+    (state_root / "summary.json").write_text(
+        json.dumps(
+            {
+                "families": [
+                    {
+                        "family_id": family_id,
+                        "label": "Vol Surface",
+                        "champion_lineage_id": champion_id,
+                        "target_portfolios": ["alpaca_paper"],
+                        "target_venues": ["alpaca"],
+                    }
+                ],
+                "lineages": [
+                    {
+                        "lineage_id": champion_id,
+                        "family_id": family_id,
+                        "role": "champion",
+                        "current_stage": "paper",
+                        "target_portfolios": ["alpaca_paper"],
+                        "target_venues": ["alpaca"],
+                    }
+                ],
+                "queue": [],
+                "research_summary": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_root / "STATE.md").write_text("## Recent Actions\n", encoding="utf-8")
+
+    registry = FactoryRegistry(factory_root)
+    registry.save_family(
+        FactoryFamily(
+            family_id=family_id,
+            label="Vol Surface",
+            thesis="Surface thesis",
+            target_portfolios=["alpaca_paper"],
+            target_venues=["alpaca"],
+            primary_connector_ids=["alpaca_stocks"],
+            champion_lineage_id=champion_id,
+            shadow_challenger_ids=[],
+            paper_challenger_ids=[],
+            budget_split={"research": 1.0},
+            queue_stage="paper",
+            explainer="vol surface",
+            metadata={"research_venues": ["yahoo"], "research_connector_ids": ["yahoo_stocks"]},
+        )
+    )
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    snapshot = build_dashboard_snapshot()
+
+    family_row = snapshot["factory"]["families"][0]
+    assert family_row["target_venues"] == ["alpaca"]
+    assert family_row["research_venues"] == ["yahoo"]
+    assert family_row["research_connector_ids"] == ["yahoo_stocks"]
+
+
 def test_dashboard_snapshot_exposes_runtime_lane_metadata(tmp_path, monkeypatch):
     factory_root = tmp_path / "factory"
     state_root = factory_root / "state"
