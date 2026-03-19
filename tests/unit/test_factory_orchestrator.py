@@ -9,6 +9,7 @@ import pytest
 import config
 from factory.agent_runtime import AgentRunResult
 from factory.contracts import EvaluationBundle
+from factory.contracts import LineageRecord
 from factory.experiment_runner import FactoryExperimentRunner
 from factory.manifests import candidate_context_refs_for_portfolio, live_manifest_refs_for_portfolio
 from factory.orchestrator import FactoryOrchestrator
@@ -797,6 +798,86 @@ def test_run_experiment_injects_debug_agent_maintenance_request(tmp_path, monkey
     assert inputs["maintenance_request"]["action"] == "rework"
     assert inputs["maintenance_request"]["source"] == "debug_agent"
     assert inputs["maintenance_request"]["should_pause_lineage"] is True
+
+
+def test_debug_review_reason_triggers_for_shadow_runtime_load_failure(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_ENABLE_GOLDFISH_PROVENANCE", False)
+    monkeypatch.setenv("FACTORY_ENABLE_GOLDFISH_PROVENANCE", "false")
+
+    orchestrator = FactoryOrchestrator(project_root)
+    lineage = LineageRecord(
+        lineage_id="shadow:bad-model",
+        family_id="shadow_family",
+        label="shadow",
+        role="challenger",
+        current_stage="shadow",
+        target_portfolios=["shadow_portfolio"],
+        target_venues=["polymarket"],
+        hypothesis_id="h",
+        genome_id="g",
+        experiment_id="e",
+        budget_bucket="standard",
+        budget_weight_pct=1.0,
+        connector_ids=[],
+        goldfish_workspace=str(project_root / "research" / "goldfish" / "shadow_family"),
+    )
+
+    reason = orchestrator._debug_review_reason(
+        lineage,
+        {
+            "health_status": "critical",
+            "issue_codes": ["runtime_error", "readiness_blocked"],
+            "error": "Code validation failed",
+        },
+    )
+
+    assert reason == "new_bug_signature"
+
+
+def test_maintenance_request_reworks_runtime_model_load_failures(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    factory_root = tmp_path / "factory"
+    goldfish_root = project_root / "research" / "goldfish"
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_ENABLE_GOLDFISH_PROVENANCE", False)
+    monkeypatch.setenv("FACTORY_ENABLE_GOLDFISH_PROVENANCE", "false")
+
+    orchestrator = FactoryOrchestrator(project_root)
+    lineage = LineageRecord(
+        lineage_id="shadow:bad-model",
+        family_id="shadow_family",
+        label="shadow",
+        role="challenger",
+        current_stage="shadow",
+        target_portfolios=["shadow_portfolio"],
+        target_venues=["polymarket"],
+        hypothesis_id="h",
+        genome_id="g",
+        experiment_id="e",
+        budget_bucket="standard",
+        budget_weight_pct=1.0,
+        connector_ids=[],
+        goldfish_workspace=str(project_root / "research" / "goldfish" / "shadow_family"),
+    )
+
+    request = orchestrator._maintenance_request(
+        lineage,
+        {"health_status": "critical", "issue_codes": ["model_not_loaded"]},
+    )
+
+    assert request is not None
+    assert request["action"] == "rework"
+    assert "failed to load" in request["reason"].lower()
 
 
 def test_run_experiment_injects_latest_operator_action_context(tmp_path, monkeypatch):

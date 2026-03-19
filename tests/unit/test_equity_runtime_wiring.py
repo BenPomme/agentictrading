@@ -138,6 +138,50 @@ class TestDynamicModelRunnerDataSourceOverride:
             assert payload["reason"] in {"model_not_loaded", "data_not_ready"}
             assert payload["runtime_health"]["issue_codes"] == ["data_not_ready"]
 
+    def test_model_load_failure_surfaces_runtime_error_and_retry_cooldown(self, monkeypatch):
+        with patch("factory.runners.dynamic_runner.PaperTradeBook"), \
+             patch("factory.runners.dynamic_runner.LocalPortfolioRunner.__init__", return_value=None), \
+             patch("factory.runners.dynamic_runner.load_model_from_code", side_effect=ValueError("Code validation failed")), \
+             patch("factory.runners.dynamic_runner.assess_paper_data_readiness"):
+            from factory.runners.dynamic_runner import DynamicModelRunner
+            from pathlib import Path
+
+            monkeypatch.setattr("config.FACTORY_MODEL_LOAD_RETRY_COOLDOWN_SECONDS", 600, raising=False)
+
+            runner = DynamicModelRunner.__new__(DynamicModelRunner)
+            runner.portfolio_id = "alpaca_paper"
+            runner._model_code_path = "/fake/model.py"
+            runner._class_name = "TestModel"
+            runner._genome_params = {}
+            runner._runtime_data_source = "alpaca"
+            runner._model = None
+            runner._last_fit_date = None
+            runner._retrain_interval_days = 21
+            runner._project_root = Path("/fake")
+            runner._data = None
+            runner._data_req = None
+            runner._paper_data_contract = None
+            runner._last_readiness = None
+            runner._last_model_load_error = None
+            runner._last_model_load_issue_codes = []
+            runner._last_model_load_blockers = []
+            runner._last_model_load_failed_at = None
+            runner._next_model_load_retry_at = None
+            runner.requires_market_open = False
+            runner.write_runtime_health = MagicMock()
+
+            payload = runner.run_cycle()
+
+            assert payload["ready"] is False
+            assert payload["reason"] == "model_not_loaded"
+            assert payload["runtime_health"]["issue_codes"] == [
+                "runtime_error",
+                "readiness_blocked",
+                "model_not_loaded",
+            ]
+            assert "Code validation failed" in str(payload["runtime_health"]["error"])
+            assert payload["runtime_health"]["model_load_retry_after"] is not None
+
 
 class TestOrchestratorEquityPortfolioAssignment:
     """Orchestrator should assign alpaca_paper for equity families."""

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 
 import pandas as pd
+import config
 
 from factory.data_loader import cycle_interval_for_source, load_data_for_requirements
 from factory.local_runner_base import LocalPortfolioRunner
@@ -74,12 +75,18 @@ class DynamicModelRunner(LocalPortfolioRunner):
         self._data_req: dict | None = None
         self._paper_data_contract = None
         self._last_readiness = None
+        self._last_model_load_error: str | None = None
+        self._last_model_load_issue_codes: list[str] = []
+        self._last_model_load_blockers: list[str] = []
+        self._last_model_load_failed_at: datetime | None = None
+        self._next_model_load_retry_at: datetime | None = None
         # Set after first load based on source
         self.requires_market_open = False
 
     def _ensure_model_loaded(self) -> None:
         """Load model, configure, fit, and set market-open flag if needed."""
         today = date.today()
+        now = datetime.now(timezone.utc)
         needs_load = self._model is None
         needs_retrain = (
             self._last_fit_date is None
@@ -87,10 +94,17 @@ class DynamicModelRunner(LocalPortfolioRunner):
         )
         if not needs_load and not needs_retrain:
             return
+        if needs_load and self._next_model_load_retry_at is not None and now < self._next_model_load_retry_at:
+            return
 
         try:
             self._model = load_model_from_code(self._model_code_path, self._class_name)
             self._model.configure(self._genome_params or {})
+            self._last_model_load_error = None
+            self._last_model_load_issue_codes = []
+            self._last_model_load_blockers = []
+            self._last_model_load_failed_at = None
+            self._next_model_load_retry_at = None
 
             self._data_req = self._model.required_data()
             if self._runtime_data_source:
@@ -129,6 +143,33 @@ class DynamicModelRunner(LocalPortfolioRunner):
             if source in ("yahoo", "alpaca"):
                 self.requires_market_open = True
         except Exception as e:
+            issue_codes = ["runtime_error", "readiness_blocked", "model_not_loaded"]
+            blocker = str(e)
+            self._last_model_load_error = blocker
+            self._last_model_load_issue_codes = issue_codes
+            self._last_model_load_blockers = [blocker]
+            self._last_model_load_failed_at = now
+            cooldown_seconds = max(
+                60,
+                int(getattr(config, "FACTORY_MODEL_LOAD_RETRY_COOLDOWN_SECONDS", 900) or 900),
+            )
+            self._next_model_load_retry_at = now + timedelta(seconds=cooldown_seconds)
+            self.write_runtime_health(
+                health_status="critical",
+                error=blocker,
+                issue_codes=issue_codes,
+                blockers=[blocker],
+                readiness={
+                    "status": "model_not_loaded",
+                    "blockers": [blocker],
+                    "retry_after": self._next_model_load_retry_at.isoformat(),
+                },
+                extra={
+                    "model_load_error": blocker,
+                    "model_load_failed_at": now.isoformat(),
+                    "model_load_retry_after": self._next_model_load_retry_at.isoformat(),
+                },
+            )
             logger.warning("Failed to load/fit model %s: %s", self._class_name, e, exc_info=True)
             self._model = None
 
@@ -142,20 +183,39 @@ class DynamicModelRunner(LocalPortfolioRunner):
 
         if self._model is None:
             readiness = self._last_readiness.to_dict() if self._last_readiness else {}
+            issue_codes = (
+                list(self._last_model_load_issue_codes)
+                if self._last_model_load_issue_codes
+                else (["data_not_ready"] if readiness and not readiness.get("ready") else [])
+            )
+            blockers = (
+                list(self._last_model_load_blockers)
+                if self._last_model_load_blockers
+                else ([readiness.get("blocking_reason")] if readiness and not readiness.get("ready") else [])
+            )
+            readiness_status = (
+                "model_not_loaded"
+                if self._last_model_load_error
+                else ("validation_blocked" if readiness and not readiness.get("ready") else "")
+            )
             return {
                 "ready": False,
                 "reason": "model_not_loaded",
+                "error": self._last_model_load_error,
                 "readiness_v2": readiness,
                 "paper_data_contract": self._paper_data_contract.to_dict() if self._paper_data_contract else None,
                 "runtime_health": {
-                    "health_status": "warning" if readiness else "healthy",
-                    "issue_codes": ["data_not_ready"] if readiness and not readiness.get("ready") else [],
-                    "blockers": [readiness.get("blocking_reason")] if readiness and not readiness.get("ready") else [],
+                    "health_status": "critical" if self._last_model_load_error else ("warning" if readiness else "healthy"),
+                    "error": self._last_model_load_error,
+                    "issue_codes": issue_codes,
+                    "blockers": blockers,
                     "readiness": {
-                        "status": "validation_blocked" if readiness and not readiness.get("ready") else "",
-                        "blockers": [readiness.get("blocking_reason")] if readiness and not readiness.get("ready") else [],
+                        "status": readiness_status,
+                        "blockers": blockers,
                     },
                     "data_readiness": readiness or {},
+                    "model_load_failed_at": self._last_model_load_failed_at.isoformat() if self._last_model_load_failed_at else None,
+                    "model_load_retry_after": self._next_model_load_retry_at.isoformat() if self._next_model_load_retry_at else None,
                 },
             }
 

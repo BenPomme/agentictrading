@@ -1532,6 +1532,7 @@ class FactoryOrchestrator:
         if execution_evidence.get("market_closed_idle"):
             return None
         if lineage.current_stage not in {
+            PromotionStage.SHADOW.value,
             PromotionStage.PAPER.value,
             PromotionStage.CANARY_READY.value,
             PromotionStage.LIVE_READY.value,
@@ -4956,13 +4957,17 @@ class FactoryOrchestrator:
         if trainability_contract_request is not None:
             return trainability_contract_request
         issue_codes = {str(item) for item in (execution_validation.get("issue_codes") or []) if str(item).strip()}
-        if issue_codes.intersection({"untrainable_model", "training_stalled"}):
+        if issue_codes.intersection({"untrainable_model", "training_stalled", "model_not_loaded"}):
             return {
                 "source": "execution_policy",
-                "action": "retrain",
-                "reason": "Execution evidence says the required learner is untrainable or training has stalled.",
+                "action": "rework" if "model_not_loaded" in issue_codes else "retrain",
+                "reason": (
+                    "Execution evidence says the runtime model failed to load and needs a runtime-safe rewrite."
+                    if "model_not_loaded" in issue_codes
+                    else "Execution evidence says the required learner is untrainable or training has stalled."
+                ),
                 "requires_human": False,
-                "issue_codes": sorted(issue_codes.intersection({"untrainable_model", "training_stalled"})),
+                "issue_codes": sorted(issue_codes.intersection({"untrainable_model", "training_stalled", "model_not_loaded"})),
             }
         if issue_codes.intersection({"stalled_model", "trade_stalled"}):
             return {
