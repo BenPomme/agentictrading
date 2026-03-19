@@ -66,6 +66,31 @@ This is a **Python-first repository**. There is no root npm package for AgenticT
 - Use `pip` to install the control plane and research factory code
 - Use `npm` only if you want to work on the React dashboard in `dashboard-ui/`
 
+### Configure `.env`
+
+Create a local env file before running the factory:
+
+```bash
+cp .env.example .env
+```
+
+For safe public-repo usage:
+
+- leave venue credentials blank unless you are explicitly testing a paper integration
+- keep the repo in paper mode
+- do not add private production secrets to this repository
+
+Common cases:
+
+- dashboard and local inspection only:
+  `.env.example` is a good starting point as-is
+- real agent/provider calls:
+  set `OPENAI_API_KEY` if you want to use the OpenAI API path
+- venue-specific paper integrations:
+  set only the credentials for the venue you are actively testing
+
+The public repo is intended to run without live-trading secrets.
+
 ### Install The Python Repo
 
 Safe local evaluation should stay in paper-mode.
