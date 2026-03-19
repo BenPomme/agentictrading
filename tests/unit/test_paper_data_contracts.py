@@ -150,6 +150,32 @@ def test_venue_level_alpaca_contract_without_instruments_uses_any_fresh_feed(tmp
     assert result.requirement_statuses[0].ready is True
 
 
+def test_yahoo_target_venue_defaults_to_alpaca_execution_contract():
+    contract = build_paper_data_contract({}, target_venues=["yahoo"])
+
+    assert [item.source for item in contract.requirements] == ["alpaca"]
+    assert [item.venue for item in contract.requirements] == ["alpaca"]
+
+
+def test_equity_model_requirement_is_migrated_from_yahoo_to_alpaca_for_paper():
+    contract = build_paper_data_contract(
+        {},
+        model_requirement={
+            "source": "yahoo",
+            "venue": "yahoo",
+            "instruments": ["SPY"],
+            "fields": ["close"],
+            "feed_type": "bars",
+            "raw_cadence_seconds": 60,
+        },
+        target_venues=["yahoo"],
+    )
+
+    requirement = contract.requirements[0]
+    assert requirement.source == "alpaca"
+    assert requirement.venue == "alpaca"
+
+
 def test_cross_venue_contract_blocks_when_one_required_feed_is_stale(tmp_path):
     bars_dir = tmp_path / "data" / "alpaca" / "bars"
     bars_dir.mkdir(parents=True, exist_ok=True)

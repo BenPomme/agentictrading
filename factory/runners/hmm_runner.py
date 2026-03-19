@@ -28,7 +28,7 @@ class HMMRegimeRunner(LocalPortfolioRunner):
             portfolio_dir=self.portfolio_dir,
             initial_balance=10_000.0,
         )
-        self.data_root = _project_root() / "data" / "yahoo" / "ohlcv"
+        self.data_root = _project_root() / "data" / "alpaca" / "bars"
         self._model = None
         self._last_fit_date: Optional[date] = None
         self._universe = [
@@ -44,10 +44,18 @@ class HMMRegimeRunner(LocalPortfolioRunner):
         try:
             df = pd.read_parquet(path)
             df.index = pd.to_datetime(df.index)
-            required = ["Open", "High", "Low", "Close", "Volume"]
-            if not all(c in df.columns for c in required):
+            required = [("open", "Open"), ("high", "High"), ("low", "Low"), ("close", "Close"), ("volume", "Volume")]
+            rename_map = {}
+            for lower, upper in required:
+                if lower in df.columns:
+                    continue
+                if upper in df.columns:
+                    rename_map[upper] = lower
+            if rename_map:
+                df = df.rename(columns=rename_map)
+            if not all(lower in df.columns for lower, _ in required):
                 return None
-            return df[required]
+            return df[[lower for lower, _ in required]]
         except Exception as e:
             logger.warning("Failed to load OHLCV for %s: %s", symbol, e)
             return None
@@ -98,7 +106,7 @@ class HMMRegimeRunner(LocalPortfolioRunner):
             last_regime = signal.get("regime", last_regime)
             direction = signal.get("direction", "flat")
             size_pct = signal.get("size_pct", 0.0)
-            price = float(df["Close"].iloc[-1])
+            price = float(df["close"].iloc[-1])
 
             pos = book.positions.get(symbol)
             current_dir = pos.direction if pos else None

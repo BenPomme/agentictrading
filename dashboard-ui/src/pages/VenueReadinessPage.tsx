@@ -206,7 +206,13 @@ function VenueCard({ v }: { v: VenueData }) {
 
       {v.families.length > 0 && (
         <div className="venue-card__families">
-          {v.families.map((f) => f.family_id).join(' · ')}
+          {v.families
+            .map((f) => {
+              const execution = (f.target_venues ?? []).join(', ') || f.venue || '—';
+              const research = (f.research_venues ?? []).join(', ') || '—';
+              return `${f.family_id} (exec ${execution} / research ${research})`;
+            })
+            .join(' · ')}
         </div>
       )}
     </div>

@@ -80,6 +80,13 @@ class TestDynamicModelRunnerDataSourceOverride:
             runner._project_root = Path("/fake")
             runner._data = None
             runner._data_req = None
+            runner._paper_data_contract = None
+            runner._last_readiness = None
+            runner._last_model_load_error = None
+            runner._last_model_load_issue_codes = []
+            runner._last_model_load_blockers = []
+            runner._last_model_load_failed_at = None
+            runner._next_model_load_retry_at = None
             runner.requires_market_open = False
             runner.write_runtime_health = MagicMock()
 
@@ -129,6 +136,11 @@ class TestDynamicModelRunnerDataSourceOverride:
             runner._data_req = None
             runner._paper_data_contract = None
             runner._last_readiness = None
+            runner._last_model_load_error = None
+            runner._last_model_load_issue_codes = []
+            runner._last_model_load_blockers = []
+            runner._last_model_load_failed_at = None
+            runner._next_model_load_retry_at = None
             runner.requires_market_open = False
             runner.write_runtime_health = MagicMock()
 
@@ -184,13 +196,23 @@ class TestDynamicModelRunnerDataSourceOverride:
 
 
 class TestOrchestratorEquityPortfolioAssignment:
-    """Orchestrator should assign alpaca_paper for equity families."""
+    """Orchestrator should route equity execution through Alpaca."""
 
-    def test_equity_family_gets_alpaca_paper(self):
-        from factory.family_classifier import is_equity_family
+    def test_orchestrator_normalizes_yahoo_equity_to_alpaca_execution(self):
+        from factory.orchestrator import FactoryOrchestrator
 
-        equity_probe = {"target_venues": ["yahoo"], "primary_connector_ids": ["yahoo_stocks"]}
-        assert is_equity_family(equity_probe) is True
+        venues, connectors = FactoryOrchestrator._normalize_venues_and_connectors(["yahoo"], [])
+
+        assert venues == ["alpaca"]
+        assert connectors == ["alpaca_stocks"]
+
+    def test_orchestrator_preserves_cross_venue_but_moves_equity_leg_to_alpaca(self):
+        from factory.orchestrator import FactoryOrchestrator
+
+        venues, connectors = FactoryOrchestrator._normalize_venues_and_connectors(["yahoo", "polymarket"], [])
+
+        assert venues == ["alpaca", "polymarket"]
+        assert connectors == ["alpaca_stocks", "polymarket_core", "polymarket_history"]
 
     def test_non_equity_family_does_not_get_alpaca(self):
         from factory.family_classifier import is_equity_family
@@ -297,3 +319,104 @@ class TestOrchestratorEquityPortfolioAssignment:
         runner = get_runner("oil_portfolio")
 
         assert isinstance(runner, BlockedLocalRunner)
+
+    def test_local_runner_uses_alpaca_runtime_source_for_equity_models_even_without_alpaca_files(self, tmp_path, monkeypatch):
+        from factory.contracts import (
+            ExperimentSpec,
+            FactoryFamily,
+            LineageRecord,
+            MutationBounds,
+            PromotionStage,
+            ResearchHypothesis,
+            StrategyGenome,
+        )
+        from factory.local_runner_main import get_runner
+        from factory.registry import FactoryRegistry
+
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True, exist_ok=True)
+        factory_root = project_root / "data" / "factory"
+        monkeypatch.setattr("config.FACTORY_ROOT", str(factory_root))
+
+        registry = FactoryRegistry(factory_root)
+        family = FactoryFamily(
+            family_id="spy_family",
+            label="spy",
+            thesis="thesis",
+            target_portfolios=["alpaca_paper"],
+            target_venues=["alpaca"],
+            primary_connector_ids=["alpaca_stocks"],
+            champion_lineage_id="spy_family:champion",
+            shadow_challenger_ids=[],
+            paper_challenger_ids=[],
+            budget_split={"research": 1.0},
+            queue_stage=PromotionStage.PAPER.value,
+            explainer="explainer",
+            metadata={"research_venues": ["yahoo"], "research_connector_ids": ["yahoo_stocks"]},
+        )
+        registry.save_family(family)
+        model_path = project_root / "model_code.py"
+        model_path.write_text("class TestModel: pass\n", encoding="utf-8")
+        registry.save_research_pack(
+            hypothesis=ResearchHypothesis(
+                hypothesis_id="spy:h",
+                family_id="spy_family",
+                title="spy",
+                thesis="thesis",
+                scientific_domains=["econ"],
+                lead_agent_role="lead",
+                success_metric="roi",
+                guardrails=[],
+            ),
+            genome=StrategyGenome(
+                genome_id="spy:g",
+                lineage_id="spy_family:champion",
+                family_id="spy_family",
+                parent_genome_id=None,
+                role="champion",
+                parameters={"model_code_path": str(model_path), "model_class_name": "TestModel"},
+                mutation_bounds=MutationBounds(),
+                scientific_domains=["econ"],
+                budget_bucket="standard",
+                resource_profile="local",
+                budget_weight_pct=1.0,
+            ),
+            experiment=ExperimentSpec(
+                experiment_id="spy:e",
+                lineage_id="spy_family:champion",
+                family_id="spy_family",
+                hypothesis_id="spy:h",
+                genome_id="spy:g",
+                goldfish_workspace=str(project_root / "research" / "goldfish" / "spy_family"),
+                pipeline_stages=["dataset", "train"],
+                backend_mode="goldfish_sidecar",
+                resource_profile="local",
+            ),
+            lineage=LineageRecord(
+                lineage_id="spy_family:champion",
+                family_id="spy_family",
+                label="spy",
+                role="champion",
+                current_stage=PromotionStage.PAPER.value,
+                target_portfolios=["alpaca_paper"],
+                target_venues=["alpaca"],
+                hypothesis_id="spy:h",
+                genome_id="spy:g",
+                experiment_id="spy:e",
+                budget_bucket="standard",
+                budget_weight_pct=1.0,
+                connector_ids=["alpaca_stocks"],
+                goldfish_workspace=str(project_root / "research" / "goldfish" / "spy_family"),
+            ),
+        )
+
+        with patch("factory.local_runner_main.assess_lineage_runtime_admission") as mock_admission, \
+             patch("factory.family_classifier.load_family_config", return_value={"target_venues": ["alpaca"]}), \
+             patch("factory.family_classifier.family_runtime_venue", return_value="alpaca"), \
+             patch("factory.runners.dynamic_runner.DynamicModelRunner") as mock_runner_cls:
+            mock_admission.return_value = type("Admission", (), {"admitted": True, "reason": ""})()
+            mock_runner_cls.return_value = MagicMock()
+            _runner = get_runner("alpaca_paper")
+
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert kwargs["runtime_data_source"] == "alpaca"

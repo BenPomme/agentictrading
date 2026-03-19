@@ -32,8 +32,13 @@ export default function FamiliesPanel({ families }: Props) {
               </div>
               <div className="fmp__meta">
                 <span className="fmp__venue">
-                  {venueIcon((f.target_venues ?? [f.venue ?? ''])[0] ?? '')} {f.venue ?? '—'}
+                  {venueIcon((f.target_venues ?? [f.venue ?? ''])[0] ?? '')} exec {f.venue ?? '—'}
                 </span>
+                <span className="fmp__lineages">
+                  research {(f.research_venues ?? []).join(', ') || '—'}
+                </span>
+              </div>
+              <div className="fmp__meta">
                 <span className="fmp__lineages">
                   {f.active_lineage_count}/{f.lineage_count} lineages
                 </span>

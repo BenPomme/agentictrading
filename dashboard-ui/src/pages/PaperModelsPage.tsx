@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { PnlChart } from '../components/PnlChart';
 import SectionPanel from '../components/SectionPanel';
-import type { DashboardSnapshot, SnapshotV2 } from '../types/snapshot';
+import type { DashboardSnapshot, Family, SnapshotV2 } from '../types/snapshot';
 import { formatPnl, relativeTime } from '../utils/format';
 import { mergePaperModels, type MergedPaperModel } from '../utils/dashboard';
 import './pages.css';
@@ -57,7 +57,14 @@ function detailStateLabel(row: MergedPaperModel): string {
   }
 }
 
-function DetailTable({ rows }: { rows: MergedPaperModel[] }) {
+function familyFeeds(family: Family | undefined): { execution: string; research: string } {
+  return {
+    execution: (family?.target_venues ?? []).join(', ') || family?.venue || '—',
+    research: (family?.research_venues ?? []).join(', ') || '—',
+  };
+}
+
+function DetailTable({ rows, familiesById }: { rows: MergedPaperModel[]; familiesById: Map<string, Family> }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   if (rows.length === 0) {
@@ -77,6 +84,7 @@ function DetailTable({ rows }: { rows: MergedPaperModel[] }) {
       </div>
       {rows.map((row) => {
         const expanded = expandedId === row.lineage_id;
+        const feeds = familyFeeds(familiesById.get(row.family_id));
         const issues = [
           ...(row.det_blockers.map((blocker) => blocker.description)),
           ...row.blockers,
@@ -90,6 +98,9 @@ function DetailTable({ rows }: { rows: MergedPaperModel[] }) {
               <div>
                 <div className="paper-detail-table__family">{row.family_id}</div>
                 <div className="paper-detail-table__lineage">{row.lineage_id}</div>
+                <div className="paper-detail-table__muted">
+                  exec {feeds.execution} / research {feeds.research}
+                </div>
               </div>
               <span className={`paper-monitor-card__bucket paper-monitor-card__bucket--${row.state_bucket}`}>
                 {detailStateLabel(row)}
@@ -149,7 +160,8 @@ function DetailTable({ rows }: { rows: MergedPaperModel[] }) {
   );
 }
 
-function FeaturedCard({ row }: { row: MergedPaperModel }) {
+function FeaturedCard({ row, family }: { row: MergedPaperModel; family: Family | undefined }) {
+  const feeds = familyFeeds(family);
   const issues = [
     ...(row.det_blockers.map((blocker) => blocker.description)),
     ...row.blockers,
@@ -163,6 +175,7 @@ function FeaturedCard({ row }: { row: MergedPaperModel }) {
         <div>
           <div className="paper-monitor-card__eyebrow">{row.family_id}</div>
           <h3 className="paper-monitor-card__title">{row.lineage_id}</h3>
+          <div className="paper-detail-table__muted">exec {feeds.execution} / research {feeds.research}</div>
         </div>
         <span className={`paper-monitor-card__bucket paper-monitor-card__bucket--${row.state_bucket}`}>
           {detailStateLabel(row)}
@@ -230,6 +243,7 @@ function FeaturedCard({ row }: { row: MergedPaperModel }) {
 
 export function PaperModelsPage({ snapshot, snapshotV2 }: Props) {
   const pr = snapshot?.factory?.paper_runtime;
+  const families = snapshot?.factory?.families ?? [];
   const portfolios = [
     ...(snapshot?.execution?.portfolios ?? []),
     ...(snapshot?.execution?.placeholders ?? []),
@@ -252,6 +266,10 @@ export function PaperModelsPage({ snapshot, snapshotV2 }: Props) {
   );
   const scopeBlockedRows = rows.filter((row) => row.state_bucket === 'scope-blocked');
   const summaryCards = buildSummary(rows);
+  const familiesById = useMemo(
+    () => new Map(families.map((family) => [family.family_id, family])),
+    [families],
+  );
 
   return (
     <div className="page">
@@ -301,7 +319,7 @@ export function PaperModelsPage({ snapshot, snapshotV2 }: Props) {
         <ErrorBoundary name="PaperFeaturedCards">
           <div className="paper-monitor-grid">
             {featuredRows.map((row) => (
-              <FeaturedCard key={row.lineage_id} row={row} />
+              <FeaturedCard key={row.lineage_id} row={row} family={familiesById.get(row.family_id)} />
             ))}
           </div>
         </ErrorBoundary>
@@ -362,7 +380,7 @@ export function PaperModelsPage({ snapshot, snapshotV2 }: Props) {
         defaultCollapsed={false}
       >
         <ErrorBoundary name="PaperDetailTable">
-          <DetailTable rows={rows} />
+          <DetailTable rows={rows} familiesById={familiesById} />
         </ErrorBoundary>
       </SectionPanel>
     </div>

@@ -244,6 +244,12 @@ def _default_feed_type(source: str, fields: Iterable[str]) -> str:
     return "bars"
 
 
+def _is_equity_execution_hint(source: str, venue: str, target_venues: Iterable[str] | None) -> bool:
+    values = {str(item).strip().lower() for item in (target_venues or []) if str(item).strip()}
+    values.update({str(source).strip().lower(), str(venue).strip().lower()})
+    return bool(values.intersection({"yahoo", "alpaca", "stock", "equity", "equity_options", "us_equities_etf"}))
+
+
 def _default_raw_cadence_seconds(source: str, feed_type: str) -> int:
     if feed_type == "funding":
         return 8 * 3600
@@ -315,7 +321,15 @@ def build_paper_data_contract(
             )
 
     if model_requirement:
-        requirement = _normalize_requirement(model_requirement)
+        requirement_payload = dict(model_requirement)
+        if _is_equity_execution_hint(
+            str(requirement_payload.get("source") or ""),
+            str(requirement_payload.get("venue") or ""),
+            target_venues,
+        ):
+            requirement_payload["source"] = "alpaca"
+            requirement_payload["venue"] = "alpaca"
+        requirement = _normalize_requirement(requirement_payload)
         venues = {requirement.venue}
         if target_venues:
             venues.update(str(item).strip().lower() for item in target_venues if str(item).strip())
@@ -329,7 +343,11 @@ def build_paper_data_contract(
         clean = str(venue).strip().lower()
         if not clean:
             continue
-        source = "yahoo" if clean.startswith("yahoo") else ("alpaca" if clean.startswith("alpaca") else clean)
+        if clean.startswith(("yahoo", "stock", "equity")):
+            clean = "alpaca"
+            source = "alpaca"
+        else:
+            source = "alpaca" if clean.startswith("alpaca") else clean
         fields = ["fundingRate", "markPrice"] if source == "binance" else ["close"]
         feed_type = "funding" if source == "binance" else "bars"
         requirements.append(

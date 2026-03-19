@@ -2883,6 +2883,17 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
                 [str(item).strip() for item in (row.get("target_venues") or []) if str(item).strip()]
             )
         )
+        metadata = dict(row.get("metadata") or {})
+        row["research_venues"] = list(
+            dict.fromkeys(
+                [str(item).strip() for item in (metadata.get("research_venues") or []) if str(item).strip()]
+            )
+        )
+        row["research_connector_ids"] = list(
+            dict.fromkeys(
+                [str(item).strip() for item in (metadata.get("research_connector_ids") or []) if str(item).strip()]
+            )
+        )
         row["venue"] = ", ".join(row["target_venues"])
         row["current_runner_portfolio_id"] = portfolio_id
         row["last_activity_at"] = _portfolio_last_activity_at(portfolio or {})

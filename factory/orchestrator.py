@@ -281,13 +281,13 @@ class FactoryOrchestrator:
         "crypto": ["binance_core"],
         "betfair": ["betfair_core"],
         "polymarket": ["polymarket_core", "polymarket_history"],
-        "yahoo": ["yahoo_stocks"],
-        "stock": ["yahoo_stocks"],
-        "equity": ["yahoo_stocks"],
-        "equity_options": ["yahoo_stocks"],
-        "us_equities_etf": ["yahoo_stocks"],
+        "yahoo": ["alpaca_stocks"],
+        "stock": ["alpaca_stocks"],
+        "equity": ["alpaca_stocks"],
+        "equity_options": ["alpaca_stocks"],
+        "us_equities_etf": ["alpaca_stocks"],
         "alpaca": ["alpaca_stocks"],
-        "multi": ["yahoo_stocks", "binance_core"],
+        "multi": ["alpaca_stocks", "binance_core"],
     }
 
     @staticmethod
@@ -299,8 +299,12 @@ class FactoryOrchestrator:
         for v in venues:
             vl = v.strip().lower()
             if vl in FactoryOrchestrator._VENUE_TO_CONNECTORS:
-                canonical_venues.append(vl)
-                resolved_connectors.update(FactoryOrchestrator._VENUE_TO_CONNECTORS[vl])
+                if vl in {"yahoo", "stock", "equity", "equity_options", "us_equities_etf"}:
+                    canonical_venues.append("alpaca")
+                    resolved_connectors.add("alpaca_stocks")
+                else:
+                    canonical_venues.append(vl)
+                    resolved_connectors.update(FactoryOrchestrator._VENUE_TO_CONNECTORS[vl])
             elif any(kw in vl for kw in ("binance", "perp", "funding", "crypto", "btc", "eth")):
                 canonical_venues.append("binance")
                 resolved_connectors.add("binance_core")
@@ -311,17 +315,17 @@ class FactoryOrchestrator:
                 canonical_venues.append("polymarket")
                 resolved_connectors.update(["polymarket_core", "polymarket_history"])
             elif any(kw in vl for kw in ("stock", "equity", "spy", "etf", "vix", "oil", "yahoo")):
-                canonical_venues.append("yahoo")
-                resolved_connectors.add("yahoo_stocks")
+                canonical_venues.append("alpaca")
+                resolved_connectors.add("alpaca_stocks")
             elif any(kw in vl for kw in ("alpaca",)):
                 canonical_venues.append("alpaca")
                 resolved_connectors.add("alpaca_stocks")
             else:
                 canonical_venues.append(vl)
-                resolved_connectors.add("yahoo_stocks")
+                resolved_connectors.add("alpaca_stocks")
         if not resolved_connectors:
-            resolved_connectors.add("yahoo_stocks")
-        return list(dict.fromkeys(canonical_venues)) or ["yahoo"], sorted(resolved_connectors)
+            resolved_connectors.add("alpaca_stocks")
+        return list(dict.fromkeys(canonical_venues)) or ["alpaca"], sorted(resolved_connectors)
 
     def _seed_family_from_spec(
         self,
@@ -348,6 +352,10 @@ class FactoryOrchestrator:
         }
         if _is_equity(_equity_probe):
             spec["target_portfolios"] = ["alpaca_paper"]
+            metadata = dict(spec.get("metadata") or {})
+            metadata["research_venues"] = ["yahoo"]
+            metadata["research_connector_ids"] = ["yahoo_stocks"]
+            spec["metadata"] = metadata
         else:
             spec["target_portfolios"] = [family_id]
         hypothesis_id = f"{family_id}:hypothesis"
@@ -445,6 +453,7 @@ class FactoryOrchestrator:
             incubation_status=incubation_status,
             incubation_cycle_created=int(incubation_cycle_created or 0),
             incubation_notes=list(incubation_notes or []),
+            metadata=dict(spec.get("metadata") or {}),
         )
         self.registry.save_family(family)
         self.registry.save_research_pack(
@@ -2692,6 +2701,75 @@ class FactoryOrchestrator:
             params["paper_data_contract"] = template
             genome.parameters = params
             self.registry.save_genome(champion_id, genome)
+
+    def _ensure_equity_execution_routing(self, families: Sequence[FactoryFamily]) -> None:
+        from factory.family_classifier import is_equity_family
+
+        for family in families:
+            probe = {
+                "target_venues": list(family.target_venues or []),
+                "primary_connector_ids": list(family.primary_connector_ids or []),
+            }
+            if not is_equity_family(probe):
+                continue
+
+            family_changed = False
+            metadata = dict(family.metadata or {})
+            if metadata.get("research_venues") != ["yahoo"]:
+                metadata["research_venues"] = ["yahoo"]
+                family_changed = True
+            if metadata.get("research_connector_ids") != ["yahoo_stocks"]:
+                metadata["research_connector_ids"] = ["yahoo_stocks"]
+                family_changed = True
+            if list(family.target_venues or []) != ["alpaca"]:
+                family.target_venues = ["alpaca"]
+                family_changed = True
+            if list(family.primary_connector_ids or []) != ["alpaca_stocks"]:
+                family.primary_connector_ids = ["alpaca_stocks"]
+                family_changed = True
+            if list(family.target_portfolios or []) != ["alpaca_paper"]:
+                family.target_portfolios = ["alpaca_paper"]
+                family_changed = True
+            if family.metadata != metadata:
+                family.metadata = metadata
+                family_changed = True
+            if family_changed:
+                self.registry.save_family(family)
+
+            for lineage in self.registry.lineages():
+                if lineage.family_id != family.family_id:
+                    continue
+                lineage_changed = False
+                if list(lineage.target_venues or []) != ["alpaca"]:
+                    lineage.target_venues = ["alpaca"]
+                    lineage_changed = True
+                if list(lineage.connector_ids or []) != ["alpaca_stocks"]:
+                    lineage.connector_ids = ["alpaca_stocks"]
+                    lineage_changed = True
+                if list(lineage.target_portfolios or []) != ["alpaca_paper"]:
+                    lineage.target_portfolios = ["alpaca_paper"]
+                    lineage_changed = True
+                if lineage_changed:
+                    self.registry.save_lineage(lineage)
+
+                genome = self.registry.load_genome(lineage.lineage_id)
+                if genome is None:
+                    continue
+                params = dict(genome.parameters or {})
+                contract = params.get("paper_data_contract")
+                requirements = list(contract.get("requirements") or []) if isinstance(contract, dict) else []
+                needs_contract_refresh = not requirements or any(
+                    str(item.get("source") or item.get("venue") or "").strip().lower() == "yahoo"
+                    for item in requirements
+                    if isinstance(item, dict)
+                )
+                if needs_contract_refresh:
+                    params["paper_data_contract"] = build_paper_data_contract(
+                        params,
+                        target_venues=["alpaca"],
+                    ).to_dict()
+                    genome.parameters = params
+                    self.registry.save_genome(lineage.lineage_id, genome)
 
     def _runner_gate_state(
         self,
@@ -5690,6 +5768,8 @@ class FactoryOrchestrator:
             runtime_mode_value=runtime_mode.value,
             recent_actions=recent_actions,
         )
+        families = self.registry.families()
+        self._ensure_equity_execution_routing(families)
         families = self.registry.families()
         self._ensure_explicit_champion_contracts(families)
         families = self.registry.families()

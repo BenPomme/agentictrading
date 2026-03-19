@@ -53,11 +53,7 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
                     if code_path and class_name and resolved_code_path.exists():
                         from factory.runners.dynamic_runner import DynamicModelRunner
 
-                        # Only override to "alpaca" if live Alpaca bars data actually exists on disk;
-                        # otherwise fall back to model's own required_data() source (e.g. yahoo).
-                        alpaca_bars_dir = project_root / "data" / "alpaca" / "bars"
-                        alpaca_has_data = alpaca_bars_dir.is_dir() and any(alpaca_bars_dir.iterdir())
-                        runtime_ds = "alpaca" if runtime_venue == "alpaca" and alpaca_has_data else None
+                        runtime_ds = "alpaca" if runtime_venue == "alpaca" else None
                         logger.info(
                             "Using DynamicModelRunner for %s (model: %s, runtime_data_source: %s)",
                             portfolio_id, class_name, runtime_ds or "model-default",
@@ -98,7 +94,7 @@ def get_runner(portfolio_id: str) -> LocalPortfolioRunner:
                             portfolio_id,
                             model_code_path=str(model_path),
                             class_name="HMMRegimeModel",
-                            runtime_data_source="alpaca" if "alpaca" in venues else "yahoo"
+                            runtime_data_source="alpaca"
                         )
                 break
     except Exception as e:

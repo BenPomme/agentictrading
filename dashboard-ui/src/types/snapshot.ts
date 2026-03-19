@@ -146,6 +146,8 @@ export interface Family {
   venue: string;
   status: string;
   target_venues?: string[];
+  research_venues?: string[];
+  research_connector_ids?: string[];
   lineage_count: number;
   active_lineage_count: number;
   champion_lineage_id: string | null;
