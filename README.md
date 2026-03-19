@@ -61,16 +61,38 @@ See [docs/OPEN_SOURCE_BOUNDARY.md](docs/OPEN_SOURCE_BOUNDARY.md) for the explici
 
 ## Quickstart
 
+This is a **Python-first repository**. There is no root npm package for AgenticTrading itself.
+
+- Use `pip` to install the control plane and research factory code
+- Use `npm` only if you want to work on the React dashboard in `dashboard-ui/`
+
+### Install The Python Repo
+
 Safe local evaluation should stay in paper-mode.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+```
+
+### Run The Dashboard Server
+
+```bash
 python3 scripts/factory_dashboard.py --host 127.0.0.1 --port 8788
 ```
 
 Then open the local dashboard and inspect the factory state without attempting to wire live venue credentials into the public repo.
+
+### Optional: Work On The React Dashboard
+
+Only needed for frontend development inside `dashboard-ui/`:
+
+```bash
+cd dashboard-ui
+npm install
+npm run dev
+```
 
 ## Why It's Interesting
 
