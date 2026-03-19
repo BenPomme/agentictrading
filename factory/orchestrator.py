@@ -55,6 +55,7 @@ from factory.paper_data import assess_paper_data_readiness, build_paper_data_con
 from factory.paper_data import explicit_current_champion_contract
 from factory.promotion import PromotionController
 from factory.registry import FactoryRegistry
+from factory.runtime_admission import assess_lineage_runtime_admission
 from factory.runtime_lanes import decide_runtime_lane_policy, runtime_lane_selection_key
 from factory.runtime_mode import current_agentic_factory_runtime_mode
 from factory.state_store import PortfolioStateStore
@@ -3300,6 +3301,19 @@ class FactoryOrchestrator:
             )
 
             if not has_traded:
+                runtime_admission = assess_lineage_runtime_admission(
+                    self.project_root,
+                    self.registry,
+                    lineage,
+                )
+                if not runtime_admission.admitted:
+                    self._apply_runtime_admission_block(
+                        lineage,
+                        reason=str(runtime_admission.reason or "runtime_model_missing"),
+                        status="runtime_admission_blocked",
+                        recent_actions=recent_actions,
+                    )
+                    continue
                 old_stage = lineage.current_stage
                 lineage.current_stage = PromotionStage.PAPER.value
                 lineage.iteration_status = "paper_trial_no_backtest"
@@ -4490,6 +4504,13 @@ class FactoryOrchestrator:
     def _isolated_lane_activation_eligible(self, lineage: LineageRecord) -> bool:
         if not lineage.active or bool(lineage.last_debug_requires_human):
             return False
+        runtime_admission = assess_lineage_runtime_admission(
+            self.project_root,
+            self.registry,
+            lineage,
+        )
+        if not runtime_admission.admitted:
+            return False
         latest_by_stage = self.registry.latest_evaluation_by_stage(lineage.lineage_id)
         walkforward = latest_by_stage.get(EvaluationStage.WALKFORWARD.value)
         stress = latest_by_stage.get(EvaluationStage.STRESS.value)
@@ -4502,6 +4523,24 @@ class FactoryOrchestrator:
         if issue_codes.intersection({"untrainable_model", "training_stalled"}):
             return False
         return True
+
+    def _apply_runtime_admission_block(
+        self,
+        lineage: LineageRecord,
+        *,
+        reason: str,
+        status: str,
+        recent_actions: List[str],
+    ) -> None:
+        blocker = f"runtime_admission:{reason}"
+        if blocker not in lineage.blockers:
+            lineage.blockers = list(dict.fromkeys(list(lineage.blockers) + [blocker]))
+        lineage.iteration_status = status
+        self.registry.save_lineage(lineage)
+        _append_recent_action(
+            recent_actions,
+            f"[cycle {self._cycle_count}] Runtime admission blocked {lineage.lineage_id}: {reason}",
+        )
 
     def _activate_prepared_isolated_lane(
         self,
@@ -5249,6 +5288,22 @@ class FactoryOrchestrator:
                 "no alpaca", "not found",
             ))
             if is_data_missing and lineage.current_stage != PromotionStage.PAPER.value:
+                runtime_admission = assess_lineage_runtime_admission(
+                    self.project_root,
+                    self.registry,
+                    lineage,
+                )
+                if not runtime_admission.admitted:
+                    blocker = f"runtime_admission:{runtime_admission.reason or 'runtime_model_missing'}"
+                    lineage.blockers = list(dict.fromkeys(list(lineage.blockers) + [blocker]))
+                    lineage.iteration_status = "runtime_admission_blocked"
+                    self.registry.save_lineage(lineage)
+                    logger.info(
+                        "Runtime admission blocked direct paper promotion for %s: %s",
+                        lineage.lineage_id,
+                        runtime_admission.reason,
+                    )
+                    return bundles
                 logger.info(
                     "No backtest data for %s (%s), promoting directly to paper trading",
                     lineage.lineage_id, err,
