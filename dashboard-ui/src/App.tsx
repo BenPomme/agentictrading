@@ -11,15 +11,34 @@ import { FactoryHealthPage } from './pages/FactoryHealthPage';
 import { PipelinePage } from './pages/PipelinePage';
 import { PaperModelsPage } from './pages/PaperModelsPage';
 import { FamilyExplorerPage } from './pages/FamilyExplorerPage';
-import { GoldfishDNAPage } from './pages/GoldfishDNAPage';
+import { PromotionQueuePage } from './pages/PromotionQueuePage';
 import { ComputeCostPage } from './pages/ComputeCostPage';
 import { VenueReadinessPage } from './pages/VenueReadinessPage';
 import { AlertsPage } from './pages/AlertsPage';
 import type { Zone } from './types/nav';
+import { deriveNavBadgeCounts } from './utils/dashboard';
 import './App.css';
 
+const VALID_ZONES: Zone[] = [
+  'factory-health',
+  'pipeline',
+  'paper-models',
+  'family-explorer',
+  'promotion-queue',
+  'compute-cost',
+  'venue-readiness',
+  'alerts',
+];
+
+function zoneFromHash(hash: string): Zone {
+  const value = hash.replace(/^#/, '');
+  return VALID_ZONES.includes(value as Zone) ? (value as Zone) : 'factory-health';
+}
+
 function App() {
-  const [zone, setZone] = useState<Zone>('factory-health');
+  const [zone, setZone] = useState<Zone>(() =>
+    typeof window === 'undefined' ? 'factory-health' : zoneFromHash(window.location.hash),
+  );
   const { data, prev, loading, error } = useSnapshot();
   const { data: dataV2 } = useSnapshotV2();
   const { toggle, pending } = useFactoryControl(data?.factory_paused);
@@ -49,6 +68,20 @@ function App() {
     }
   }, [data, prev, audioEnabled, playAgentRun, playPaperTrade]);
 
+  useEffect(() => {
+    const onHashChange = () => setZone(zoneFromHash(window.location.hash));
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const nextHash = `#${zone}`;
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, '', nextHash);
+    }
+  }, [zone]);
+
   if (loading && !data) {
     return (
       <div className="app-loader">
@@ -68,10 +101,8 @@ function App() {
   }
 
   const alerts = data?.company?.alerts ?? [];
-  const maintenance = data?.factory?.operator_signals?.maintenance_queue ?? [];
-  const escalations = data?.factory?.operator_signals?.escalation_candidates ?? [];
-  const badgeCount = alerts.length + maintenance.length + escalations.length;
   const criticalCount = alerts.filter((a) => a.severity === 'critical').length;
+  const badges = deriveNavBadgeCounts(data, dataV2);
 
   const pageProps = { snapshot: data, snapshotV2: dataV2 };
 
@@ -94,7 +125,11 @@ function App() {
         <NavSidebar
           activeZone={zone}
           onNavigate={setZone}
-          alertCount={badgeCount}
+          badges={{
+            alerts: badges.alerts,
+            'paper-models': badges.paper,
+            'promotion-queue': badges.promotion,
+          }}
           criticalCount={criticalCount}
         />
         <main className="app__content">
@@ -105,7 +140,7 @@ function App() {
             {zone === 'family-explorer' && (
               <FamilyExplorerPage {...pageProps} />
             )}
-            {zone === 'goldfish-dna' && <GoldfishDNAPage {...pageProps} />}
+            {zone === 'promotion-queue' && <PromotionQueuePage {...pageProps} />}
             {zone === 'compute-cost' && <ComputeCostPage {...pageProps} />}
             {zone === 'venue-readiness' && (
               <VenueReadinessPage {...pageProps} />

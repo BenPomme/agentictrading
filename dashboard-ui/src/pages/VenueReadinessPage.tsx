@@ -174,10 +174,10 @@ function VenueCard({ v }: { v: VenueData }) {
         <span
           className="venue-card__val"
           style={
-            v.latestAgeSeconds > 3600
-              ? { color: 'var(--warn)' }
-              : v.latestAgeSeconds > 86400
+            v.latestAgeSeconds > 86400
               ? { color: 'var(--crit)' }
+              : v.latestAgeSeconds > 3600
+              ? { color: 'var(--warn)' }
               : {}
           }
         >
@@ -380,7 +380,9 @@ export function VenueReadinessPage({ snapshot, snapshotV2 }: Props) {
                     <span
                       className="connector-age"
                       style={
-                        (c.latest_age_seconds ?? 0) > 3600
+                        (c.latest_age_seconds ?? 0) > 86400
+                          ? { color: 'var(--crit)' }
+                          : (c.latest_age_seconds ?? 0) > 3600
                           ? { color: 'var(--warn)' }
                           : {}
                       }

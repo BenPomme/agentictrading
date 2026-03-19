@@ -6,14 +6,14 @@ import './NavSidebar.css';
 interface NavSidebarProps {
   activeZone: Zone;
   onNavigate: (zone: Zone) => void;
-  alertCount?: number;
+  badges?: Partial<Record<Zone, number>>;
   criticalCount?: number;
 }
 
 export const NavSidebar: React.FC<NavSidebarProps> = ({
   activeZone,
   onNavigate,
-  alertCount = 0,
+  badges = {},
   criticalCount = 0,
 }) => {
   return (
@@ -21,7 +21,8 @@ export const NavSidebar: React.FC<NavSidebarProps> = ({
       <ul className="nav-sidebar__list">
         {NAV_ITEMS.map((item) => {
           const isActive = item.zone === activeZone;
-          const showBadge = item.zone === 'alerts' && alertCount > 0;
+          const badgeValue = badges[item.zone] ?? 0;
+          const showBadge = badgeValue > 0;
           return (
             <li key={item.zone} className="nav-sidebar__item-wrap">
               <button
@@ -36,9 +37,15 @@ export const NavSidebar: React.FC<NavSidebarProps> = ({
                 <span className="nav-sidebar__label">{item.label}</span>
                 {showBadge && (
                   <span
-                    className={`nav-sidebar__badge${criticalCount > 0 ? ' nav-sidebar__badge--crit' : ''}`}
+                    className={`nav-sidebar__badge${
+                      item.zone === 'alerts' && criticalCount > 0
+                        ? ' nav-sidebar__badge--crit'
+                        : item.zone === 'promotion-queue'
+                        ? ' nav-sidebar__badge--info'
+                        : ''
+                    }`}
                   >
-                    {alertCount > 99 ? '99+' : alertCount}
+                    {badgeValue > 99 ? '99+' : badgeValue}
                   </span>
                 )}
               </button>

@@ -3,6 +3,7 @@ import { KPIDeck } from '../components/KPIDeck';
 import SectionPanel from '../components/SectionPanel';
 import { relativeTime } from '../utils/format';
 import type { DashboardSnapshot, SnapshotV2 } from '../types/snapshot';
+import { getResearchSummaryCards, mergePaperModels } from '../utils/dashboard';
 import './pages.css';
 
 interface Props {
@@ -25,6 +26,22 @@ export function FactoryHealthPage({ snapshot, snapshotV2 }: Props) {
   const cycleCount = snapshot?.factory?.cycle_count ?? 0;
   const ageS = snapshotAgeSeconds(snapshot?.generated_at);
   const isStale = ageS > 90;
+  const paperRows = mergePaperModels(
+    snapshot?.factory?.lineages ?? [],
+    snapshotV2?.lineage_v2 ?? [],
+    [
+      ...(snapshot?.execution?.portfolios ?? []),
+      ...(snapshot?.execution?.placeholders ?? []),
+    ],
+  );
+  const featuredPaperRows = paperRows.slice(0, 3);
+  const overviewCards = getResearchSummaryCards(snapshot);
+  const blockedPaperCount = paperRows.filter((row) =>
+    ['blocked', 'holdoff', 'scope-blocked'].includes(row.state_bucket),
+  ).length;
+  const promotionReadyCount = paperRows.filter(
+    (row) => row.state_bucket === 'promotion-ready',
+  ).length;
 
   // Derive a state: running | paused | error
   const stateKey =
@@ -37,10 +54,23 @@ export function FactoryHealthPage({ snapshot, snapshotV2 }: Props) {
   return (
     <div className="page">
       <div className="page__header">
-        <h2 className="page__title">Factory Health</h2>
+        <h2 className="page__title">Overview</h2>
         <p className="page__subtitle">
-          Runtime status, readiness, execution bridge, and infrastructure health
+          Model progression, runtime status, and paper-trading attention areas
         </p>
+      </div>
+
+      <div className="overview-strip">
+        {overviewCards.map((card) => (
+          <div key={card.label} className="overview-strip__card">
+            <span className="overview-strip__label">{card.label}</span>
+            <span className="overview-strip__value">{card.value}</span>
+          </div>
+        ))}
+        <div className="overview-strip__card overview-strip__card--warn">
+          <span className="overview-strip__label">Paper issues</span>
+          <span className="overview-strip__value">{blockedPaperCount}</span>
+        </div>
       </div>
 
       {/* ── Status bar ── */}
@@ -128,6 +158,59 @@ export function FactoryHealthPage({ snapshot, snapshotV2 }: Props) {
           ideas={snapshot?.ideas}
         />
       </ErrorBoundary>
+
+      {featuredPaperRows.length > 0 && (
+        <SectionPanel
+          title={promotionReadyCount > 0 ? 'Closest To Live' : 'Paper Priority Watchlist'}
+          count={featuredPaperRows.length}
+          tag={
+            promotionReadyCount > 0
+              ? `${promotionReadyCount} ready`
+              : `${blockedPaperCount} blocked`
+          }
+          tagColor={promotionReadyCount > 0 ? 'var(--accent-strong)' : 'var(--warn)'}
+        >
+          <div className="overview-model-grid">
+            {featuredPaperRows.map((row) => (
+              <article key={row.lineage_id} className="overview-model-card">
+                <div className="overview-model-card__top">
+                  <div>
+                    <div className="overview-model-card__family">{row.family_id}</div>
+                    <div className="overview-model-card__lineage">{row.lineage_id}</div>
+                  </div>
+                  <span className={`overview-model-card__bucket overview-model-card__bucket--${row.state_bucket}`}>
+                    {row.state_bucket.replace('-', ' ')}
+                  </span>
+                </div>
+                <div className="overview-model-card__metrics">
+                  <div>
+                    <span className="overview-model-card__metric-label">Checkpoint</span>
+                    <span className="overview-model-card__metric-value">{row.checkpoint_label}</span>
+                  </div>
+                  <div>
+                    <span className="overview-model-card__metric-label">Trades</span>
+                    <span className="overview-model-card__metric-value">{row.port_trade_count ?? row.trade_count}</span>
+                  </div>
+                  <div>
+                    <span className="overview-model-card__metric-label">Paper days</span>
+                    <span className="overview-model-card__metric-value">{row.paper_days}</span>
+                  </div>
+                  <div>
+                    <span className="overview-model-card__metric-label">Execution</span>
+                    <span className="overview-model-card__metric-value">{row.execution_health_status ?? 'unknown'}</span>
+                  </div>
+                </div>
+                <div className="overview-model-card__progress">
+                  <span
+                    className="overview-model-card__progress-bar"
+                    style={{ width: `${row.progress_pct}%` }}
+                  />
+                </div>
+              </article>
+            ))}
+          </div>
+        </SectionPanel>
+      )}
 
       {/* ── Execution bridge health ── */}
       {bridge != null && (

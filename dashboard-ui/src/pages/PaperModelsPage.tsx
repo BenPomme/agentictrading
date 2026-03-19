@@ -1,17 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { PnlChart } from '../components/PnlChart';
 import SectionPanel from '../components/SectionPanel';
-import type {
-  DashboardSnapshot,
-  SnapshotV2,
-  Lineage,
-  LineageV2,
-  PortfolioSnapshot,
-  Assessment,
-  DeterministicBlocker,
-} from '../types/snapshot';
+import type { DashboardSnapshot, SnapshotV2 } from '../types/snapshot';
 import { formatPnl } from '../utils/format';
+import { mergePaperModels, type MergedPaperModel } from '../utils/dashboard';
 import './pages.css';
 
 interface Props {
@@ -19,437 +12,128 @@ interface Props {
   snapshotV2: SnapshotV2 | null;
 }
 
-// ── Merged lineage row ──────────────────────────────────────────────────────
-
-interface MergedRow {
-  // From v1 lineage
-  lineage_id: string;
-  family_id: string;
-  current_stage: string;
-  iteration_status: string;
-  runtime_lane_kind: string;
-  roi_pct: number;
-  trade_count: number;
-  paper_days: number;
-  blockers: string[];
-  assessment: Assessment | null;
-  paper_runtime_status: string;
-  // From lineage_v2
-  venue: string;
-  holdoff_reason: string | null;
-  venue_scope_reason: string | null;
-  paper_portfolio_id: string | null;
-  det_blockers: DeterministicBlocker[];
-  // From portfolio
-  balance: number | null;
-  starting_balance: number | null;
-  realized_pnl: number | null;
-  drawdown_pct: number | null;
-  port_trade_count: number | null;
+interface SummaryCard {
+  label: string;
+  value: number | string;
+  tone?: 'warn' | 'crit' | 'accent';
 }
 
-function mergeRows(
-  lineages: Lineage[],
-  lineageV2: LineageV2[],
-  portfolios: PortfolioSnapshot[],
-): MergedRow[] {
-  const v2Map = new Map(lineageV2.map((l) => [l.lineage_id, l]));
-  const portMap = new Map(portfolios.map((p) => [p.portfolio_id, p]));
+function buildSummary(rows: MergedPaperModel[]): SummaryCard[] {
+  const readyRows = rows.filter((row) => row.state_bucket === 'promotion-ready');
+  const issueRows = rows.filter((row) =>
+    ['blocked', 'holdoff', 'scope-blocked'].includes(row.state_bucket),
+  );
+  const zeroTradeRows = rows.filter((row) => (row.port_trade_count ?? row.trade_count) === 0);
+  const bestPnl = rows.reduce<number | null>((best, row) => {
+    if (row.realized_pnl == null) return best;
+    if (best == null || row.realized_pnl > best) return row.realized_pnl;
+    return best;
+  }, null);
 
-  return lineages
-    .filter(
-      (l) =>
-        l.current_stage === 'paper' ||
-        l.current_stage === 'shadow' ||
-        l.runtime_lane_selected ||
-        (l.paper_days ?? 0) > 0,
-    )
-    .map((lin) => {
-      const v2 = v2Map.get(lin.lineage_id) ?? null;
-      const portId =
-        v2?.paper_portfolio_id ??
-        (lin.runtime_target_portfolio || null);
-      const port = portId ? portMap.get(portId) ?? null : null;
-
-      return {
-        lineage_id: lin.lineage_id,
-        family_id: lin.family_id,
-        current_stage: lin.current_stage ?? '',
-        iteration_status: (lin.iteration_status as string) ?? '',
-        runtime_lane_kind: lin.runtime_lane_kind ?? '',
-        roi_pct: lin.roi_pct ?? 0,
-        trade_count: lin.trade_count ?? 0,
-        paper_days: lin.paper_days ?? 0,
-        blockers: (lin.blockers as string[]) ?? [],
-        assessment: lin.assessment ?? null,
-        paper_runtime_status: (lin.paper_runtime_status as string) ?? '',
-        venue: v2?.venue ?? '',
-        holdoff_reason: v2?.holdoff_reason ?? null,
-        venue_scope_reason: v2?.venue_scope_reason ?? null,
-        paper_portfolio_id: v2?.paper_portfolio_id ?? null,
-        det_blockers: v2?.deterministic_blockers ?? [],
-        balance: port?.current_balance ?? null,
-        starting_balance: port?.starting_balance ?? null,
-        realized_pnl: port?.realized_pnl ?? null,
-        drawdown_pct: port?.drawdown_pct ?? null,
-        port_trade_count: port?.trade_count ?? null,
-      };
-    });
+  return [
+    { label: 'Running', value: rows.filter((row) => row.paper_runtime_status === 'paper_running').length },
+    { label: 'Promotion-ready', value: readyRows.length, tone: 'accent' },
+    { label: 'Holdoff', value: rows.filter((row) => row.state_bucket === 'holdoff').length, tone: 'warn' },
+    { label: 'Blocked', value: issueRows.length, tone: issueRows.length > 0 ? 'crit' : undefined },
+    { label: 'Zero-trade', value: zeroTradeRows.length, tone: zeroTradeRows.length > 0 ? 'warn' : undefined },
+    { label: 'Best P&L', value: bestPnl == null ? '—' : formatPnl(bestPnl), tone: bestPnl != null && bestPnl > 0 ? 'accent' : undefined },
+  ];
 }
 
-// ── Gate check builder ──────────────────────────────────────────────────────
-
-interface GateCheck {
-  name: string;
-  threshold: string;
-  evidence: string;
-  passed: boolean | null;
-  action: string;
-}
-
-function buildGateChecks(row: MergedRow): GateCheck[] {
-  const checks: GateCheck[] = [];
-  const a = row.assessment;
-
-  if (a) {
-    // Paper days gate
-    if (a.paper_days_required > 0) {
-      const passed = a.paper_days_observed >= a.paper_days_required;
-      checks.push({
-        name: 'Paper Days',
-        threshold: `≥ ${a.paper_days_required}d`,
-        evidence: `${a.paper_days_observed}d observed`,
-        passed,
-        action: passed
-          ? '—'
-          : `Wait ${a.days_remaining > 0 ? a.days_remaining + 'd more' : 'accumulating'}`,
-      });
-    }
-    // Trade count gate
-    if (a.trade_count_required > 0) {
-      const passed = a.trade_count_observed >= a.trade_count_required;
-      checks.push({
-        name: 'Trade Count',
-        threshold: `≥ ${a.trade_count_required}`,
-        evidence: `${a.trade_count_observed} observed`,
-        passed,
-        action: passed
-          ? '—'
-          : a.trades_remaining > 0
-          ? `Need ${a.trades_remaining} more (ETA: ${a.eta || '?'})`
-          : 'Accumulating',
-      });
-    }
-    // ROI gate (from assessment.roi_pct as the required level isn't explicit, use sign)
-    if (a.roi_pct != null) {
-      const passed = a.roi_pct >= 0;
-      checks.push({
-        name: 'Return Sign',
-        threshold: '≥ 0%',
-        evidence: `${a.roi_pct.toFixed(2)}% observed`,
-        passed,
-        action: passed ? '—' : 'Requires positive ROI to advance',
-      });
-    }
+function detailStateLabel(row: MergedPaperModel): string {
+  switch (row.state_bucket) {
+    case 'promotion-ready':
+      return 'Promotion-ready';
+    case 'accumulating':
+      return 'Accumulating evidence';
+    case 'blocked':
+      return 'Blocked';
+    case 'holdoff':
+      return 'Holdoff';
+    case 'scope-blocked':
+      return 'Scope-blocked';
+    case 'underperforming':
+      return 'Underperforming';
   }
-
-  // Deterministic blockers from v2 (always failing)
-  for (const b of row.det_blockers) {
-    checks.push({
-      name: b.code,
-      threshold: 'pass',
-      evidence: b.description,
-      passed: false,
-      action: b.evidence ?? 'Resolve blocker to advance stage',
-    });
-  }
-
-  // String blockers from v1 registry (catch-all)
-  const detCodes = new Set(row.det_blockers.map((b) => b.code));
-  for (const b of row.blockers) {
-    if (!detCodes.has(b)) {
-      checks.push({
-        name: 'Gate',
-        threshold: 'pass',
-        evidence: b,
-        passed: false,
-        action: 'Resolve to advance',
-      });
-    }
-  }
-
-  return checks;
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-function stageBadge(stage: string) {
-  const cls =
-    stage === 'paper'
-      ? 'lv2-stage-badge lv2-stage-badge--paper'
-      : stage === 'shadow'
-      ? 'lv2-stage-badge lv2-stage-badge--shadow'
-      : stage === 'retired'
-      ? 'lv2-stage-badge lv2-stage-badge--retired'
-      : 'lv2-stage-badge lv2-stage-badge--default';
-  return <span className={cls}>{stage}</span>;
-}
-
-function shortId(id: string, n = 22): string {
-  return id.length > n ? '…' + id.slice(-(n - 1)) : id;
-}
-
-function nextCheckpoint(row: MergedRow): string {
-  const a = row.assessment;
-  if (!a) return '—';
-  if (a.complete) return 'Assessment complete';
-  if (a.days_remaining > 0 && a.trades_remaining > 0) {
-    return `${a.days_remaining}d or ${a.trades_remaining} trades`;
-  }
-  if (a.days_remaining > 0) return `${a.days_remaining}d remaining`;
-  if (a.trades_remaining > 0) return `${a.trades_remaining} trades left`;
-  if (a.eta) return `ETA: ${a.eta}`;
-  return `${a.completion_pct.toFixed(0)}% complete`;
-}
-
-// ── Console component ────────────────────────────────────────────────────────
-
-function PaperConsole({ rows }: { rows: MergedRow[] }) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-
-  const toggle = (id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+function DetailTable({ rows }: { rows: MergedPaperModel[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   if (rows.length === 0) {
-    return (
-      <div className="alert-empty">
-        No paper or shadow lineages found. Run the autonomous paper window to
-        advance lineages to shadow/paper stage.
-      </div>
-    );
+    return <div className="alert-empty">No paper or shadow lineages available.</div>;
   }
 
   return (
-    <div className="paper-console">
-      {/* Header row */}
-      <div className="paper-console__header">
-        <span>Lineage / Family</span>
-        <span>Venue · Lane</span>
-        <span>Stage</span>
-        <span style={{ textAlign: 'right' }}>Balance</span>
-        <span style={{ textAlign: 'right' }}>P&amp;L</span>
-        <span style={{ textAlign: 'right' }}>DD%</span>
-        <span style={{ textAlign: 'right' }}>Trades</span>
-        <span>Next chkpt</span>
-        <span>Holdoff / Blocker</span>
+    <div className="paper-detail-table">
+      <div className="paper-detail-table__header">
+        <span>Lineage</span>
+        <span>State</span>
+        <span>Checkpoint</span>
+        <span>Trades</span>
+        <span>P&amp;L</span>
         <span />
       </div>
-
       {rows.map((row) => {
-        const isOpen = expanded.has(row.lineage_id);
-        const checks = isOpen ? buildGateChecks(row) : [];
-        const hasIssue =
-          row.holdoff_reason != null ||
-          row.venue_scope_reason != null ||
-          row.det_blockers.length > 0 ||
-          row.blockers.length > 0;
-        const pnlVal = row.realized_pnl;
-        const pnlClass =
-          pnlVal == null
-            ? 'pc-cell pc-cell--right pc-cell--muted'
-            : pnlVal >= 0
-            ? 'pc-cell pc-cell--right pc-cell--ok'
-            : 'pc-cell pc-cell--right pc-cell--crit';
+        const expanded = expandedId === row.lineage_id;
+        const issues = [
+          ...(row.det_blockers.map((blocker) => blocker.description)),
+          ...row.blockers,
+          ...(row.holdoff_reason ? [row.holdoff_reason] : []),
+          ...(row.venue_scope_reason ? [row.venue_scope_reason] : []),
+        ];
 
         return (
-          <div key={row.lineage_id} className="paper-console__row">
-            <div
-              className="paper-console__cells"
-              onClick={() => toggle(row.lineage_id)}
-            >
-              {/* Lineage / Family */}
-              <div className="pc-id">
-                <span className="pc-id__family">{row.family_id}</span>
-                <span className="pc-id__lineage" title={row.lineage_id}>
-                  {shortId(row.lineage_id)}
-                </span>
+          <div key={row.lineage_id} className="paper-detail-table__row">
+            <div className="paper-detail-table__cells">
+              <div>
+                <div className="paper-detail-table__family">{row.family_id}</div>
+                <div className="paper-detail-table__lineage">{row.lineage_id}</div>
               </div>
-
-              {/* Venue · Lane */}
-              <span className="pc-cell pc-cell--muted">
-                {row.venue || '—'}
-                {row.runtime_lane_kind ? ` · ${row.runtime_lane_kind}` : ''}
+              <span className={`paper-monitor-card__bucket paper-monitor-card__bucket--${row.state_bucket}`}>
+                {detailStateLabel(row)}
               </span>
-
-              {/* Stage */}
-              <span className="pc-cell">{stageBadge(row.current_stage)}</span>
-
-              {/* Balance */}
-              <span className="pc-cell pc-cell--right">
-                {row.balance != null ? `€${row.balance.toFixed(0)}` : '—'}
+              <span className="paper-detail-table__muted">{row.checkpoint_label}</span>
+              <span>{row.port_trade_count ?? row.trade_count}</span>
+              <span className={(row.realized_pnl ?? 0) < 0 ? 'pc-cell--crit' : 'pc-cell--ok'}>
+                {row.realized_pnl == null ? '—' : formatPnl(row.realized_pnl)}
               </span>
-
-              {/* P&L */}
-              <span className={pnlClass}>
-                {pnlVal != null ? formatPnl(pnlVal) : '—'}
-              </span>
-
-              {/* Drawdown */}
-              <span
-                className={`pc-cell pc-cell--right${
-                  (row.drawdown_pct ?? 0) > 5 ? ' pc-cell--warn' : ''
-                }`}
-              >
-                {row.drawdown_pct != null
-                  ? `${row.drawdown_pct.toFixed(1)}%`
-                  : '—'}
-              </span>
-
-              {/* Trades */}
-              <span className="pc-cell pc-cell--right">
-                {row.port_trade_count ?? row.trade_count}
-              </span>
-
-              {/* Next checkpoint */}
-              <span className="pc-cell pc-cell--muted">
-                {nextCheckpoint(row)}
-              </span>
-
-              {/* Holdoff / Blocker indicator */}
-              <span
-                className={`pc-cell${hasIssue ? ' pc-cell--warn' : ' pc-cell--muted'}`}
-              >
-                {row.holdoff_reason
-                  ? 'holdoff'
-                  : row.det_blockers.length > 0
-                  ? `${row.det_blockers.length} gate`
-                  : row.blockers.length > 0
-                  ? `${row.blockers.length} blk`
-                  : row.venue_scope_reason
-                  ? 'scope'
-                  : '—'}
-              </span>
-
-              {/* Expand button */}
               <button
-                className={`pc-expand-btn${isOpen ? ' pc-expand-btn--open' : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggle(row.lineage_id);
-                }}
-                title="Expand gate drilldown"
+                type="button"
+                className={`pc-expand-btn${expanded ? ' pc-expand-btn--open' : ''}`}
+                onClick={() =>
+                  setExpandedId((current) =>
+                    current === row.lineage_id ? null : row.lineage_id,
+                  )
+                }
               >
-                {isOpen ? '▲' : '▼'}
+                {expanded ? 'Hide' : 'View'}
               </button>
             </div>
-
-            {/* ── Gate drilldown ── */}
-            {isOpen && (
+            {expanded && (
               <div className="gate-drilldown">
-                <div className="gate-drilldown__title">
-                  Deterministic Gate Drilldown
-                  {row.holdoff_reason && (
-                    <span
-                      style={{
-                        color: 'var(--warn)',
-                        marginLeft: 12,
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.66rem',
-                      }}
-                    >
-                      ⚑ Holdoff: {row.holdoff_reason}
-                    </span>
-                  )}
-                  {row.venue_scope_reason && (
-                    <span
-                      style={{
-                        color: 'var(--crit)',
-                        marginLeft: 12,
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.66rem',
-                      }}
-                    >
-                      ✗ Scope: {row.venue_scope_reason}
-                    </span>
-                  )}
+                <div className="gate-drilldown__title">Inspection</div>
+                <div className="paper-monitor-card__meta">
+                  <span className="paper-monitor-card__meta-pill">
+                    Progress {Math.round(row.progress_pct)}%
+                  </span>
+                  <span className="paper-monitor-card__meta-pill">
+                    Health {row.execution_health_status ?? 'unknown'}
+                  </span>
+                  <span className="paper-monitor-card__meta-pill">
+                    Days {row.paper_days}
+                  </span>
                 </div>
-
-                {checks.length === 0 ? (
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.68rem',
-                      color: 'var(--text-muted)',
-                    }}
-                  >
-                    No gate checks available (assessment data absent).
+                {issues.length > 0 ? (
+                  <div className="paper-monitor-card__issues">
+                    {issues.map((issue, index) => (
+                      <span key={`${row.lineage_id}-${index}`} className="paper-monitor-card__issue">
+                        {issue}
+                      </span>
+                    ))}
                   </div>
                 ) : (
-                  <table className="gate-table">
-                    <thead>
-                      <tr>
-                        <th>Gate</th>
-                        <th>Threshold</th>
-                        <th>Evidence</th>
-                        <th>Pass?</th>
-                        <th>Next Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {checks.map((c, i) => (
-                        <tr key={i}>
-                          <td className="gate-name">{c.name}</td>
-                          <td className="gate-threshold">{c.threshold}</td>
-                          <td className="gate-evidence">{c.evidence}</td>
-                          <td>
-                            {c.passed === null ? (
-                              <span className="gate-pending">?</span>
-                            ) : c.passed ? (
-                              <span className="gate-pass">✓</span>
-                            ) : (
-                              <span className="gate-fail">✗</span>
-                            )}
-                          </td>
-                          <td className="gate-action">{c.action}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-
-                {/* Promotion scorecard if available */}
-                {(() => {
-                  const sc = (row as unknown as Record<string, unknown>).promotion_scorecard as Record<string, unknown> | null | undefined;
-                  if (!sc || typeof sc !== 'object') return null;
-                  const entries = Object.entries(sc);
-                  if (entries.length === 0) return null;
-                  return (
-                    <div className="scorecard">
-                      <div className="gate-drilldown__title">Promotion Scorecard</div>
-                      {entries.map(([k, v]) => (
-                        <div
-                          key={k}
-                          className={`scorecard-row${String(v).includes('fail') || String(v).includes('✗') ? ' scorecard-row--fail' : String(v).includes('pass') || String(v).includes('✓') ? ' scorecard-row--pass' : ''}`}
-                        >
-                          <span className="scorecard-row__name">{k}</span>
-                          <span className="scorecard-row__detail">{String(v)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
-
-                {row.paper_portfolio_id && (
-                  <div style={{ marginTop: 12 }}>
-                    <div className="gate-drilldown__title">P&L Chart</div>
-                    <PnlChart portfolioId={row.paper_portfolio_id} />
-                  </div>
+                  <div className="paper-detail-table__muted">No active blockers.</div>
                 )}
               </div>
             )}
@@ -460,134 +144,215 @@ function PaperConsole({ rows }: { rows: MergedRow[] }) {
   );
 }
 
-// ── Page ────────────────────────────────────────────────────────────────────
+function FeaturedCard({ row }: { row: MergedPaperModel }) {
+  const issues = [
+    ...(row.det_blockers.map((blocker) => blocker.description)),
+    ...row.blockers,
+    ...(row.holdoff_reason ? [row.holdoff_reason] : []),
+    ...(row.venue_scope_reason ? [row.venue_scope_reason] : []),
+  ];
+
+  return (
+    <article className="paper-monitor-card">
+      <div className="paper-monitor-card__header">
+        <div>
+          <div className="paper-monitor-card__eyebrow">{row.family_id}</div>
+          <h3 className="paper-monitor-card__title">{row.lineage_id}</h3>
+        </div>
+        <span className={`paper-monitor-card__bucket paper-monitor-card__bucket--${row.state_bucket}`}>
+          {detailStateLabel(row)}
+        </span>
+      </div>
+
+      <div className="paper-monitor-card__stats">
+        <div>
+          <span className="paper-monitor-card__label">Checkpoint</span>
+          <span className="paper-monitor-card__value">{row.checkpoint_label}</span>
+        </div>
+        <div>
+          <span className="paper-monitor-card__label">Trades</span>
+          <span className="paper-monitor-card__value">{row.port_trade_count ?? row.trade_count}</span>
+        </div>
+        <div>
+          <span className="paper-monitor-card__label">P&amp;L</span>
+          <span className={`paper-monitor-card__value${(row.realized_pnl ?? 0) < 0 ? ' paper-monitor-card__value--negative' : ''}`}>
+            {row.realized_pnl == null ? '—' : formatPnl(row.realized_pnl)}
+          </span>
+        </div>
+        <div>
+          <span className="paper-monitor-card__label">Health</span>
+          <span className="paper-monitor-card__value">{row.execution_health_status ?? 'unknown'}</span>
+        </div>
+      </div>
+
+      <div className="paper-monitor-card__progress">
+        <span
+          className="paper-monitor-card__progress-bar"
+          style={{ width: `${row.progress_pct}%` }}
+        />
+      </div>
+
+      {row.paper_portfolio_id ? (
+        <PnlChart
+          portfolioId={row.paper_portfolio_id}
+          variant="hero"
+          statusTone={row.state_bucket}
+          checkpoint={row.checkpoint_label}
+          healthStatus={row.execution_health_status ?? undefined}
+        />
+      ) : (
+        <div className="paper-monitor-card__empty">No chartable portfolio assigned.</div>
+      )}
+
+      {issues.length > 0 && (
+        <div className="paper-monitor-card__issues">
+          {issues.slice(0, 3).map((issue, index) => (
+            <span key={`${row.lineage_id}-issue-${index}`} className="paper-monitor-card__issue">
+              {issue}
+            </span>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
 
 export function PaperModelsPage({ snapshot, snapshotV2 }: Props) {
   const pr = snapshot?.factory?.paper_runtime;
-  const lineages = snapshot?.factory?.lineages ?? [];
-  const lineageV2 = snapshotV2?.lineage_v2 ?? [];
   const portfolios = [
     ...(snapshot?.execution?.portfolios ?? []),
     ...(snapshot?.execution?.placeholders ?? []),
   ];
 
-  const rows = mergeRows(lineages, lineageV2, portfolios);
-  const scopeBlockedRows = lineageV2.filter((r) => r.venue_scope_reason != null);
-  const holdoffCount = rows.filter((r) => r.holdoff_reason != null).length;
+  const rows = useMemo(
+    () =>
+      mergePaperModels(
+        snapshot?.factory?.lineages ?? [],
+        snapshotV2?.lineage_v2 ?? [],
+        portfolios,
+      ),
+    [snapshot, snapshotV2, portfolios],
+  );
+
+  const featuredRows = rows.slice(0, 3);
+  const attentionRows = rows.filter((row) =>
+    ['blocked', 'holdoff', 'scope-blocked', 'underperforming'].includes(row.state_bucket),
+  );
+  const scopeBlockedRows = rows.filter((row) => row.state_bucket === 'scope-blocked');
+  const summaryCards = buildSummary(rows);
 
   return (
     <div className="page">
       <div className="page__header">
-        <h2 className="page__title">Paper-Active Models</h2>
+        <h2 className="page__title">Paper / Shadow</h2>
         <p className="page__subtitle">
-          Per-lineage paper console with gate drilldown, P&amp;L, and holdoff
-          state
+          Live monitoring for paper models, promotion readiness, and execution risk
         </p>
       </div>
 
-      {/* Paper runtime summary */}
+      <div className="paper-monitor-summary">
+        {summaryCards.map((card) => (
+          <div
+            key={card.label}
+            className={`paper-monitor-summary__card${card.tone ? ` paper-monitor-summary__card--${card.tone}` : ''}`}
+          >
+            <span className="paper-monitor-summary__label">{card.label}</span>
+            <span className="paper-monitor-summary__value">{card.value}</span>
+          </div>
+        ))}
+      </div>
+
       {pr && (
-        <div className="paper-runtime-bar">
+        <div className="page__runtime-strip">
           {[
-            ['Running', pr.running_count, pr.running_count > 0 ? 'ok' : 'muted'],
-            ['Starting', pr.starting_count, 'muted'],
-            ['Assigned', pr.assigned_count, 'muted'],
-            ['Candidate', pr.candidate_count, 'muted'],
-            ['Suppressed', pr.suppressed_count, pr.suppressed_count > 0 ? 'warn' : 'muted'],
-            ['Failed', pr.failed_count, pr.failed_count > 0 ? 'warn' : 'muted'],
-            ['Retired', pr.retired_count, 'muted'],
-            ['Holdoff', holdoffCount, holdoffCount > 0 ? 'warn' : 'muted'],
-          ].map(([label, val, cls]) => (
-            <div key={String(label)} className="paper-runtime-stat">
-              <span className="paper-runtime-stat__label">{label}</span>
-              <span className={`paper-runtime-stat__value paper-runtime-stat__value--${cls}`}>
-                {String(val)}
-              </span>
-            </div>
+            ['Running', pr.running_count],
+            ['Starting', pr.starting_count],
+            ['Assigned', pr.assigned_count],
+            ['Candidate', pr.candidate_count],
+            ['Suppressed', pr.suppressed_count],
+            ['Failed', pr.failed_count],
+          ].map(([label, value]) => (
+            <span key={String(label)} className="runtime-pill">
+              <span className="runtime-pill__label">{label}</span>
+              <span className="runtime-pill__value">{String(value)}</span>
+            </span>
           ))}
         </div>
       )}
 
-      {/* Per-lineage console */}
       <SectionPanel
-        title="Paper / Shadow Lineage Console"
-        count={rows.length}
-        tag={
-          rows.filter((r) => r.det_blockers.length > 0 || r.blockers.length > 0)
-            .length > 0
-            ? `${
-                rows.filter(
-                  (r) =>
-                    r.det_blockers.length > 0 || r.blockers.length > 0,
-                ).length
-              } with blockers`
-            : undefined
-        }
-        tagColor="var(--warn)"
+        title="Featured Monitors"
+        count={featuredRows.length}
+        tag={`${rows.filter((row) => row.state_bucket === 'promotion-ready').length} promotion-ready`}
+        tagColor="var(--accent-strong)"
       >
-        <ErrorBoundary name="PaperConsole">
-          <PaperConsole rows={rows} />
+        <ErrorBoundary name="PaperFeaturedCards">
+          <div className="paper-monitor-grid">
+            {featuredRows.map((row) => (
+              <FeaturedCard key={row.lineage_id} row={row} />
+            ))}
+          </div>
         </ErrorBoundary>
       </SectionPanel>
 
-      {/* Scope-blocked lineages */}
-      {scopeBlockedRows.length > 0 && (
+      <div className="page__grid page__grid--2col">
         <SectionPanel
-          title="Venue Scope Blocked"
-          count={scopeBlockedRows.length}
-          tag="excluded from dispatch"
-          tagColor="var(--crit)"
-          collapsible
-          defaultCollapsed
+          title="Needs Attention"
+          count={attentionRows.length}
+          tag="review"
+          tagColor="var(--warn)"
         >
-          <p
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.7rem',
-              color: 'var(--text-muted)',
-              marginBottom: 10,
-            }}
-          >
-            These lineages target venues outside{' '}
-            <strong>FACTORY_PAPER_WINDOW_VENUE_SCOPE</strong>. No agentic work
-            dispatched; no paper execution.
-          </p>
-          <div style={{ overflowX: 'auto' }}>
-            <table className="lineage-v2-table">
-              <thead>
-                <tr>
-                  <th>Lineage</th>
-                  <th>Family</th>
-                  <th>Venue</th>
-                  <th>Stage</th>
-                  <th>Scope Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {scopeBlockedRows.map((r) => (
-                  <tr key={r.lineage_id}>
-                    <td>
-                      <span className="lv2-id" title={r.lineage_id}>
-                        {shortId(r.lineage_id, 28)}
-                      </span>
-                    </td>
-                    <td>{r.family_id}</td>
-                    <td>{r.venue}</td>
-                    <td>
-                      <span className="lv2-stage-badge lv2-stage-badge--default">
-                        {r.canonical_stage}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="lv2-scope-warn">{r.venue_scope_reason}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {attentionRows.length === 0 ? (
+            <div className="alert-empty">No paper models currently need operator attention.</div>
+          ) : (
+            <div className="paper-attention-list">
+              {attentionRows.slice(0, 6).map((row) => (
+                <div key={row.lineage_id} className="paper-attention-list__item">
+                  <div>
+                    <div className="paper-attention-list__title">{row.family_id}</div>
+                    <div className="paper-attention-list__detail">{detailStateLabel(row)}</div>
+                  </div>
+                  <div className="paper-attention-list__detail">{row.checkpoint_label}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </SectionPanel>
-      )}
+
+        <SectionPanel
+          title="Scope Blocked"
+          count={scopeBlockedRows.length}
+          tag={scopeBlockedRows.length > 0 ? 'excluded' : 'clear'}
+          tagColor={scopeBlockedRows.length > 0 ? 'var(--crit)' : 'var(--ok)'}
+        >
+          {scopeBlockedRows.length === 0 ? (
+            <div className="alert-empty">No scope-blocked lineages.</div>
+          ) : (
+            <div className="paper-attention-list">
+              {scopeBlockedRows.map((row) => (
+                <div key={row.lineage_id} className="paper-attention-list__item">
+                  <div>
+                    <div className="paper-attention-list__title">{row.family_id}</div>
+                    <div className="paper-attention-list__detail">{row.lineage_id}</div>
+                  </div>
+                  <div className="paper-attention-list__detail">{row.venue_scope_reason}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionPanel>
+      </div>
+
+      <SectionPanel
+        title="Detailed Monitor Table"
+        count={rows.length}
+        collapsible
+        defaultCollapsed={false}
+      >
+        <ErrorBoundary name="PaperDetailTable">
+          <DetailTable rows={rows} />
+        </ErrorBoundary>
+      </SectionPanel>
     </div>
   );
 }

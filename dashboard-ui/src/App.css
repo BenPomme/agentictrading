@@ -1,8 +1,7 @@
 .app {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
 }
 
 /* ── Loader ── */
@@ -50,14 +49,14 @@
 .app__body {
   display: flex;
   flex: 1;
-  overflow: hidden;
+  min-height: 0;
 }
 
 .app__content {
   flex: 1;
-  overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 /* ── Grid helpers (used by page components) ── */
@@ -89,6 +88,12 @@
   .app__grid--secondary,
   .app__grid--tertiary {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .app__body {
+    flex-direction: column-reverse;
   }
 }
 

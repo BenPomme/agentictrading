@@ -3,7 +3,7 @@ export type Zone =
   | 'pipeline'
   | 'paper-models'
   | 'family-explorer'
-  | 'goldfish-dna'
+  | 'promotion-queue'
   | 'compute-cost'
   | 'venue-readiness'
   | 'alerts';
@@ -18,21 +18,21 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   {
     zone: 'factory-health',
-    label: 'Factory Health',
-    icon: '⬡',
-    description: 'Runtime status, readiness score, cycle metrics',
+    label: 'Overview',
+    icon: '◎',
+    description: 'Operator overview, progression, and live dashboard status',
   },
   {
     zone: 'pipeline',
-    label: 'Pipeline',
-    icon: '⇡',
-    description: 'Stage funnel, promotion queue, stuck detector',
+    label: 'Research Funnel',
+    icon: '⇢',
+    description: 'Stage funnel, progression quality, and stuck detector',
   },
   {
     zone: 'paper-models',
-    label: 'Paper Models',
-    icon: '▣',
-    description: 'Active paper lineages, P&L, holdoff state',
+    label: 'Paper / Shadow',
+    icon: '▤',
+    description: 'Featured paper models, shadow lineages, and live monitoring',
   },
   {
     zone: 'family-explorer',
@@ -41,21 +41,21 @@ export const NAV_ITEMS: NavItem[] = [
     description: 'Family lifecycle, lineage tree, model league',
   },
   {
-    zone: 'goldfish-dna',
-    label: 'Goldfish DNA',
-    icon: '∿',
-    description: 'Provenance health, memory influence, DNA packets',
+    zone: 'promotion-queue',
+    label: 'Promotion Queue',
+    icon: '↑',
+    description: 'Promotion-ready, accumulating, blocked, and live-readiness signals',
   },
   {
     zone: 'compute-cost',
-    label: 'Compute / Cost',
-    icon: '⚡',
+    label: 'Compute',
+    icon: '⌁',
     description: 'Budget governance, agent runs, token burn',
   },
   {
     zone: 'venue-readiness',
     label: 'Venues',
-    icon: '◉',
+    icon: '◌',
     description: 'Connector health, scope enforcement, blocker map',
   },
   {
