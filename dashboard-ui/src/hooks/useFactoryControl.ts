@@ -1,12 +1,12 @@
 import { useCallback, useState } from 'react';
 
-export function useFactoryControl(factoryPaused: boolean | undefined) {
+export function useFactoryControl(factoryRunning: boolean | undefined) {
   const [pending, setPending] = useState(false);
 
   const toggle = useCallback(async () => {
     setPending(true);
     try {
-      const action = factoryPaused ? 'resume' : 'pause';
+      const action = factoryRunning ? 'stop' : 'start';
       const res = await fetch('/api/factory/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -17,7 +17,7 @@ export function useFactoryControl(factoryPaused: boolean | undefined) {
     } finally {
       setPending(false);
     }
-  }, [factoryPaused]);
+  }, [factoryRunning]);
 
   return { toggle, pending };
 }

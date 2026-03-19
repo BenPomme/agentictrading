@@ -41,7 +41,7 @@ function App() {
   );
   const { data, prev, loading, error } = useSnapshot();
   const { data: dataV2 } = useSnapshotV2();
-  const { toggle, pending } = useFactoryControl(data?.factory_paused);
+  const { toggle, pending } = useFactoryControl(data?.factory_running);
   const { audioEnabled, toggleAudio, playAgentRun, playPaperTrade } = useAudioAlerts();
 
   useEffect(() => {
@@ -109,7 +109,7 @@ function App() {
   return (
     <div className="app">
       <TopCommandBar
-        factoryPaused={data?.factory_paused ?? false}
+        factoryRunning={data?.factory_running ?? false}
         factoryMode={data?.factory?.mode ?? 'unknown'}
         apiHealthStatus={data?.api_health?.status ?? 'unknown'}
         snapshotTime={data?.generated_at ?? null}

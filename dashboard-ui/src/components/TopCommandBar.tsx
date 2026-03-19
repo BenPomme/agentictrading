@@ -3,7 +3,7 @@ import { relativeTime } from '../utils/format';
 import './TopCommandBar.css';
 
 interface TopCommandBarProps {
-  factoryPaused: boolean;
+  factoryRunning: boolean;
   factoryMode: string;
   apiHealthStatus: string;
   snapshotTime: string | null;
@@ -36,7 +36,7 @@ const PowerIcon: React.FC = () => (
 );
 
 export const TopCommandBar: React.FC<TopCommandBarProps> = ({
-  factoryPaused,
+  factoryRunning,
   factoryMode,
   apiHealthStatus,
   snapshotTime,
@@ -49,7 +49,7 @@ export const TopCommandBar: React.FC<TopCommandBarProps> = ({
 }) => {
   const utc = useUtcClock();
   const [showConfirm, setShowConfirm] = useState(false);
-  const isOn = !factoryPaused;
+  const isOn = factoryRunning;
 
   const handleToggleClick = useCallback(() => {
     setShowConfirm(true);
@@ -87,7 +87,7 @@ export const TopCommandBar: React.FC<TopCommandBarProps> = ({
               className={`tcb__power-btn ${isOn ? 'tcb__power-btn--on' : 'tcb__power-btn--off'}`}
               onClick={handleToggleClick}
               disabled={togglePending}
-              title={isOn ? 'Pause factory' : 'Resume factory'}
+              title={isOn ? 'Stop factory system' : 'Start factory system'}
             >
               <PowerIcon />
             </button>
@@ -138,8 +138,8 @@ export const TopCommandBar: React.FC<TopCommandBarProps> = ({
             </div>
             <p className="tcb__confirm-msg">
               {isOn
-                ? 'This will pause all research cycles, paper runtime, and agent runs. Existing portfolios will continue but no new work will be scheduled.'
-                : 'This will resume the factory. Research cycles and agent runs will restart.'}
+                ? 'This will stop the factory loop and refresh scheduler. The dashboard will stay up so you can start the system again.'
+                : 'This will start the factory loop, refresh scheduler, and normal trading/runtime supervision.'}
             </p>
             <div className="tcb__confirm-actions">
               <button className="tcb__confirm-btn" onClick={handleCancel}>
@@ -149,7 +149,7 @@ export const TopCommandBar: React.FC<TopCommandBarProps> = ({
                 className={`tcb__confirm-btn ${isOn ? 'tcb__confirm-btn--danger' : 'tcb__confirm-btn--go'}`}
                 onClick={handleConfirm}
               >
-                {isOn ? 'PAUSE' : 'RESUME'}
+                {isOn ? 'STOP' : 'START'}
               </button>
             </div>
           </div>

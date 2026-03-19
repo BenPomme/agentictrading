@@ -27,6 +27,8 @@ except ImportError:
 import config  # noqa: E402
 from factory.orchestrator import FactoryOrchestrator  # noqa: E402
 
+FACTORY_LOOP_PID_PATH = project_root / "data" / "factory" / "factory_loop.pid"
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -141,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     cycle_limit = max(0, int(args.max_cycles))
     cycles_completed = 0
     interval = max(1, int(args.interval_seconds))
+    FACTORY_LOOP_PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+    FACTORY_LOOP_PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
 
     support_processes: list[tuple[str, subprocess.Popen[str], Path]] = []
 
@@ -183,6 +187,11 @@ def main(argv: list[str] | None = None) -> int:
                     pid_path.unlink()
             except OSError:
                 pass
+        try:
+            if FACTORY_LOOP_PID_PATH.exists():
+                FACTORY_LOOP_PID_PATH.unlink()
+        except OSError:
+            pass
 
     _start_support_processes()
     atexit.register(_cleanup_support_processes)

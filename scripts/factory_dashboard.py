@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import pathlib
+import signal
+import subprocess
 import sys
 from datetime import datetime
 from http import HTTPStatus
@@ -25,6 +28,115 @@ except ImportError:
 
 import config  # noqa: E402
 from factory.operator_dashboard import build_dashboard_snapshot, build_snapshot_v2  # noqa: E402
+
+DASHBOARD_PID_PATH = project_root / "data" / "factory" / "dashboard.pid"
+FACTORY_LOOP_PID_PATH = project_root / "data" / "factory" / "factory_loop.pid"
+REFRESH_SCHEDULER_PID_PATH = project_root / "data" / "factory" / "data_refresh_scheduler.pid"
+
+
+def _preferred_python() -> str:
+    override = str(os.environ.get("FACTORY_REFRESH_PYTHON") or "").strip()
+    if override:
+        return override
+    preferred = project_root / ".venv312" / "bin" / "python"
+    if preferred.exists():
+        return str(preferred)
+    return sys.executable
+
+
+def _pid_running(pid_path: Path) -> bool:
+    if not pid_path.exists():
+        return False
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _factory_paused_flag() -> Path:
+    return project_root / "data" / "factory" / "factory_paused.flag"
+
+
+def _control_state() -> dict:
+    paused = _factory_paused_flag().exists()
+    factory_running = _pid_running(FACTORY_LOOP_PID_PATH)
+    scheduler_running = _pid_running(REFRESH_SCHEDULER_PID_PATH)
+    dashboard_running = True
+    system_running = factory_running and scheduler_running
+    return {
+        "factory_paused": paused,
+        "factory_running": factory_running,
+        "refresh_scheduler_running": scheduler_running,
+        "dashboard_running": dashboard_running,
+        "system_running": system_running,
+    }
+
+
+def _launch_factory_loop() -> bool:
+    if _pid_running(FACTORY_LOOP_PID_PATH):
+        return False
+    loop_script = project_root / "scripts" / "factory_loop.py"
+    if not loop_script.exists():
+        raise RuntimeError(f"Factory loop script not found: {loop_script}")
+    log_path = project_root / "data" / "factory" / "factory_loop.stdout.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    python_executable = _preferred_python()
+    with open(log_path, "a", encoding="utf-8") as log_fh:
+        subprocess.Popen(
+            [python_executable, str(loop_script)],
+            cwd=str(project_root),
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            text=True,
+        )
+    return True
+
+
+def _terminate_pid(pid_path: Path) -> bool:
+    if not pid_path.exists():
+        return False
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    return True
+
+
+def _apply_control_action(action: str) -> dict:
+    action = str(action or "").strip().lower()
+    flag_path = _factory_paused_flag()
+    flag_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if action in {"resume", "start"}:
+        flag_path.unlink(missing_ok=True)
+        started = _launch_factory_loop()
+        state = _control_state()
+        state["action"] = "start"
+        state["started_factory_loop"] = started
+        return state
+
+    if action in {"pause", "stop"}:
+        flag_path.write_text(datetime.utcnow().isoformat(), encoding="utf-8")
+        _terminate_pid(FACTORY_LOOP_PID_PATH)
+        _terminate_pid(REFRESH_SCHEDULER_PID_PATH)
+        state = _control_state()
+        state["action"] = "stop"
+        return state
+
+    raise ValueError(f"Unsupported control action: {action}")
+
+
+def _with_control_state(payload: dict) -> dict:
+    payload = dict(payload)
+    payload.update(_control_state())
+    return payload
 
 
 def _chart_execution_root() -> Path:
@@ -208,11 +320,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         sys.stderr.write(f"[factory-dashboard] {format % args}\n")
 
     def _serve_snapshot(self) -> None:
-        payload = build_dashboard_snapshot()
+        payload = _with_control_state(build_dashboard_snapshot())
         self._serve_json(payload, status=HTTPStatus.OK)
 
     def _serve_snapshot_v2(self) -> None:
-        payload = build_snapshot_v2()
+        payload = _with_control_state(build_snapshot_v2())
         self._serve_json(payload, status=HTTPStatus.OK)
 
     def _serve_portfolio_chart(self, portfolio_id: str) -> None:
@@ -238,15 +350,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
             length = int(self.headers.get("Content-Length", 0))
             body = _json.loads(self.rfile.read(length)) if length else {}
-            flag_path = pathlib.Path(project_root) / "data" / "factory" / "factory_paused.flag"
             action = body.get("action", "")
-            if action == "pause":
-                flag_path.parent.mkdir(parents=True, exist_ok=True)
-                flag_path.write_text(datetime.utcnow().isoformat())
-            elif action == "resume":
-                flag_path.unlink(missing_ok=True)
-            running = not flag_path.exists()
-            self._serve_json({"factory_running": running})
+            try:
+                payload = _apply_control_action(action)
+            except ValueError as exc:
+                self._serve_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._serve_json(payload)
         else:
             self.send_error(404)
 
@@ -268,6 +378,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    DASHBOARD_PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DASHBOARD_PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
+
+    def _cleanup_pid() -> None:
+        try:
+            if DASHBOARD_PID_PATH.exists():
+                DASHBOARD_PID_PATH.unlink()
+        except OSError:
+            pass
+
+    atexit.register(_cleanup_pid)
     print(f"http://{args.host}:{args.port}")
     try:
         server.serve_forever()

@@ -2,6 +2,10 @@ export interface DashboardSnapshot {
   generated_at: string;
   project_root: string;
   factory_paused: boolean;
+  factory_running?: boolean;
+  refresh_scheduler_running?: boolean;
+  dashboard_running?: boolean;
+  system_running?: boolean;
   api_health: { status: string; snapshot_source: string };
   api_feeds: APIFeeds;
   factory: FactoryState;
