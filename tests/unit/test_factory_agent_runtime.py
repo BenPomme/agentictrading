@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import pandas as pd
 
 import config
 from factory.agent_runtime import (
@@ -1477,7 +1478,29 @@ def test_dashboard_snapshot_separates_current_and_archived_operational_state(tmp
         ),
         encoding="utf-8",
     )
-    (current_portfolio / "state.json").write_text(json.dumps({"running": True, "status": "running"}), encoding="utf-8")
+    (current_portfolio / "state.json").write_text(
+        json.dumps(
+            {
+                "running": True,
+                "ready": True,
+                "status": "running",
+                "paper_data_contract": {
+                    "requirements": [
+                        {
+                            "source": "binance",
+                            "venue": "binance",
+                            "instruments": ["BTCUSDT"],
+                            "fields": ["funding_rate"],
+                            "feed_type": "funding",
+                            "raw_cadence_seconds": 28800,
+                            "freshness_sla_seconds": 43200,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     (current_portfolio / "heartbeat.json").write_text(json.dumps({"ts": current_ts, "status": "running"}), encoding="utf-8")
     (current_portfolio / "readiness.json").write_text(json.dumps({"status": "ready", "score_pct": 96}), encoding="utf-8")
     (current_portfolio / "trades.json").write_text(
@@ -1538,6 +1561,7 @@ def test_dashboard_snapshot_separates_current_and_archived_operational_state(tmp
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_AGENT_LOG_DIR", str(agent_runs_root))
     monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root), raising=False)
+    monkeypatch.setattr(config, "EXECUTION_TRACKED_PORTFOLIOS", "other_portfolio", raising=False)
 
     snapshot = build_dashboard_snapshot()
     snapshot_v2 = build_snapshot_v2()
@@ -1550,12 +1574,109 @@ def test_dashboard_snapshot_separates_current_and_archived_operational_state(tmp
     assert family_row["target_venues"] == ["binance"]
     assert family_row["current_runner_portfolio_id"] == current_portfolio_id
     assert family_row["champion_paper_state"] == "paper_active"
+    assert family_row["runner_gate_status"] == "bound"
+    assert family_row["feed_gate_status"] == "fresh"
     assert family_row["last_agent_run_at"] == current_ts
     assert snapshot["execution"]["portfolio_count"] == 1
     assert snapshot["execution"]["archived_portfolio_count"] == 1
     assert snapshot["execution"]["current_paper_pnl"] == pytest.approx(-24.7354)
     assert snapshot["factory"]["research_summary"]["paper_pnl"] == pytest.approx(-24.7354)
     assert snapshot_v2["lineage_v2"][0]["paper_portfolio_id"] == current_portfolio_id
+
+
+def test_dashboard_snapshot_blocks_active_label_when_runner_is_not_ready(tmp_path, monkeypatch):
+    factory_root = tmp_path / "factory"
+    state_root = factory_root / "state"
+    state_root.mkdir(parents=True, exist_ok=True)
+    current_ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    family_id = "polymarket_cross_venue"
+    champion_id = f"{family_id}:champion"
+    portfolio_id = "polymarket_cross_venue"
+    (state_root / "summary.json").write_text(
+        json.dumps(
+            {
+                "families": [
+                    {
+                        "family_id": family_id,
+                        "label": "Cross Venue",
+                        "champion_lineage_id": champion_id,
+                        "target_portfolios": [portfolio_id],
+                        "target_venues": ["polymarket", "betfair"],
+                    }
+                ],
+                "lineages": [
+                    {
+                        "lineage_id": champion_id,
+                        "family_id": family_id,
+                        "role": "champion",
+                        "current_stage": "paper",
+                        "target_portfolios": [portfolio_id],
+                        "target_venues": ["polymarket", "betfair"],
+                        "activation_status": "running",
+                    }
+                ],
+                "queue": [],
+                "research_summary": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_root / "STATE.md").write_text("## Recent Actions\n", encoding="utf-8")
+
+    portfolios_root = tmp_path / "portfolios"
+    portfolio_dir = portfolios_root / portfolio_id
+    portfolio_dir.mkdir(parents=True, exist_ok=True)
+    (portfolio_dir / "account.json").write_text(
+        json.dumps({"currency": "USD", "starting_balance": 10000, "current_balance": 10000, "realized_pnl": 0.0, "trade_count": 0}),
+        encoding="utf-8",
+    )
+    (portfolio_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "running": True,
+                "ready": False,
+                "reason": "model_not_loaded",
+                "status": "running",
+                "paper_data_contract": {
+                    "requirements": [
+                        {
+                            "source": "polymarket",
+                            "venue": "polymarket",
+                            "instruments": ["market1"],
+                            "fields": ["price"],
+                            "feed_type": "prediction_history",
+                            "raw_cadence_seconds": 60,
+                            "freshness_sla_seconds": 300,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (portfolio_dir / "heartbeat.json").write_text(json.dumps({"ts": current_ts, "status": "running"}), encoding="utf-8")
+
+    prices_dir = tmp_path / "data" / "polymarket" / "prices_history"
+    prices_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {"timestamp": [datetime.now(timezone.utc) - timedelta(minutes=1)], "price": [0.51]}
+    ).to_parquet(prices_dir / "market1.parquet", index=False)
+    (tmp_path / "data" / "polymarket" / "markets_metadata.json").write_text(
+        json.dumps({"fetched_at": datetime.now(timezone.utc).isoformat(), "interval": "1m"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root), raising=False)
+    monkeypatch.setattr(config, "EXECUTION_TRACKED_PORTFOLIOS", "liquidation_rebound_absorption", raising=False)
+
+    snapshot = build_dashboard_snapshot()
+
+    family_row = snapshot["factory"]["families"][0]
+    assert family_row["current_runner_portfolio_id"] == portfolio_id
+    assert family_row["champion_paper_state"] == "paper_blocked"
+    assert family_row["runner_gate_status"] == "not_ready"
+    assert "model_not_loaded" in str(family_row["runner_gate_reason"])
 
 
 def test_dashboard_snapshot_exposes_runtime_lane_metadata(tmp_path, monkeypatch):

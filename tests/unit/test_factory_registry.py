@@ -222,3 +222,71 @@ def test_registry_opens_and_resolves_operator_actions(tmp_path):
     latest = registry.latest_operator_action("lineage-a", status="resolved")
     assert latest is not None
     assert latest.action_id == opened.action_id
+
+
+def test_registry_replaces_null_paper_data_contract_on_genome_save(tmp_path):
+    registry = FactoryRegistry(tmp_path / "factory")
+    hypothesis = ResearchHypothesis(
+        hypothesis_id="hypothesis-b",
+        family_id="family-b",
+        title="Hypothesis B",
+        thesis="Test thesis",
+        scientific_domains=["econometrics"],
+        lead_agent_role="Director",
+        success_metric="paper_monthly_roi_pct",
+        guardrails=["paper_only"],
+    )
+    genome = StrategyGenome(
+        genome_id="genome-b",
+        lineage_id="lineage-b",
+        family_id="family-b",
+        parent_genome_id=None,
+        role="champion",
+        parameters={"paper_data_contract": None},
+        mutation_bounds=MutationBounds(),
+        scientific_domains=["econometrics"],
+        budget_bucket="incumbent",
+        resource_profile="local-first-hybrid",
+        budget_weight_pct=10.0,
+    )
+    experiment = ExperimentSpec(
+        experiment_id="experiment-b",
+        lineage_id="lineage-b",
+        family_id="family-b",
+        hypothesis_id="hypothesis-b",
+        genome_id="genome-b",
+        goldfish_workspace="research/goldfish/family-b",
+        pipeline_stages=["dataset"],
+        backend_mode="goldfish_sidecar",
+        resource_profile="local-first-hybrid",
+    )
+    lineage = LineageRecord(
+        lineage_id="lineage-b",
+        family_id="family-b",
+        label="Champion",
+        role="champion",
+        current_stage="paper",
+        target_portfolios=["alpaca_paper"],
+        target_venues=["alpaca"],
+        hypothesis_id="hypothesis-b",
+        genome_id="genome-b",
+        experiment_id="experiment-b",
+        budget_bucket="incumbent",
+        budget_weight_pct=10.0,
+        connector_ids=["alpaca_stocks"],
+        goldfish_workspace="research/goldfish/family-b",
+    )
+
+    registry.save_research_pack(
+        hypothesis=hypothesis,
+        genome=genome,
+        experiment=experiment,
+        lineage=lineage,
+    )
+
+    loaded = registry.load_genome("lineage-b")
+
+    assert loaded is not None
+    payload = loaded.parameters.get("paper_data_contract")
+    assert isinstance(payload, dict)
+    assert payload.get("requirements")

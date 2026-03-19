@@ -42,6 +42,7 @@ from factory.contracts import (
 )
 from factory.execution_bridge import FactoryExecutionBridge
 from factory.execution_evidence import build_portfolio_execution_evidence, summarize_execution_targets
+from factory.execution_targets import resolve_target_portfolio
 from factory.evaluation import assign_pareto_ranks, compute_hard_vetoes
 from factory.experiment_runner import FactoryExperimentRunner
 from factory.experiment_sources import family_model_rankings, portfolio_scorecards
@@ -51,6 +52,7 @@ from factory.provenance.dna_extractor import build_family_dna_packet, enrich_dna
 from factory.idea_intake import all_ideas, annotate_idea_statuses, maybe_run_manual_idea_watch, relevant_ideas_for_family
 from factory.idea_scout import maybe_run_idea_scout
 from factory.paper_data import assess_paper_data_readiness, build_paper_data_contract
+from factory.paper_data import explicit_current_champion_contract
 from factory.promotion import PromotionController
 from factory.registry import FactoryRegistry
 from factory.runtime_lanes import decide_runtime_lane_policy, runtime_lane_selection_key
@@ -2578,6 +2580,144 @@ class FactoryOrchestrator:
             return "no_trade_syndrome_after_tweaks"
         return None
 
+    def _paper_portfolio_root(self) -> Path:
+        root_value = str(
+            getattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", "")
+            or getattr(config, "PORTFOLIO_STATE_ROOT", "data/portfolios")
+            or "data/portfolios"
+        ).strip()
+        root = Path(root_value)
+        if not root.is_absolute():
+            root = self.project_root / root
+        return root
+
+    def _resolve_champion_runner_state(
+        self,
+        family: FactoryFamily,
+        row: Dict[str, Any],
+    ) -> tuple[str | None, Dict[str, Any], Dict[str, Any]]:
+        root = self._paper_portfolio_root()
+        candidates: List[str] = []
+        for value in [
+            row.get("paper_portfolio_id"),
+            row.get("runtime_target_portfolio"),
+            row.get("live_paper_target_portfolio_id"),
+            row.get("curated_target_portfolio_id"),
+        ]:
+            text = str(value or "").strip()
+            if text:
+                candidates.append(resolve_target_portfolio(text))
+        for item in list(row.get("target_portfolios") or []) + list(family.target_portfolios or []):
+            text = str(item or "").strip()
+            if text:
+                candidates.append(resolve_target_portfolio(text))
+        if family.family_id:
+            candidates.append(resolve_target_portfolio(family.family_id))
+
+        best_portfolio_id: str | None = None
+        best_state: Dict[str, Any] = {}
+        best_heartbeat: Dict[str, Any] = {}
+        best_rank: tuple[Any, ...] | None = None
+        for portfolio_id in dict.fromkeys(candidates):
+            if not portfolio_id:
+                continue
+            base = root / portfolio_id
+            if not base.exists():
+                continue
+            store = PortfolioStateStore(portfolio_id, root=str(root))
+            state = store.read_state()
+            heartbeat = store.read_heartbeat()
+            heartbeat_ts = str(heartbeat.get("ts") or state.get("last_cycle_at") or "").strip()
+            heartbeat_age = None
+            if heartbeat_ts:
+                try:
+                    ts = datetime.fromisoformat(heartbeat_ts.replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    heartbeat_age = max(0.0, (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds())
+                except ValueError:
+                    heartbeat_age = None
+            rank = (
+                0 if bool(state.get("ready")) else 1,
+                0 if bool(state.get("running")) else 1,
+                float(heartbeat_age if heartbeat_age is not None else 10**9),
+                portfolio_id,
+            )
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best_portfolio_id = portfolio_id
+                best_state = dict(state or {})
+                best_heartbeat = dict(heartbeat or {})
+        return best_portfolio_id, best_state, best_heartbeat
+
+    def _resolve_proven_paper_contract(
+        self,
+        genome: StrategyGenome | None,
+        family: FactoryFamily,
+        row: Dict[str, Any],
+        runner_state: Dict[str, Any],
+    ) -> tuple[Any, bool, str | None]:
+        params = dict(genome.parameters if genome is not None else {})
+        explicit = params.get("paper_data_contract")
+        if isinstance(explicit, dict) and explicit.get("requirements"):
+            return build_paper_data_contract(params, target_venues=(row.get("target_venues") or family.target_venues)), True, "genome"
+        for source_name, payload in [
+            ("lineage_state", row.get("paper_data_contract")),
+            ("family_state", getattr(family, "paper_data_contract", None)),
+            ("runner_state", runner_state.get("paper_data_contract")),
+        ]:
+            if isinstance(payload, dict) and payload.get("requirements"):
+                return build_paper_data_contract({"paper_data_contract": payload}, target_venues=(row.get("target_venues") or family.target_venues)), True, source_name
+        return build_paper_data_contract(params, target_venues=(row.get("target_venues") or family.target_venues)), False, None
+
+    def _ensure_explicit_champion_contracts(self, families: Sequence[FactoryFamily]) -> None:
+        for family in families:
+            champion_id = str(family.champion_lineage_id or "").strip()
+            if not champion_id:
+                continue
+            genome = self.registry.load_genome(champion_id)
+            if genome is None:
+                continue
+            params = dict(genome.parameters or {})
+            explicit = params.get("paper_data_contract")
+            template = explicit_current_champion_contract(family.family_id)
+            if template is None:
+                if isinstance(explicit, dict) and explicit.get("requirements"):
+                    continue
+                continue
+            if explicit == template:
+                continue
+            params["paper_data_contract"] = template
+            genome.parameters = params
+            self.registry.save_genome(champion_id, genome)
+
+    def _runner_gate_state(
+        self,
+        portfolio_id: str | None,
+        runner_state: Dict[str, Any],
+        heartbeat: Dict[str, Any],
+    ) -> tuple[str, str]:
+        if not portfolio_id:
+            return "missing", "blocked: no runner bound"
+        heartbeat_ts = str(heartbeat.get("ts") or runner_state.get("last_cycle_at") or "").strip()
+        heartbeat_age = None
+        if heartbeat_ts:
+            try:
+                ts = datetime.fromisoformat(heartbeat_ts.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                heartbeat_age = max(0.0, (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds())
+            except ValueError:
+                heartbeat_age = None
+        if not bool(runner_state.get("running")):
+            return "not_running", f"blocked: runner {portfolio_id} is not running"
+        if heartbeat_age is None or heartbeat_age > 300:
+            return "stale_heartbeat", f"blocked: runner {portfolio_id} heartbeat stale"
+        if runner_state.get("ready") is False:
+            reason = str(runner_state.get("reason") or "runner_not_ready").strip()
+            return "not_ready", f"blocked: runner {portfolio_id} not ready ({reason})"
+        return "bound", f"running on {portfolio_id}"
+
     def _champion_paper_state(
         self,
         family: FactoryFamily,
@@ -2594,11 +2734,24 @@ class FactoryOrchestrator:
         )
         current_stage = str(row.get("current_stage") or champion.get("current_stage") or "").strip().lower()
         genome = self.registry.load_genome(champion_id)
-        contract = build_paper_data_contract(
-            genome.parameters if genome is not None else {},
-            target_venues=(row.get("target_venues") or family.target_venues),
+        runner_portfolio_id, runner_state, runner_heartbeat = self._resolve_champion_runner_state(family, row)
+        runner_gate_status, runner_gate_reason = self._runner_gate_state(
+            runner_portfolio_id,
+            runner_state,
+            runner_heartbeat,
         )
-        readiness = assess_paper_data_readiness(contract, self.project_root)
+        contract, contract_proven, contract_source = self._resolve_proven_paper_contract(
+            genome,
+            family,
+            row,
+            runner_state,
+        )
+        readiness = assess_paper_data_readiness(
+            contract,
+            self.project_root,
+            contract_proven=contract_proven,
+            contract_source=contract_source,
+        )
         issue_codes = {
             str(item).strip().lower()
             for item in list(row.get("execution_issue_codes") or [])
@@ -2617,6 +2770,8 @@ class FactoryOrchestrator:
         if issue_codes.intersection(stuck_issue_codes):
             reason = ", ".join(sorted(issue_codes.intersection(stuck_issue_codes)))
             return {"state": "paper_stuck", "reason": f"stuck: champion is not trading cleanly ({reason})"}
+        if readiness.status == "stale" and readiness.within_grace:
+            return {"state": "paper_degraded", "reason": f"degraded: {readiness.blocking_reason}"}
         if not readiness.ready:
             return {"state": "paper_blocked", "reason": readiness.blocking_reason}
         if any(str(venue).lower() in {"alpaca", "yahoo"} for venue in (family.target_venues or [])) and not is_stock_market_open():
@@ -2631,8 +2786,10 @@ class FactoryOrchestrator:
             return {"state": "paper_blocked", "reason": f"blocked: champion is still in {current_stage or 'research'}"}
         if activation_status == "start_failed":
             return {"state": "paper_blocked", "reason": "blocked: paper runner failed to start"}
+        if runner_gate_status != "bound":
+            return {"state": "paper_blocked", "reason": runner_gate_reason}
         if activation_status in {"running", "started", "ready_to_launch"} or bool(row.get("alias_runner_running")):
-            return {"state": "paper_active", "reason": "ready: champion is routed into paper trading"}
+            return {"state": "paper_active", "reason": runner_gate_reason}
         return {"state": "paper_blocked", "reason": "blocked: paper runner has not started yet"}
 
     def _trainability_contract_request(
@@ -5473,6 +5630,8 @@ class FactoryOrchestrator:
             runtime_mode_value=runtime_mode.value,
             recent_actions=recent_actions,
         )
+        families = self.registry.families()
+        self._ensure_explicit_champion_contracts(families)
         families = self.registry.families()
         family_by_id = {family.family_id: family for family in families}
         workspace_status = self._workspace_status(families)

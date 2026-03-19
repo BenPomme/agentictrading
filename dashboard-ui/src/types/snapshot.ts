@@ -558,6 +558,13 @@ export interface LineageV2 {
   holdoff_reason: string | null;
   venue_scope_reason: string | null;
   paper_portfolio_id: string | null;
+  paper_state?: string | null;
+  paper_reason?: string | null;
+  feed_gate_status?: string | null;
+  feed_gate_reason?: string | null;
+  runner_gate_status?: string | null;
+  runner_gate_reason?: string | null;
+  grace_deadline_at?: string | null;
   /** ISO timestamp from registry lineage record — used for time-in-stage calculations */
   created_at: string | null;
 }

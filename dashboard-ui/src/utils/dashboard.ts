@@ -41,6 +41,12 @@ export interface MergedPaperModel {
   execution_health_status: string | null;
   readiness_score_pct: number | null;
   recent_trades: PortfolioSnapshot['recent_trades'];
+  paper_state?: string | null;
+  paper_reason?: string | null;
+  feed_gate_status?: string | null;
+  feed_gate_reason?: string | null;
+  runner_gate_status?: string | null;
+  runner_gate_reason?: string | null;
   state_bucket: PaperStateBucket;
   checkpoint_label: string;
   progress_pct: number;
@@ -81,9 +87,22 @@ export function getPaperStateBucket(row: {
   port_trade_count: number | null;
   execution_health_status: string | null;
   paper_runtime_status: string | null;
+  paper_state?: string | null;
+  feed_gate_status?: string | null;
+  runner_gate_status?: string | null;
 }): PaperStateBucket {
   if (row.venue_scope_reason) return 'scope-blocked';
   if (row.holdoff_reason) return 'holdoff';
+  if (
+    row.paper_state === 'paper_blocked' ||
+    row.paper_state === 'paper_degraded' ||
+    row.feed_gate_status === 'missing' ||
+    row.feed_gate_status === 'stale' ||
+    row.feed_gate_status === 'unproven' ||
+    (row.runner_gate_status != null && row.runner_gate_status !== 'bound')
+  ) {
+    return 'blocked';
+  }
   if (row.paper_runtime_status === 'paper_running') {
     const totalTrades = row.port_trade_count ?? row.trade_count;
     const pnl = row.realized_pnl ?? 0;
@@ -184,6 +203,12 @@ export function mergePaperModels(
         holdoff_reason: v2?.holdoff_reason ?? null,
         venue_scope_reason: v2?.venue_scope_reason ?? null,
         paper_portfolio_id,
+        paper_state: v2?.paper_state ?? null,
+        paper_reason: v2?.paper_reason ?? null,
+        feed_gate_status: v2?.feed_gate_status ?? null,
+        feed_gate_reason: v2?.feed_gate_reason ?? null,
+        runner_gate_status: v2?.runner_gate_status ?? null,
+        runner_gate_reason: v2?.runner_gate_reason ?? null,
         det_blockers: v2?.deterministic_blockers ?? [],
         balance: port?.current_balance ?? null,
         starting_balance: port?.starting_balance ?? null,

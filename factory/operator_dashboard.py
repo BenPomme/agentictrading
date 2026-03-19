@@ -14,6 +14,7 @@ from factory.contracts import PromotionStage, utc_now_iso
 from factory.execution_evidence import build_portfolio_execution_evidence
 from factory.execution_targets import resolve_target_portfolio
 from factory.idea_intake import all_ideas, annotate_idea_statuses, split_active_and_archived_ideas
+from factory.paper_data import assess_paper_data_readiness, build_paper_data_contract
 from factory.registry import FactoryRegistry
 from factory.connectors import default_connector_catalog
 
@@ -736,10 +737,12 @@ def _idea_status_counts(idea_items: Iterable[Dict[str, Any]]) -> Dict[str, int]:
     return counts
 
 
-def _portfolio_dirs() -> List[Path]:
+def _portfolio_dirs(*, include_all: bool = False) -> List[Path]:
     root = _execution_root()
     if not root.exists():
         return []
+    if include_all:
+        return sorted(path for path in root.iterdir() if path.is_dir())
     tracked_raw = str(getattr(config, "EXECUTION_TRACKED_PORTFOLIOS", "") or "").strip()
     tracked = [item.strip() for item in tracked_raw.split(",") if item.strip()]
     if tracked:
@@ -999,24 +1002,95 @@ def _choose_current_runner_portfolio(
     return str(best.get("portfolio_id") or "").strip() or None
 
 
-def _derive_champion_paper_state(lineage: Dict[str, Any], portfolio: Dict[str, Any] | None) -> tuple[str, str]:
+def _resolve_snapshot_paper_contract(
+    lineage: Dict[str, Any],
+    family: Dict[str, Any],
+    portfolio: Dict[str, Any] | None,
+    registry: FactoryRegistry,
+) -> tuple[Any, bool, str | None]:
+    for source_name, payload in [
+        ("lineage", lineage.get("paper_data_contract")),
+        ("family", family.get("paper_data_contract")),
+        ("runner", (portfolio or {}).get("paper_data_contract")),
+    ]:
+        if isinstance(payload, dict) and payload.get("requirements"):
+            return build_paper_data_contract({"paper_data_contract": payload}), True, source_name
+    lineage_id = str(lineage.get("lineage_id") or family.get("champion_lineage_id") or "").strip()
+    if lineage_id:
+        genome = registry.load_genome(lineage_id)
+        if genome is not None:
+            payload = dict(genome.parameters or {}).get("paper_data_contract")
+            if isinstance(payload, dict) and payload.get("requirements"):
+                return build_paper_data_contract({"paper_data_contract": payload}), True, "genome"
+    params: Dict[str, Any] = {}
+    return build_paper_data_contract(params, target_venues=(lineage.get("target_venues") or family.get("target_venues") or [])), False, None
+
+
+def _derive_runner_gate(portfolio: Dict[str, Any] | None) -> tuple[str, str, bool]:
+    if not portfolio:
+        return "missing", "blocked: no runner bound", False
+    portfolio_id = str(portfolio.get("portfolio_id") or "").strip()
+    if not bool(portfolio.get("running")):
+        return "not_running", f"blocked: runner {portfolio_id} is not running", False
+    if bool(portfolio.get("runner_ready")) is False:
+        reason = str(portfolio.get("runner_reason") or "runner_not_ready").strip()
+        return "not_ready", f"blocked: runner {portfolio_id} not ready ({reason})", False
+    heartbeat_age = portfolio.get("heartbeat_age_seconds")
+    if heartbeat_age is None or float(heartbeat_age or 0.0) > 300:
+        return "stale_heartbeat", f"blocked: runner {portfolio_id} heartbeat stale", False
+    return "bound", f"running on {portfolio_id}", True
+
+
+def _derive_champion_paper_state(
+    lineage: Dict[str, Any],
+    family: Dict[str, Any],
+    portfolio: Dict[str, Any] | None,
+    registry: FactoryRegistry,
+) -> tuple[str, str, Dict[str, Any]]:
     runtime_status = _lineage_paper_runtime_status(lineage)
     issue_codes = [str(item).strip() for item in (lineage.get("execution_issue_codes") or []) if str(item).strip()]
     health_status = str(lineage.get("execution_health_status") or "").strip().lower()
+    runner_gate_status, runner_gate_reason, runner_ready = _derive_runner_gate(portfolio)
+    contract, contract_proven, contract_source = _resolve_snapshot_paper_contract(lineage, family, portfolio, registry)
+    feed_readiness = assess_paper_data_readiness(
+        contract,
+        _project_root(),
+        contract_proven=contract_proven,
+        contract_source=contract_source,
+    )
+    gate_meta = {
+        "feed_gate_status": feed_readiness.status,
+        "feed_gate_reason": feed_readiness.blocking_reason,
+        "runner_gate_status": runner_gate_status,
+        "runner_gate_reason": runner_gate_reason,
+        "runner_ready": runner_ready,
+        "required_feeds": [item.to_dict() for item in contract.requirements],
+        "latest_required_feed_ts": min(
+            (item.latest_data_ts for item in feed_readiness.requirement_statuses if item.latest_data_ts),
+            default=None,
+        ),
+        "latest_required_feed_age_seconds": min(
+            (float(item.age_seconds) for item in feed_readiness.requirement_statuses if item.age_seconds is not None),
+            default=None,
+        ),
+        "grace_deadline_at": feed_readiness.grace_deadline_at,
+    }
+    if runtime_status == "paper_running" and feed_readiness.status == "stale" and feed_readiness.within_grace and runner_ready:
+        return "paper_degraded", f"degraded: {feed_readiness.blocking_reason}", gate_meta
+    if not feed_readiness.ready:
+        return "paper_blocked", feed_readiness.blocking_reason, gate_meta
+    if runner_gate_status != "bound":
+        return "paper_blocked", runner_gate_reason, gate_meta
     if runtime_status == "paper_running":
-        portfolio_id = str((portfolio or {}).get("portfolio_id") or lineage.get("paper_portfolio_id") or "").strip()
-        reason = "running"
-        if portfolio_id:
-            reason = f"running on {portfolio_id}"
-        return "paper_active", reason
+        return "paper_active", runner_gate_reason, gate_meta
     if any(code in {"trade_stalled", "training_stalled", "stalled_model", "no_trade_syndrome", "zero_simulated_fills"} for code in issue_codes):
-        return "paper_stuck", f"stuck: {issue_codes[0]}"
+        return "paper_stuck", f"stuck: {issue_codes[0]}", gate_meta
     if health_status == "critical" or issue_codes or list(lineage.get("blockers") or []):
         blocker = issue_codes[0] if issue_codes else str((lineage.get("blockers") or ["blocked"])[0])
-        return "paper_blocked", f"blocked: {blocker}"
+        return "paper_blocked", f"blocked: {blocker}", gate_meta
     if runtime_status in {"paper_candidate", "paper_assigned", "paper_starting"}:
-        return "paper_blocked", f"blocked: {runtime_status}"
-    return "paper_blocked", "blocked: not in active paper runtime"
+        return "paper_blocked", f"blocked: {runtime_status}", gate_meta
+    return "paper_blocked", "blocked: not in active paper runtime", gate_meta
 
 
 def _portfolio_snapshot_light(path: Path) -> Dict[str, Any]:
@@ -1432,6 +1506,10 @@ def _portfolio_snapshot(path: Path) -> Dict[str, Any]:
         "readiness_status": str(readiness.get("status") or ""),
         "readiness_score_pct": _compact_number(readiness.get("score_pct")),
         "readiness_blockers": [str(item) for item in (readiness.get("blockers") or [])],
+        "runner_ready": state.get("ready"),
+        "runner_reason": str(state.get("reason") or "").strip() or None,
+        "paper_data_contract": dict(state.get("paper_data_contract") or {}),
+        "readiness_v2": dict(state.get("readiness_v2") or {}),
         "candidate_context_count": int(config_snapshot.get("factory_candidate_context_count", 0) or 0),
         "live_manifest_count": int(config_snapshot.get("factory_live_manifest_count", 0) or 0),
         "candidate_families": sorted(
@@ -2718,20 +2796,27 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
         if str(row.get("family_id") or "").strip() not in current_family_ids
     ]
 
-    portfolio_paths = {path.name: path for path in _portfolio_dirs()}
+    tracked_portfolio_paths = {path.name: path for path in _portfolio_dirs()}
+    all_portfolio_paths = {path.name: path for path in _portfolio_dirs(include_all=True)}
     execution_root = _execution_root()
     for portfolio_id in _runtime_alias_ids(factory_state):
         path = execution_root / portfolio_id
         if path.is_dir():
-            portfolio_paths.setdefault(portfolio_id, path)
-    portfolios = [_portfolio_snapshot(path) for path in portfolio_paths.values()]
+            tracked_portfolio_paths.setdefault(portfolio_id, path)
+            all_portfolio_paths.setdefault(portfolio_id, path)
+    portfolios = [_portfolio_snapshot(path) for path in tracked_portfolio_paths.values()]
+    all_portfolios = [_portfolio_snapshot(path) for path in all_portfolio_paths.values()]
     placeholder_portfolios = [row for row in portfolios if row.get("is_placeholder")]
     tracked_portfolios_all = [
         row
         for row in portfolios
         if row["portfolio_id"] != "command_center" and not row.get("is_placeholder")
     ]
-    portfolios_by_id = {str(row.get("portfolio_id") or ""): row for row in tracked_portfolios_all}
+    portfolios_by_id = {
+        str(row.get("portfolio_id") or ""): row
+        for row in all_portfolios
+        if row["portfolio_id"] != "command_center" and not row.get("is_placeholder")
+    }
     current_lineage_by_id = {
         str(row.get("lineage_id") or "").strip(): row
         for row in current_lineages_raw
@@ -2757,7 +2842,7 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
         archived_portfolios = []
     else:
         current_portfolios = [
-            row for row in tracked_portfolios_all if str(row.get("portfolio_id") or "") in current_portfolio_ids
+            row for row in portfolios_by_id.values() if str(row.get("portfolio_id") or "") in current_portfolio_ids
         ]
         archived_portfolios = [
             row for row in tracked_portfolios_all if str(row.get("portfolio_id") or "") not in current_portfolio_ids
@@ -2792,7 +2877,7 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
         champion_row = current_lineage_by_id.get(champion_id, {})
         portfolio_id = current_runner_by_family.get(family_id)
         portfolio = current_portfolios_by_id.get(str(portfolio_id or ""))
-        paper_state, paper_reason = _derive_champion_paper_state(champion_row, portfolio)
+        paper_state, paper_reason, gate_meta = _derive_champion_paper_state(champion_row, row, portfolio, registry)
         row["target_venues"] = list(
             dict.fromkeys(
                 [str(item).strip() for item in (row.get("target_venues") or []) if str(item).strip()]
@@ -2805,6 +2890,7 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
         row["champion_paper_state"] = paper_state
         row["champion_paper_reason"] = paper_reason
         row["status"] = paper_state
+        row.update(gate_meta)
 
     normalized_research_summary = _normalized_research_summary(
         dict(factory_state.get("research_summary") or {}),
@@ -2942,6 +3028,7 @@ def build_snapshot_v2() -> Dict[str, Any]:
     family_venue_map: Dict[str, str] = {}
     family_venues_map: Dict[str, set] = {}
     family_runner_map: Dict[str, str | None] = {}
+    family_gate_map: Dict[str, Dict[str, Any]] = {}
     for fam in families:
         fid = str(fam.get("family_id") or "")
         target_venues = [str(v).strip() for v in (fam.get("target_venues") or []) if str(v).strip()]
@@ -2949,6 +3036,15 @@ def build_snapshot_v2() -> Dict[str, Any]:
         family_venue_map[fid] = venue_str
         family_venues_map[fid] = set(target_venues) if target_venues else ({v.strip() for v in venue_str.split(",") if v.strip()} if venue_str else set())
         family_runner_map[fid] = str(fam.get("current_runner_portfolio_id") or "").strip() or None
+        family_gate_map[fid] = {
+            "paper_state": fam.get("champion_paper_state"),
+            "paper_reason": fam.get("champion_paper_reason"),
+            "feed_gate_status": fam.get("feed_gate_status"),
+            "feed_gate_reason": fam.get("feed_gate_reason"),
+            "runner_gate_status": fam.get("runner_gate_status"),
+            "runner_gate_reason": fam.get("runner_gate_reason"),
+            "grace_deadline_at": fam.get("grace_deadline_at"),
+        }
 
     _PAPER_STAGE = "paper"
     _HOLDOFF_EXCLUDED_STATUSES = {"failed", "retiring", "review_requested_rework"}
@@ -3012,6 +3108,13 @@ def build_snapshot_v2() -> Dict[str, Any]:
             "holdoff_reason": holdoff_reason,
             "venue_scope_reason": venue_scope_reason,
             "paper_portfolio_id": paper_portfolio_id,
+            "paper_state": family_gate_map.get(family_id, {}).get("paper_state"),
+            "paper_reason": family_gate_map.get(family_id, {}).get("paper_reason"),
+            "feed_gate_status": family_gate_map.get(family_id, {}).get("feed_gate_status"),
+            "feed_gate_reason": family_gate_map.get(family_id, {}).get("feed_gate_reason"),
+            "runner_gate_status": family_gate_map.get(family_id, {}).get("runner_gate_status"),
+            "runner_gate_reason": family_gate_map.get(family_id, {}).get("runner_gate_reason"),
+            "grace_deadline_at": family_gate_map.get(family_id, {}).get("grace_deadline_at"),
             # created_at for time-in-stage calculations in the UI
             "created_at": str(lin.get("created_at") or "") or None,
         })

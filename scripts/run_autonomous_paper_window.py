@@ -195,7 +195,7 @@ def _ensure_dashboard_running(project_root: Path) -> None:
             pass  # Stale PID file, proceed to start
 
     # Start dashboard server as background process
-    dashboard_script = project_root / "factory" / "operator_dashboard.py"
+    dashboard_script = project_root / "scripts" / "factory_dashboard.py"
     if not dashboard_script.exists():
         print("[paper-window] Dashboard script not found, skipping auto-launch", flush=True)
         return
@@ -220,6 +220,39 @@ def _ensure_dashboard_running(project_root: Path) -> None:
         webbrowser.open(f"http://localhost:{port}")
     except Exception as exc:
         print(f"[paper-window] Dashboard auto-launch failed: {exc}", flush=True)
+
+
+def _ensure_refresh_scheduler_running(project_root: Path) -> None:
+    import subprocess
+
+    pid_path = project_root / "data" / "factory" / "data_refresh_scheduler.pid"
+    if pid_path.exists():
+        try:
+            existing_pid = int(pid_path.read_text().strip())
+            os.kill(existing_pid, 0)
+            return
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+
+    scheduler_script = project_root / "scripts" / "data_refresh_scheduler.py"
+    if not scheduler_script.exists():
+        print("[paper-window] Refresh scheduler script not found", flush=True)
+        return
+
+    log_path = project_root / "data" / "factory" / "data_refresh_scheduler.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(log_path, "a") as log_fh:
+            proc = subprocess.Popen(
+                [sys.executable, str(scheduler_script)],
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                cwd=str(project_root),
+                start_new_session=True,
+            )
+        print(f"[paper-window] Refresh scheduler started (PID {proc.pid})", flush=True)
+    except Exception as exc:
+        print(f"[paper-window] Refresh scheduler start failed: {exc}", flush=True)
 
 
 def _safety_preflight() -> list[str]:
@@ -329,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- Auto-launch dashboard ----
     _ensure_dashboard_running(PROJECT_ROOT)
+    _ensure_refresh_scheduler_running(PROJECT_ROOT)
 
     # ---- Initialize orchestrator ----
     orchestrator = FactoryOrchestrator(PROJECT_ROOT)
@@ -362,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.time()
         cycle_ts = _utc_now()
         print(f"\n[paper-window] Cycle {cycle_num}/{args.max_cycles} started at {cycle_ts}", flush=True)
+        _ensure_refresh_scheduler_running(PROJECT_ROOT)
 
         try:
             state = orchestrator.run_cycle()

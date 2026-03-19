@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 
@@ -38,6 +39,27 @@ def _fresh_alpaca_data(project_root):
     pd.DataFrame({"open": [1, 2, 3, 4], "high": [2, 3, 4, 5], "low": [0, 1, 2, 3], "close": [1.5, 2.5, 3.5, 4.5]}, index=idx).to_parquet(bars_dir / "SPY.parquet")
     (project_root / "data" / "alpaca" / "metadata.json").write_text(
         json.dumps({"last_refresh": datetime.now(timezone.utc).isoformat(), "timeframe": "1Min"}),
+        encoding="utf-8",
+    )
+
+
+def _seed_runner_state(project_root: Path, portfolio_id: str, *, ready: bool = True, reason: str = "", heartbeat_age_seconds: int = 30) -> None:
+    portfolio_dir = project_root / "data" / "portfolios" / portfolio_id
+    portfolio_dir.mkdir(parents=True, exist_ok=True)
+    heartbeat_ts = datetime.now(timezone.utc) - timedelta(seconds=heartbeat_age_seconds)
+    (portfolio_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "running": True,
+                "ready": ready,
+                "reason": reason,
+                "status": "running",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (portfolio_dir / "heartbeat.json").write_text(
+        json.dumps({"ts": heartbeat_ts.isoformat().replace("+00:00", "Z"), "status": "running"}),
         encoding="utf-8",
     )
 
@@ -98,9 +120,11 @@ def _family_and_lineage() -> tuple[FactoryFamily, LineageRecord, StrategyGenome]
 def test_champion_paper_state_reports_active_when_runner_and_data_are_ready(tmp_path, monkeypatch):
     orchestrator = _orchestrator(tmp_path, monkeypatch)
     monkeypatch.setattr("factory.orchestrator.is_stock_market_open", lambda: True)
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(orchestrator.project_root / "data" / "portfolios"), raising=False)
     family, lineage, genome = _family_and_lineage()
     _save_pack(orchestrator, family, lineage, genome)
     _fresh_alpaca_data(orchestrator.project_root)
+    _seed_runner_state(orchestrator.project_root, "alpaca_paper")
 
     result = orchestrator._champion_paper_state(
         family,
@@ -113,8 +137,10 @@ def test_champion_paper_state_reports_active_when_runner_and_data_are_ready(tmp_
 
 def test_champion_paper_state_reports_blocked_when_data_is_stale(tmp_path, monkeypatch):
     orchestrator = _orchestrator(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(orchestrator.project_root / "data" / "portfolios"), raising=False)
     family, lineage, genome = _family_and_lineage()
     _save_pack(orchestrator, family, lineage, genome)
+    _seed_runner_state(orchestrator.project_root, "alpaca_paper")
 
     result = orchestrator._champion_paper_state(
         family,
@@ -126,11 +152,49 @@ def test_champion_paper_state_reports_blocked_when_data_is_stale(tmp_path, monke
     assert "blocked" in result["reason"]
 
 
-def test_champion_paper_state_reports_stuck_on_stall_issue_codes(tmp_path, monkeypatch):
+def test_champion_paper_state_reports_blocked_when_runner_is_missing(tmp_path, monkeypatch):
     orchestrator = _orchestrator(tmp_path, monkeypatch)
+    monkeypatch.setattr("factory.orchestrator.is_stock_market_open", lambda: True)
     family, lineage, genome = _family_and_lineage()
     _save_pack(orchestrator, family, lineage, genome)
     _fresh_alpaca_data(orchestrator.project_root)
+
+    result = orchestrator._champion_paper_state(
+        family,
+        {"champion": {"lineage_id": lineage.lineage_id, "current_stage": "paper"}},
+        [{"lineage_id": lineage.lineage_id, "current_stage": "paper", "activation_status": "running"}],
+    )
+
+    assert result["state"] == "paper_blocked"
+    assert "no runner bound" in result["reason"]
+
+
+def test_champion_paper_state_reports_blocked_when_runner_not_ready(tmp_path, monkeypatch):
+    orchestrator = _orchestrator(tmp_path, monkeypatch)
+    monkeypatch.setattr("factory.orchestrator.is_stock_market_open", lambda: True)
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(orchestrator.project_root / "data" / "portfolios"), raising=False)
+    family, lineage, genome = _family_and_lineage()
+    _save_pack(orchestrator, family, lineage, genome)
+    _fresh_alpaca_data(orchestrator.project_root)
+    _seed_runner_state(orchestrator.project_root, "alpaca_paper", ready=False, reason="model_not_loaded")
+
+    result = orchestrator._champion_paper_state(
+        family,
+        {"champion": {"lineage_id": lineage.lineage_id, "current_stage": "paper"}},
+        [{"lineage_id": lineage.lineage_id, "current_stage": "paper", "activation_status": "running"}],
+    )
+
+    assert result["state"] == "paper_blocked"
+    assert "model_not_loaded" in result["reason"]
+
+
+def test_champion_paper_state_reports_stuck_on_stall_issue_codes(tmp_path, monkeypatch):
+    orchestrator = _orchestrator(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(orchestrator.project_root / "data" / "portfolios"), raising=False)
+    family, lineage, genome = _family_and_lineage()
+    _save_pack(orchestrator, family, lineage, genome)
+    _fresh_alpaca_data(orchestrator.project_root)
+    _seed_runner_state(orchestrator.project_root, "alpaca_paper")
 
     result = orchestrator._champion_paper_state(
         family,

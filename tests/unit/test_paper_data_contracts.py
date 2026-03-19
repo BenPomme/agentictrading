@@ -11,6 +11,8 @@ from factory.paper_data import (
     assess_paper_data_readiness,
     build_paper_data_contract,
     build_refresh_plan,
+    explicit_current_champion_contract,
+    refresh_task_for_requirement,
 )
 from factory.registry import FactoryRegistry
 
@@ -186,6 +188,49 @@ def test_cross_venue_contract_blocks_when_one_required_feed_is_stale(tmp_path):
     assert "cross-venue" in result.blocking_reason
 
 
+def test_stale_requirement_enters_grace_window_before_full_block(tmp_path):
+    bars_dir = tmp_path / "data" / "alpaca" / "bars"
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    stale_ts = datetime.now(timezone.utc) - timedelta(minutes=5, seconds=30)
+    pd.DataFrame(
+        {"open": [100], "high": [101], "low": [99], "close": [100.5], "volume": [10]},
+        index=pd.DatetimeIndex([stale_ts]),
+    ).to_parquet(bars_dir / "SPY.parquet")
+    (tmp_path / "data" / "alpaca" / "metadata.json").write_text(
+        json.dumps({"last_refresh": stale_ts.isoformat(), "timeframe": "1Min"}),
+        encoding="utf-8",
+    )
+
+    contract = build_paper_data_contract(
+        {},
+        model_requirement={
+            "source": "alpaca",
+            "instruments": ["SPY"],
+            "fields": ["close"],
+            "cadence": "1m",
+            "raw_cadence_seconds": 60,
+            "freshness_sla_seconds": 300,
+        },
+    )
+    result = assess_paper_data_readiness(contract, tmp_path)
+
+    assert result.ready is False
+    assert result.status == "stale"
+    assert result.within_grace is True
+    assert result.grace_deadline_at is not None
+    assert result.requirement_statuses[0].task_id == "alpaca_bars_quotes"
+
+
+def test_unproven_contract_blocks_paper_activation(tmp_path):
+    contract = build_paper_data_contract({}, target_venues=["alpaca"])
+
+    result = assess_paper_data_readiness(contract, tmp_path, contract_proven=False, contract_source=None)
+
+    assert result.ready is False
+    assert result.status == "unproven"
+    assert "unproven" in result.blocking_reason
+
+
 def test_refresh_plan_prefers_fast_schedule_for_active_1m_models(tmp_path, monkeypatch):
     factory_root = tmp_path / "factory"
     monkeypatch.setattr("config.FACTORY_ROOT", str(factory_root))
@@ -315,6 +360,52 @@ def test_binance_bar_model_is_blocked_when_only_funding_history_exists(tmp_path)
 
     assert result.ready is False
     assert "intraday bars missing" in result.blocking_reason
+
+
+def test_refresh_task_for_requirement_uses_feed_type_specific_task_ids():
+    contract = build_paper_data_contract(
+        {
+            "paper_data_contract": {
+                "requirements": [
+                    {
+                        "source": "binance",
+                        "venue": "binance",
+                        "instruments": ["BTCUSDT"],
+                        "fields": ["funding_rate"],
+                        "feed_type": "funding",
+                        "raw_cadence_seconds": 8 * 3600,
+                        "freshness_sla_seconds": 3600,
+                    },
+                    {
+                        "source": "polymarket",
+                        "venue": "polymarket",
+                        "instruments": ["market1"],
+                        "fields": ["price"],
+                        "feed_type": "prediction_history",
+                        "raw_cadence_seconds": 60,
+                        "freshness_sla_seconds": 300,
+                    },
+                ]
+            }
+        }
+    )
+
+    funding_task = refresh_task_for_requirement(contract.requirements[0])
+    poly_task = refresh_task_for_requirement(contract.requirements[1])
+
+    assert funding_task is not None
+    assert funding_task.task_id == "binance_funding"
+    assert poly_task is not None
+    assert poly_task.task_id == "polymarket_history_1m"
+
+
+def test_explicit_current_champion_contract_templates_cover_live_cross_venue_family():
+    payload = explicit_current_champion_contract("polymarket_cross_venue")
+
+    assert payload is not None
+    assert payload["cross_venue_required"] is True
+    sources = [item["source"] for item in payload["requirements"]]
+    assert sources == ["polymarket", "betfair"]
 
 
 def test_yahoo_naive_metadata_timestamp_does_not_crash_readiness(tmp_path):

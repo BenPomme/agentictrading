@@ -151,15 +151,26 @@ class RequirementStatus:
     latest_data_ts: Optional[str] = None
     age_seconds: Optional[float] = None
     available_raw_cadence_seconds: int = 0
+    status: str = "missing"
+    task_id: Optional[str] = None
+    interval_seconds: int = 0
+    grace_deadline_at: Optional[str] = None
+    within_grace: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "requirement": self.requirement.to_dict(),
             "ready": self.ready,
             "message": self.message,
+            "reason": self.message,
+            "status": self.status,
             "latest_data_ts": self.latest_data_ts,
             "age_seconds": self.age_seconds,
             "available_raw_cadence_seconds": self.available_raw_cadence_seconds,
+            "task_id": self.task_id,
+            "interval_seconds": self.interval_seconds,
+            "grace_deadline_at": self.grace_deadline_at,
+            "within_grace": self.within_grace,
         }
 
 
@@ -169,13 +180,25 @@ class DataReadinessResult:
     blocking_reason: str
     requirement_statuses: List[RequirementStatus] = field(default_factory=list)
     contract: Optional[PaperDataContract] = None
+    status: str = "missing"
+    grace_deadline_at: Optional[str] = None
+    within_grace: bool = False
+    contract_proven: bool = True
+    contract_source: Optional[str] = None
+    scheduler_running: Optional[bool] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "ready": self.ready,
             "blocking_reason": self.blocking_reason,
+            "status": self.status,
+            "grace_deadline_at": self.grace_deadline_at,
+            "within_grace": self.within_grace,
             "requirement_statuses": [item.to_dict() for item in self.requirement_statuses],
             "contract": self.contract.to_dict() if self.contract else None,
+            "contract_proven": self.contract_proven,
+            "contract_source": self.contract_source,
+            "scheduler_running": self.scheduler_running,
         }
 
 
@@ -325,6 +348,146 @@ def build_paper_data_contract(
     )
 
 
+def explicit_current_champion_contract(family_id: str) -> Dict[str, Any] | None:
+    normalized = str(family_id or "").strip().lower()
+    templates: Dict[str, Dict[str, Any]] = {
+        "cross_venue_probability_elasticity": {
+            "cross_venue_required": True,
+            "requirements": [
+                {
+                    "source": "polymarket",
+                    "venue": "polymarket",
+                    "fields": ["price"],
+                    "feed_type": "prediction_history",
+                    "raw_cadence_seconds": 60,
+                    "freshness_sla_seconds": 300,
+                    "required_bar_seconds": 60,
+                },
+                {
+                    "source": "binance",
+                    "venue": "binance",
+                    "fields": ["close"],
+                    "feed_type": "bars",
+                    "raw_cadence_seconds": 60,
+                    "freshness_sla_seconds": 300,
+                    "required_bar_seconds": 60,
+                },
+            ],
+        },
+        "funding_term_structure_dislocation": {
+            "requirements": [
+                {
+                    "source": "binance",
+                    "venue": "binance",
+                    "fields": ["funding_rate"],
+                    "feed_type": "funding",
+                    "raw_cadence_seconds": 28800,
+                    "freshness_sla_seconds": 43200,
+                    "required_bar_seconds": 28800,
+                }
+            ]
+        },
+        "liquidation_rebound_absorption": {
+            "requirements": [
+                {
+                    "source": "binance",
+                    "venue": "binance",
+                    "fields": ["close"],
+                    "feed_type": "bars",
+                    "raw_cadence_seconds": 60,
+                    "freshness_sla_seconds": 300,
+                    "required_bar_seconds": 60,
+                }
+            ]
+        },
+        "polymarket_cross_venue": {
+            "cross_venue_required": True,
+            "requirements": [
+                {
+                    "source": "polymarket",
+                    "venue": "polymarket",
+                    "fields": ["price"],
+                    "feed_type": "prediction_history",
+                    "raw_cadence_seconds": 60,
+                    "freshness_sla_seconds": 300,
+                    "required_bar_seconds": 60,
+                },
+                {
+                    "source": "betfair",
+                    "venue": "betfair",
+                    "fields": ["midpoint"],
+                    "feed_type": "market_state",
+                    "raw_cadence_seconds": 60,
+                    "freshness_sla_seconds": 300,
+                    "required_bar_seconds": 60,
+                },
+            ],
+        },
+        "fam_betfair_inplay_goal_overreaction_v1": {
+            "requirements": [
+                {
+                    "source": "betfair",
+                    "venue": "betfair",
+                    "fields": ["midpoint"],
+                    "feed_type": "market_state",
+                    "raw_cadence_seconds": 60,
+                    "freshness_sla_seconds": 300,
+                    "required_bar_seconds": 60,
+                }
+            ]
+        },
+        "polymarket_cross_venue_oil_supply_shock_momentum_v1": {
+            "requirements": [
+                {
+                    "source": "yahoo",
+                    "venue": "yahoo",
+                    "fields": ["close"],
+                    "feed_type": "bars",
+                    "raw_cadence_seconds": 86400,
+                    "freshness_sla_seconds": 172800,
+                    "required_bar_seconds": 86400,
+                },
+                {
+                    "source": "polymarket",
+                    "venue": "polymarket",
+                    "fields": ["price"],
+                    "feed_type": "prediction_history",
+                    "raw_cadence_seconds": 60,
+                    "freshness_sla_seconds": 300,
+                    "required_bar_seconds": 60,
+                    "optional": True,
+                },
+            ],
+        },
+        "vol_surface_dispersion_rotation": {
+            "requirements": [
+                {
+                    "source": "alpaca",
+                    "venue": "alpaca",
+                    "fields": ["close"],
+                    "feed_type": "bars",
+                    "raw_cadence_seconds": 60,
+                    "freshness_sla_seconds": 300,
+                    "required_bar_seconds": 60,
+                },
+                {
+                    "source": "yahoo",
+                    "venue": "yahoo",
+                    "fields": ["close"],
+                    "feed_type": "bars",
+                    "raw_cadence_seconds": 86400,
+                    "freshness_sla_seconds": 172800,
+                    "required_bar_seconds": 86400,
+                },
+            ],
+        },
+    }
+    payload = templates.get(normalized)
+    if payload is None:
+        return None
+    return json.loads(json.dumps(payload))
+
+
 def aggregate_time_bars(df: pd.DataFrame, target_seconds: int) -> pd.DataFrame:
     if target_seconds <= 0:
         return df
@@ -434,9 +597,151 @@ def _sample_data_file(base_dir: Path, instruments: List[str]) -> Path | None:
     return None
 
 
+def _scheduler_pid_path(project_root: Path) -> Path:
+    return project_root / "data" / "factory" / "data_refresh_scheduler.pid"
+
+
+def refresh_scheduler_running(project_root: Path) -> bool:
+    pid_path = _scheduler_pid_path(project_root)
+    if not pid_path.exists():
+        return False
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        import os
+
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _refresh_state_path(project_root: Path) -> Path:
+    return project_root / "data" / "factory" / "data_refresh_state.json"
+
+
+def load_refresh_state(project_root: Path) -> Dict[str, Dict[str, Any]]:
+    path = _refresh_state_path(project_root)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for task_id, payload in dict(raw or {}).items():
+        if isinstance(payload, dict):
+            normalized[str(task_id)] = dict(payload)
+            continue
+        if isinstance(payload, (int, float)):
+            normalized[str(task_id)] = {
+                "last_success_at": datetime.fromtimestamp(float(payload), tz=timezone.utc).isoformat()
+            }
+    return normalized
+
+
+def refresh_task_for_requirement(requirement: DataRequirement) -> RefreshTaskPlan | None:
+    interval_seconds = _interval_for_requirement(requirement)
+    if requirement.source == "alpaca":
+        return RefreshTaskPlan(
+            task_id="alpaca_bars_quotes",
+            script="scripts/refresh_alpaca_data.py",
+            args=["--days", "2", "--timeframe", "1Min"],
+            interval_seconds=interval_seconds,
+            feed_type="bars",
+            source="alpaca",
+        )
+    if requirement.source == "polymarket":
+        poly_interval = "1m" if requirement.required_bar_seconds <= 60 else "1h"
+        return RefreshTaskPlan(
+            task_id=f"polymarket_history_{poly_interval}",
+            script="scripts/fetch_polymarket_history.py",
+            args=["--interval", poly_interval],
+            interval_seconds=interval_seconds,
+            feed_type="prediction_history",
+            source="polymarket",
+        )
+    if requirement.source == "binance" and requirement.feed_type == "funding":
+        return RefreshTaskPlan(
+            task_id="binance_funding",
+            script="scripts/refresh_binance_funding.py",
+            args=[],
+            interval_seconds=interval_seconds,
+            feed_type="funding",
+            source="binance",
+        )
+    if requirement.source == "binance":
+        args = ["--interval", "1m"]
+        if requirement.instruments:
+            args.extend(["--symbols", ",".join(requirement.instruments)])
+        return RefreshTaskPlan(
+            task_id="binance_bars_1m",
+            script="scripts/refresh_binance_klines.py",
+            args=args,
+            interval_seconds=interval_seconds,
+            feed_type="bars",
+            source="binance",
+        )
+    if requirement.source == "yahoo":
+        return RefreshTaskPlan(
+            task_id="yahoo_daily",
+            script="scripts/refresh_yahoo_data.py",
+            args=["--days", "7"],
+            interval_seconds=interval_seconds,
+            feed_type="bars",
+            source="yahoo",
+        )
+    if requirement.source == "betfair":
+        args = ["--max-markets", "40"]
+        if requirement.instruments:
+            args.extend(["--market-ids", ",".join(requirement.instruments)])
+        return RefreshTaskPlan(
+            task_id="betfair_market_books",
+            script="scripts/refresh_betfair_market_books.py",
+            args=args,
+            interval_seconds=interval_seconds,
+            feed_type=requirement.feed_type,
+            source="betfair",
+        )
+    return None
+
+
 def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> RequirementStatus:
     now = _utc_now()
     source = requirement.source
+    task = refresh_task_for_requirement(requirement)
+    task_id = task.task_id if task is not None else None
+    interval_seconds = int(task.interval_seconds if task is not None else 0)
+
+    def result(
+        ready: bool,
+        status: str,
+        message: str,
+        latest_ts: datetime | None = None,
+        age: float | None = None,
+        available_raw: int = 0,
+    ) -> RequirementStatus:
+        grace_deadline_at = None
+        within_grace = False
+        if status == "stale" and latest_ts is not None and interval_seconds > 0:
+            deadline = latest_ts + pd.Timedelta(seconds=requirement.freshness_sla_seconds + interval_seconds)
+            grace_deadline_at = deadline.isoformat()
+            within_grace = now <= deadline
+        return RequirementStatus(
+            requirement=requirement,
+            ready=ready,
+            message=message,
+            latest_data_ts=latest_ts.isoformat() if latest_ts is not None else None,
+            age_seconds=age,
+            available_raw_cadence_seconds=available_raw,
+            status=status,
+            task_id=task_id,
+            interval_seconds=interval_seconds,
+            grace_deadline_at=grace_deadline_at,
+            within_grace=within_grace,
+        )
 
     if source == "alpaca":
         meta = _alpaca_metadata(project_root)
@@ -447,38 +752,38 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
         bars_dir = project_root / "data" / "alpaca" / "bars"
         missing = [symbol for symbol in requirement.instruments if not any((bars_dir / f"{symbol}{ext}").exists() for ext in (".parquet", ".csv"))]
         if missing:
-            return RequirementStatus(requirement, False, f"blocked: Alpaca data missing for {missing[0]}", available_raw_cadence_seconds=available_raw)
+            return result(False, "missing", f"blocked: Alpaca data missing for {missing[0]}", available_raw=available_raw)
         sample = _sample_data_file(bars_dir, requirement.instruments)
         latest_ts = _ensure_utc_datetime(_read_latest_timestamp(sample) if sample else _parse_iso_ts(meta.get("last_refresh")))
         if latest_ts is None:
-            return RequirementStatus(requirement, False, "blocked: Alpaca data has no timestamp", available_raw_cadence_seconds=available_raw)
+            return result(False, "missing", "blocked: Alpaca data has no timestamp", available_raw=available_raw)
         age = (now - latest_ts).total_seconds()
         if available_raw > requirement.raw_cadence_seconds and requirement.raw_cadence_seconds > 0:
-            return RequirementStatus(
-                requirement,
+            return result(
                 False,
+                "missing",
                 f"blocked: Alpaca only has {_title_interval(available_raw)} bars but model needs {_title_interval(requirement.raw_cadence_seconds)} raw data",
-                latest_ts.isoformat(),
+                latest_ts,
                 age,
                 available_raw,
             )
         if age > requirement.freshness_sla_seconds:
-            return RequirementStatus(requirement, False, f"blocked: Alpaca {_title_interval(available_raw)} bars stale", latest_ts.isoformat(), age, available_raw)
-        return RequirementStatus(requirement, True, f"ready: Alpaca {_title_interval(available_raw)} bars fresh", latest_ts.isoformat(), age, available_raw)
+            return result(False, "stale", f"blocked: Alpaca {_title_interval(available_raw)} bars stale", latest_ts, age, available_raw)
+        return result(True, "fresh", f"ready: Alpaca {_title_interval(available_raw)} bars fresh", latest_ts, age, available_raw)
 
     if source == "yahoo":
         available_raw = 86400
         base = project_root / "data" / "yahoo" / "ohlcv"
         sample = _sample_data_file(base, requirement.instruments)
         if sample is None and requirement.instruments:
-            return RequirementStatus(requirement, False, f"blocked: Yahoo data missing for {requirement.instruments[0]}", available_raw_cadence_seconds=available_raw)
+            return result(False, "missing", f"blocked: Yahoo data missing for {requirement.instruments[0]}", available_raw=available_raw)
         latest_ts = _ensure_utc_datetime(_read_latest_timestamp(sample) if sample else _parse_iso_ts(_read_json(project_root / "data" / "yahoo" / "metadata.json").get("last_refresh")))
         age = (now - latest_ts).total_seconds() if latest_ts else None
         if requirement.raw_cadence_seconds and available_raw > requirement.raw_cadence_seconds:
-            return RequirementStatus(requirement, False, "blocked: Yahoo only has daily bars", latest_ts.isoformat() if latest_ts else None, age, available_raw)
+            return result(False, "missing", "blocked: Yahoo only has daily bars", latest_ts, age, available_raw)
         if latest_ts and age is not None and age > requirement.freshness_sla_seconds:
-            return RequirementStatus(requirement, False, "blocked: Yahoo daily bars stale", latest_ts.isoformat(), age, available_raw)
-        return RequirementStatus(requirement, True, "ready: Yahoo bars available", latest_ts.isoformat() if latest_ts else None, age, available_raw)
+            return result(False, "stale", "blocked: Yahoo daily bars stale", latest_ts, age, available_raw)
+        return result(True, "fresh", "ready: Yahoo bars available", latest_ts, age, available_raw)
 
     if source == "polymarket":
         meta = _polymarket_metadata(project_root)
@@ -487,44 +792,44 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
         history_dir = project_root / "data" / "polymarket" / "prices_history"
         files = list(history_dir.glob("*.parquet"))
         if not files:
-            return RequirementStatus(requirement, False, "blocked: Polymarket history missing", available_raw_cadence_seconds=available_raw)
+            return result(False, "missing", "blocked: Polymarket history missing", available_raw=available_raw)
         latest_ts = _ensure_utc_datetime(max((_read_latest_timestamp(path) for path in files), default=None))
         age = (now - latest_ts).total_seconds() if latest_ts else None
         if available_raw > requirement.raw_cadence_seconds and requirement.raw_cadence_seconds > 0:
-            return RequirementStatus(requirement, False, f"blocked: Polymarket only has {_title_interval(available_raw)} history", latest_ts.isoformat() if latest_ts else None, age, available_raw)
+            return result(False, "missing", f"blocked: Polymarket only has {_title_interval(available_raw)} history", latest_ts, age, available_raw)
         if latest_ts and age is not None and age > requirement.freshness_sla_seconds:
-            return RequirementStatus(requirement, False, f"blocked: Polymarket {_title_interval(available_raw)} history stale", latest_ts.isoformat(), age, available_raw)
-        return RequirementStatus(requirement, True, f"ready: Polymarket {_title_interval(available_raw)} history fresh", latest_ts.isoformat() if latest_ts else None, age, available_raw)
+            return result(False, "stale", f"blocked: Polymarket {_title_interval(available_raw)} history stale", latest_ts, age, available_raw)
+        return result(True, "fresh", f"ready: Polymarket {_title_interval(available_raw)} history fresh", latest_ts, age, available_raw)
 
     if source == "binance":
         if requirement.feed_type == "funding":
             meta = _binance_funding_metadata(project_root)
             latest_ts = _ensure_utc_datetime(_parse_iso_ts(meta.get("last_refresh")))
             if latest_ts is None:
-                return RequirementStatus(requirement, False, "blocked: Binance funding history missing", available_raw_cadence_seconds=8 * 3600)
+                return result(False, "missing", "blocked: Binance funding history missing", available_raw=8 * 3600)
             age = (now - latest_ts).total_seconds()
             if age > requirement.freshness_sla_seconds:
-                return RequirementStatus(requirement, False, "blocked: Binance funding history stale", latest_ts.isoformat(), age, 8 * 3600)
-            return RequirementStatus(requirement, True, "ready: Binance funding history fresh", latest_ts.isoformat(), age, 8 * 3600)
+                return result(False, "stale", "blocked: Binance funding history stale", latest_ts, age, 8 * 3600)
+            return result(True, "fresh", "ready: Binance funding history fresh", latest_ts, age, 8 * 3600)
 
         meta = _binance_bars_metadata(project_root)
         available_raw = cadence_to_seconds(meta.get("interval")) if meta.get("interval") else 0
         klines_dir = project_root / "data" / "binance" / "klines" / "1m"
         missing = [symbol for symbol in requirement.instruments if not any((klines_dir / f"{symbol}{ext}").exists() for ext in (".parquet", ".csv"))]
         if missing:
-            return RequirementStatus(requirement, False, f"blocked: Binance intraday bars missing for {missing[0]}", available_raw_cadence_seconds=available_raw)
+            return result(False, "missing", f"blocked: Binance intraday bars missing for {missing[0]}", available_raw=available_raw)
         sample = _sample_data_file(klines_dir, requirement.instruments)
         latest_ts = _ensure_utc_datetime(_read_latest_timestamp(sample) if sample else _parse_iso_ts(meta.get("last_refresh")))
         if latest_ts is None:
-            return RequirementStatus(requirement, False, "blocked: Binance intraday bars have no timestamp", available_raw_cadence_seconds=available_raw)
+            return result(False, "missing", "blocked: Binance intraday bars have no timestamp", available_raw=available_raw)
         age = (now - latest_ts).total_seconds()
         if available_raw <= 0:
             available_raw = 60
         if available_raw > requirement.raw_cadence_seconds and requirement.raw_cadence_seconds > 0:
-            return RequirementStatus(requirement, False, f"blocked: Binance only has {_title_interval(available_raw)} bars", latest_ts.isoformat(), age, available_raw)
+            return result(False, "missing", f"blocked: Binance only has {_title_interval(available_raw)} bars", latest_ts, age, available_raw)
         if age > requirement.freshness_sla_seconds:
-            return RequirementStatus(requirement, False, f"blocked: Binance {_title_interval(available_raw)} bars stale", latest_ts.isoformat(), age, available_raw)
-        return RequirementStatus(requirement, True, f"ready: Binance {_title_interval(available_raw)} bars fresh", latest_ts.isoformat(), age, available_raw)
+            return result(False, "stale", f"blocked: Binance {_title_interval(available_raw)} bars stale", latest_ts, age, available_raw)
+        return result(True, "fresh", f"ready: Binance {_title_interval(available_raw)} bars fresh", latest_ts, age, available_raw)
 
     if source == "betfair":
         meta = _betfair_market_books_metadata(project_root)
@@ -534,37 +839,82 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
         if requirement.instruments:
             files = [path for path in files if path.stem in requirement.instruments]
         if not files:
-            return RequirementStatus(requirement, False, "blocked: Betfair execution feed missing", available_raw_cadence_seconds=available_raw)
+            return result(False, "missing", "blocked: Betfair execution feed missing", available_raw=available_raw)
         latest_ts = _ensure_utc_datetime(max((_read_latest_timestamp(path) for path in files), default=None) or _parse_iso_ts(meta.get("last_refresh")))
         if latest_ts is None:
-            return RequirementStatus(requirement, False, "blocked: Betfair execution feed has no timestamp", available_raw_cadence_seconds=available_raw)
+            return result(False, "missing", "blocked: Betfair execution feed has no timestamp", available_raw=available_raw)
         age = (now - latest_ts).total_seconds()
         if available_raw > requirement.raw_cadence_seconds and requirement.raw_cadence_seconds > 0:
-            return RequirementStatus(
-                requirement,
+            return result(
                 False,
+                "missing",
                 f"blocked: Betfair only has {_title_interval(available_raw)} snapshots but model needs {_title_interval(requirement.raw_cadence_seconds)} raw data",
-                latest_ts.isoformat(),
+                latest_ts,
                 age,
                 available_raw,
             )
         if age > requirement.freshness_sla_seconds:
-            return RequirementStatus(requirement, False, f"blocked: Betfair {_title_interval(available_raw)} execution feed stale", latest_ts.isoformat(), age, available_raw)
-        return RequirementStatus(requirement, True, f"ready: Betfair {_title_interval(available_raw)} execution feed fresh", latest_ts.isoformat(), age, available_raw)
+            return result(False, "stale", f"blocked: Betfair {_title_interval(available_raw)} execution feed stale", latest_ts, age, available_raw)
+        return result(True, "fresh", f"ready: Betfair {_title_interval(available_raw)} execution feed fresh", latest_ts, age, available_raw)
 
-    return RequirementStatus(requirement, False, f"blocked: Unknown data source {source}")
+    return result(False, "missing", f"blocked: Unknown data source {source}")
 
 
-def assess_paper_data_readiness(contract: PaperDataContract, project_root: Path) -> DataReadinessResult:
+def assess_paper_data_readiness(
+    contract: PaperDataContract,
+    project_root: Path,
+    *,
+    contract_proven: bool = True,
+    contract_source: str | None = None,
+) -> DataReadinessResult:
+    scheduler_running = refresh_scheduler_running(project_root)
+    if not contract_proven:
+        return DataReadinessResult(
+            ready=False,
+            blocking_reason="blocked: paper data contract unproven",
+            requirement_statuses=[],
+            contract=contract,
+            status="unproven",
+            contract_proven=False,
+            contract_source=contract_source,
+            scheduler_running=scheduler_running,
+        )
     statuses = [_inspect_requirement(requirement, project_root) for requirement in contract.requirements]
     failing_required = [status for status in statuses if not status.ready and not status.requirement.optional]
+    stale_required = [status for status in failing_required if status.status == "stale"]
+    missing_required = [status for status in failing_required if status.status == "missing"]
     if failing_required:
+        grace_deadline_at = min(
+            (status.grace_deadline_at for status in stale_required if status.grace_deadline_at),
+            default=None,
+        )
+        within_grace = any(status.within_grace for status in stale_required)
         if contract.cross_venue_required:
             reason = "blocked: cross-venue contract has missing or stale required feeds"
         else:
             reason = failing_required[0].message
-        return DataReadinessResult(False, reason, statuses, contract)
-    return DataReadinessResult(True, "ready for paper trading", statuses, contract)
+        return DataReadinessResult(
+            ready=False,
+            blocking_reason=reason,
+            requirement_statuses=statuses,
+            contract=contract,
+            status="missing" if missing_required else "stale",
+            grace_deadline_at=grace_deadline_at,
+            within_grace=within_grace,
+            contract_proven=contract_proven,
+            contract_source=contract_source,
+            scheduler_running=scheduler_running,
+        )
+    return DataReadinessResult(
+        ready=True,
+        blocking_reason="ready for paper trading",
+        requirement_statuses=statuses,
+        contract=contract,
+        status="fresh",
+        contract_proven=contract_proven,
+        contract_source=contract_source,
+        scheduler_running=scheduler_running,
+    )
 
 
 def _interval_for_requirement(requirement: DataRequirement) -> int:
@@ -613,75 +963,8 @@ def build_refresh_plan(project_root: Path) -> List[RefreshTaskPlan]:
             continue
         contract = build_paper_data_contract(genome.parameters, target_venues=lineage.target_venues)
         for requirement in contract.requirements:
-            interval_seconds = _interval_for_requirement(requirement)
-            if requirement.source == "alpaca":
-                task_id = "alpaca_bars_quotes"
-                task = RefreshTaskPlan(
-                    task_id=task_id,
-                    script="scripts/refresh_alpaca_data.py",
-                    args=["--days", "2", "--timeframe", "1Min"],
-                    interval_seconds=interval_seconds,
-                    feed_type="bars",
-                    source="alpaca",
-                )
-            elif requirement.source == "polymarket":
-                poly_interval = "1m" if requirement.required_bar_seconds <= 60 else "1h"
-                task_id = f"polymarket_history_{poly_interval}"
-                task = RefreshTaskPlan(
-                    task_id=task_id,
-                    script="scripts/fetch_polymarket_history.py",
-                    args=["--interval", poly_interval],
-                    interval_seconds=interval_seconds,
-                    feed_type="prediction_history",
-                    source="polymarket",
-                )
-            elif requirement.source == "binance" and requirement.feed_type == "funding":
-                task_id = "binance_funding"
-                task = RefreshTaskPlan(
-                    task_id=task_id,
-                    script="scripts/refresh_binance_funding.py",
-                    args=[],
-                    interval_seconds=interval_seconds,
-                    feed_type="funding",
-                    source="binance",
-                )
-            elif requirement.source == "binance":
-                task_id = "binance_bars_1m"
-                args = ["--interval", "1m"]
-                if requirement.instruments:
-                    args.extend(["--symbols", ",".join(requirement.instruments)])
-                task = RefreshTaskPlan(
-                    task_id=task_id,
-                    script="scripts/refresh_binance_klines.py",
-                    args=args,
-                    interval_seconds=interval_seconds,
-                    feed_type="bars",
-                    source="binance",
-                )
-            elif requirement.source == "yahoo":
-                task_id = "yahoo_daily"
-                task = RefreshTaskPlan(
-                    task_id=task_id,
-                    script="scripts/refresh_yahoo_data.py",
-                    args=["--days", "7"],
-                    interval_seconds=interval_seconds,
-                    feed_type="bars",
-                    source="yahoo",
-                )
-            elif requirement.source == "betfair":
-                task_id = "betfair_market_books"
-                args = ["--max-markets", "40"]
-                if requirement.instruments:
-                    args.extend(["--market-ids", ",".join(requirement.instruments)])
-                task = RefreshTaskPlan(
-                    task_id=task_id,
-                    script="scripts/refresh_betfair_market_books.py",
-                    args=args,
-                    interval_seconds=interval_seconds,
-                    feed_type=requirement.feed_type,
-                    source="betfair",
-                )
-            else:
+            task = refresh_task_for_requirement(requirement)
+            if task is None:
                 continue
 
             existing = tasks.get(task.task_id)
