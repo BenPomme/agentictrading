@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support and usage questions
+    url: https://github.com/BenPomme/agentictrading/discussions
+    about: Use GitHub Discussions for setup help and architecture questions once Discussions is enabled.
+  - name: Security policy
+    url: https://github.com/BenPomme/agentictrading/blob/main/SECURITY.md
+    about: Please do not report security vulnerabilities in public issues.

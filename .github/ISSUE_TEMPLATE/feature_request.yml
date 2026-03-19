@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest an improvement to the public repository
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please keep requests aligned with the public paper-mode boundary of this repository.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is missing or painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What change would improve this?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This request is for the public repository, not private production trading infrastructure.
+          required: true

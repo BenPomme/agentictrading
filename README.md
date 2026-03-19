@@ -1,19 +1,105 @@
 # AgenticTrading
 
+Autonomous trading research factory and flagship reference app for Meerkat, MobKit, and Goldfish.
+
+## What This Repo Is
+
 AgenticTrading is an autonomous trading research and paper-trading factory.
 
-It generates strategy ideas, designs and mutates Python models, backtests them, runs multi-stage evaluation, promotes promising candidates into paper trading, retires weak lineages, and records the full lineage and learning history for future generations.
+This repository is the **public flagship reference app** for the Meerkat + Goldfish stack:
 
-This repo is the **domain control plane** for the factory:
-- strategy family definitions
-- lineage lifecycle
-- deterministic promotion / retirement policy
-- backtest and paper-evaluation interpretation
-- operator dashboard and control-tower views
-- venue readiness and operating scope
-- governance, budgets, and safety policy
+- **Meerkat** provides the agent harness and session/tool runtime
+- **meerkat-mobkit** provides orchestration for multi-agent workflows
+- **Goldfish** provides durable provenance, experiment memory, and reproducibility
+- **AgenticTrading** provides the domain control plane, deterministic gates, dashboard, and paper-mode factory workflow that stress-tests the stack on a hard, realistic workload
 
-This repo is **not** the live trading venue. Live trading must remain explicitly blocked unless separately enabled through a later operational process.
+The repo exists publicly to make that architecture inspectable, runnable, and improvable without exposing the full private trading edge.
+
+This repo is **not** the live trading venue. Live trading remains explicitly disabled in the public repository unless enabled through a separate private operational process.
+
+## Why This Exists Publicly
+
+This project is open source so developers can:
+
+- inspect a realistic multi-agent reference workload instead of toy demos
+- see how orchestration, provenance, and deterministic safety gates fit together
+- run the paper-mode factory locally
+- contribute improvements to the public control plane, docs, dashboard, and safe example workflows
+
+The goal is not to publish every private production advantage. The goal is to expose the architecture, interfaces, safety model, and developer experience of the stack.
+
+## Status
+
+AgenticTrading is a **paper-mode research factory**, not a public live-trading product.
+
+Important safety constraints:
+
+- live trading is hard-disabled in the public repo
+- deterministic gates, not LLMs alone, decide promotion and retirement
+- budget governance and circuit breakers remain active
+- provenance and runtime boundaries are treated as first-class architecture constraints
+
+## Public vs Private Boundary
+
+Public in this repository:
+
+- paper-mode research workflows
+- dashboard and operator-facing control-plane surfaces
+- orchestration and provenance integration
+- deterministic safety, governance, and observability logic
+- safe example families and demo-ready workflows
+
+Private and intentionally excluded:
+
+- live-trading enablement
+- venue credentials, certificates, and secrets
+- production deployment manifests and private infrastructure
+- proprietary datasets or commercial-only connectors
+- highest-alpha strategy logic and production heuristics
+
+See [docs/OPEN_SOURCE_BOUNDARY.md](docs/OPEN_SOURCE_BOUNDARY.md) for the explicit boundary.
+
+## Quickstart
+
+Safe local evaluation should stay in paper-mode.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+python3 scripts/factory_dashboard.py --host 127.0.0.1 --port 8788
+```
+
+Then open the local dashboard and inspect the factory state without attempting to wire live venue credentials into the public repo.
+
+## Why It's Interesting
+
+- long-running agent workflows with explicit orchestration boundaries
+- deterministic safety gates for promotion, retirement, and budget control
+- lineage-scoped paper evaluation instead of pooled performance hand-waving
+- durable provenance and experiment memory through Goldfish
+- replayable operator-facing state through the dashboard and telemetry surfaces
+
+## Stack Architecture
+
+The factory runs on a layered architecture:
+
+`AgenticTrading -> Runtime Manager -> mobkit runtime -> agent/tool layer -> Goldfish provenance + memory`
+
+Related projects:
+
+- [Meerkat](https://github.com/lukacf/meerkat)
+- [meerkat-mobkit](https://github.com/lukacf/meerkat-mobkit)
+- [Goldfish](https://github.com/lukacf/goldfish)
+
+License alignment:
+
+- Meerkat: `MIT OR Apache-2.0`
+- MobKit: `MIT OR Apache-2.0`
+- Goldfish: `AGPL-3.0`
+- AgenticTrading: `AGPL-3.0`
+
+This keeps the lower-level infrastructure easy to adopt while keeping the provenance layer and flagship reference app reciprocal.
 
 ---
 
@@ -139,3 +225,15 @@ Run the dashboard server with:
 
 ```bash
 python3 scripts/factory_dashboard.py --host 127.0.0.1 --port 8788
+```
+
+## Contributing
+
+See:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [SECURITY.md](SECURITY.md)
+- [SUPPORT.md](SUPPORT.md)
+
+If you are contributing to the migration architecture, start with the docs under [docs/refactor](docs/refactor/).
