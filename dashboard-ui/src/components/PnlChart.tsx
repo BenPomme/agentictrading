@@ -38,6 +38,19 @@ export function PnlChart({
   const [data, setData] = useState<ChartPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const chartRef = useRef<ChartJS<'line'> | null>(null);
+  const colors = useMemo(
+    () => ({
+      border: readCssVar('--border', '#dbe2ea'),
+      textMuted: readCssVar('--text-muted', '#64748b'),
+      surfaceAlt: readCssVar('--surface-alt', '#f1f5f9'),
+      text: readCssVar('--text', '#0f172a'),
+      ok: readCssVar('--ok', '#0f9f7a'),
+      crit: readCssVar('--crit', '#dc2626'),
+      info: readCssVar('--info', '#2563eb'),
+      accent: readCssVar('--accent', '#6366f1'),
+    }),
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -71,20 +84,6 @@ export function PnlChart({
   if (!data) {
     return <div className="pnl-chart__loading">Loading chart…</div>;
   }
-
-  const colors = useMemo(
-    () => ({
-      border: readCssVar('--border', '#dbe2ea'),
-      textMuted: readCssVar('--text-muted', '#64748b'),
-      surfaceAlt: readCssVar('--surface-alt', '#f1f5f9'),
-      text: readCssVar('--text', '#0f172a'),
-      ok: readCssVar('--ok', '#0f9f7a'),
-      crit: readCssVar('--crit', '#dc2626'),
-      info: readCssVar('--info', '#2563eb'),
-      accent: readCssVar('--accent', '#6366f1'),
-    }),
-    [],
-  );
 
   const balancePoints = (data.points ?? data.balance_points ?? []).map((p: { ts: string; balance: number }) => ({
     x: new Date(p.ts).getTime(),

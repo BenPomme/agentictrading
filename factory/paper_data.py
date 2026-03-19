@@ -32,6 +32,14 @@ def _parse_iso_ts(value: Any) -> datetime | None:
         return None
 
 
+def _ensure_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def cadence_to_seconds(value: Any) -> int:
     if value is None:
         return 0
@@ -367,12 +375,12 @@ def _latest_ts_for_frame(df: pd.DataFrame) -> datetime | None:
         ts = df.index.max()
         if ts.tzinfo is None:
             ts = ts.tz_localize("UTC")
-        return ts.to_pydatetime()
+        return _ensure_utc_datetime(ts.to_pydatetime())
     for col in ("timestamp", "time", "date", "fundingTime", "created_at", "ts"):
         if col in df.columns and not df[col].empty:
             ts_series = pd.to_datetime(df[col], errors="coerce", utc=True).dropna()
             if not ts_series.empty:
-                return ts_series.max().to_pydatetime()
+                return _ensure_utc_datetime(ts_series.max().to_pydatetime())
     return None
 
 
@@ -405,10 +413,25 @@ def _read_latest_timestamp(path: Path) -> datetime | None:
         elif path.suffix == ".csv":
             df = pd.read_csv(path)
         else:
-            return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-        return _latest_ts_for_frame(df)
+            return _ensure_utc_datetime(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
+        return _ensure_utc_datetime(_latest_ts_for_frame(df))
     except Exception:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        return _ensure_utc_datetime(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
+
+
+def _sample_data_file(base_dir: Path, instruments: List[str]) -> Path | None:
+    if instruments:
+        for symbol in instruments:
+            for ext in (".parquet", ".csv"):
+                candidate = base_dir / f"{symbol}{ext}"
+                if candidate.exists():
+                    return candidate
+        return None
+    for pattern in ("*.parquet", "*.csv"):
+        for candidate in sorted(base_dir.glob(pattern)):
+            if candidate.is_file():
+                return candidate
+    return None
 
 
 def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> RequirementStatus:
@@ -425,8 +448,8 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
         missing = [symbol for symbol in requirement.instruments if not any((bars_dir / f"{symbol}{ext}").exists() for ext in (".parquet", ".csv"))]
         if missing:
             return RequirementStatus(requirement, False, f"blocked: Alpaca data missing for {missing[0]}", available_raw_cadence_seconds=available_raw)
-        sample = next((bars_dir / f"{requirement.instruments[0]}{ext}" for ext in (".parquet", ".csv") if (bars_dir / f"{requirement.instruments[0]}{ext}").exists()), None)
-        latest_ts = _read_latest_timestamp(sample) if sample else _parse_iso_ts(meta.get("last_refresh"))
+        sample = _sample_data_file(bars_dir, requirement.instruments)
+        latest_ts = _ensure_utc_datetime(_read_latest_timestamp(sample) if sample else _parse_iso_ts(meta.get("last_refresh")))
         if latest_ts is None:
             return RequirementStatus(requirement, False, "blocked: Alpaca data has no timestamp", available_raw_cadence_seconds=available_raw)
         age = (now - latest_ts).total_seconds()
@@ -446,10 +469,10 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
     if source == "yahoo":
         available_raw = 86400
         base = project_root / "data" / "yahoo" / "ohlcv"
-        sample = next((base / f"{symbol}.parquet" for symbol in requirement.instruments if (base / f"{symbol}.parquet").exists()), None)
+        sample = _sample_data_file(base, requirement.instruments)
         if sample is None and requirement.instruments:
             return RequirementStatus(requirement, False, f"blocked: Yahoo data missing for {requirement.instruments[0]}", available_raw_cadence_seconds=available_raw)
-        latest_ts = _read_latest_timestamp(sample) if sample else _parse_iso_ts(_read_json(project_root / "data" / "yahoo" / "metadata.json").get("last_refresh"))
+        latest_ts = _ensure_utc_datetime(_read_latest_timestamp(sample) if sample else _parse_iso_ts(_read_json(project_root / "data" / "yahoo" / "metadata.json").get("last_refresh")))
         age = (now - latest_ts).total_seconds() if latest_ts else None
         if requirement.raw_cadence_seconds and available_raw > requirement.raw_cadence_seconds:
             return RequirementStatus(requirement, False, "blocked: Yahoo only has daily bars", latest_ts.isoformat() if latest_ts else None, age, available_raw)
@@ -465,7 +488,7 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
         files = list(history_dir.glob("*.parquet"))
         if not files:
             return RequirementStatus(requirement, False, "blocked: Polymarket history missing", available_raw_cadence_seconds=available_raw)
-        latest_ts = max((_read_latest_timestamp(path) for path in files), default=None)
+        latest_ts = _ensure_utc_datetime(max((_read_latest_timestamp(path) for path in files), default=None))
         age = (now - latest_ts).total_seconds() if latest_ts else None
         if available_raw > requirement.raw_cadence_seconds and requirement.raw_cadence_seconds > 0:
             return RequirementStatus(requirement, False, f"blocked: Polymarket only has {_title_interval(available_raw)} history", latest_ts.isoformat() if latest_ts else None, age, available_raw)
@@ -476,7 +499,7 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
     if source == "binance":
         if requirement.feed_type == "funding":
             meta = _binance_funding_metadata(project_root)
-            latest_ts = _parse_iso_ts(meta.get("last_refresh"))
+            latest_ts = _ensure_utc_datetime(_parse_iso_ts(meta.get("last_refresh")))
             if latest_ts is None:
                 return RequirementStatus(requirement, False, "blocked: Binance funding history missing", available_raw_cadence_seconds=8 * 3600)
             age = (now - latest_ts).total_seconds()
@@ -490,8 +513,8 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
         missing = [symbol for symbol in requirement.instruments if not any((klines_dir / f"{symbol}{ext}").exists() for ext in (".parquet", ".csv"))]
         if missing:
             return RequirementStatus(requirement, False, f"blocked: Binance intraday bars missing for {missing[0]}", available_raw_cadence_seconds=available_raw)
-        sample = next((klines_dir / f"{requirement.instruments[0]}{ext}" for ext in (".parquet", ".csv") if (klines_dir / f"{requirement.instruments[0]}{ext}").exists()), None)
-        latest_ts = _read_latest_timestamp(sample) if sample else _parse_iso_ts(meta.get("last_refresh"))
+        sample = _sample_data_file(klines_dir, requirement.instruments)
+        latest_ts = _ensure_utc_datetime(_read_latest_timestamp(sample) if sample else _parse_iso_ts(meta.get("last_refresh")))
         if latest_ts is None:
             return RequirementStatus(requirement, False, "blocked: Binance intraday bars have no timestamp", available_raw_cadence_seconds=available_raw)
         age = (now - latest_ts).total_seconds()
@@ -512,7 +535,7 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
             files = [path for path in files if path.stem in requirement.instruments]
         if not files:
             return RequirementStatus(requirement, False, "blocked: Betfair execution feed missing", available_raw_cadence_seconds=available_raw)
-        latest_ts = max((_read_latest_timestamp(path) for path in files), default=None) or _parse_iso_ts(meta.get("last_refresh"))
+        latest_ts = _ensure_utc_datetime(max((_read_latest_timestamp(path) for path in files), default=None) or _parse_iso_ts(meta.get("last_refresh")))
         if latest_ts is None:
             return RequirementStatus(requirement, False, "blocked: Betfair execution feed has no timestamp", available_raw_cadence_seconds=available_raw)
         age = (now - latest_ts).total_seconds()

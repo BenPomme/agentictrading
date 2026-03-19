@@ -22,7 +22,6 @@ interface VenueData {
   connectors: ConnectorHealth[];
   families: Family[];
   activeLineageCount: number;
-  scopeBlockedCount: number;
   status: 'ready' | 'blocked' | 'partial' | 'no-data';
   blockers: string[];
   latestDataTs: string | null;
@@ -48,7 +47,7 @@ function buildVenueData(
   // All known venues from connectors + families + scope
   const allVenues = new Set<string>([
     ...byVenue.keys(),
-    ...families.map((f) => f.venue || 'unknown'),
+    ...families.flatMap((f) => f.target_venues ?? (f.venue ? [f.venue] : ['unknown'])),
     ...scopeSet,
   ]);
 
@@ -57,33 +56,23 @@ function buildVenueData(
     .map((venue) => {
       const vConns = byVenue.get(venue) ?? [];
       const vFamilies = families.filter(
-        (f) => f.venue === venue || (f.venue ?? '').includes(venue),
+        (f) => (f.target_venues ?? (f.venue ? [f.venue] : [])).includes(venue),
       );
       const activeLineages = lineages.filter(
         (l) =>
           vFamilies.some((f) => f.family_id === l.family_id) &&
           l.current_stage !== 'retired',
       );
-      const scopeBlocked = lineages.filter(
-        (l) =>
-          vFamilies.some((f) => f.family_id === l.family_id) &&
-          !scopeSet.has(venue) &&
-          scopeSet.size > 0,
-      );
-
       const blockers: string[] = [];
       let status: VenueData['status'] = 'ready';
 
-      if (venue === 'betfair') {
-        blockers.push('Missing X.509 client certificate (BF_CERTS_PATH empty)');
-        blockers.push('No active families — all retired or in backup');
-        status = 'blocked';
-      } else if (vConns.length === 0) {
+      if (vConns.length === 0) {
         blockers.push('No connector registered for this venue');
         status = 'no-data';
       } else {
         const hasCritical = vConns.some((c) => c.status === 'critical');
         const hasWarning = vConns.some((c) => c.status === 'warning');
+        const hasStale = vConns.some((c) => c.freshness_status === 'stale');
         const allHealthy = vConns.every((c) => c.status === 'healthy');
 
         if (hasCritical) {
@@ -93,8 +82,13 @@ function buildVenueData(
               .filter((c) => c.status === 'critical')
               .map((c) => `${c.connector_id}: critical (${c.issue_count} issues)`),
           );
-        } else if (hasWarning) {
+        } else if (hasWarning || hasStale) {
           status = 'partial';
+          blockers.push(
+            ...vConns
+              .filter((c) => c.freshness_status === 'stale')
+              .map((c) => `${c.connector_id}: stale feed`),
+          );
         } else if (!allHealthy) {
           status = 'partial';
         }
@@ -123,7 +117,6 @@ function buildVenueData(
         connectors: vConns,
         families: vFamilies,
         activeLineageCount: activeLineages.length,
-        scopeBlockedCount: scopeBlocked.length,
         status,
         blockers,
         latestDataTs,
@@ -329,6 +322,7 @@ export function VenueReadinessPage({ snapshot, snapshotV2 }: Props) {
             <thead>
               <tr>
                 <th>Status</th>
+                <th>Freshness</th>
                 <th>Connector</th>
                 <th>Venue</th>
                 <th>Records</th>
@@ -361,6 +355,7 @@ export function VenueReadinessPage({ snapshot, snapshotV2 }: Props) {
                       {c.status}
                     </span>
                   </td>
+                  <td>{c.freshness_status ?? '—'}</td>
                   <td>{c.connector_id}</td>
                   <td>{c.venue}</td>
                   <td>{c.record_count?.toLocaleString() ?? '—'}</td>

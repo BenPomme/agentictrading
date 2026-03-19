@@ -94,6 +94,12 @@ function RunBreakdownTable({
   );
 }
 
+function startOfTodayIso(): string {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return start.toISOString();
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function ComputeCostPage({ snapshot, snapshotV2 }: Props) {
@@ -101,6 +107,13 @@ export function ComputeCostPage({ snapshot, snapshotV2 }: Props) {
   const mobkit = snapshotV2?.mobkit_health;
   const runs = snapshot?.factory?.agent_runs ?? [];
   const rs = snapshot?.factory?.research_summary;
+  const todayIso = startOfTodayIso();
+  const runsToday = runs.filter((run) => (run.started_at || run.generated_at || '') >= todayIso).length;
+  const lastRunAt = runs
+    .map((run) => run.completed_at || run.started_at || run.generated_at || '')
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? null;
 
   const successCount = runs.filter((r) => r.success).length;
   const failCount = runs.filter((r) => !r.success).length;
@@ -119,6 +132,25 @@ export function ComputeCostPage({ snapshot, snapshotV2 }: Props) {
         <p className="page__subtitle">
           Budget governance, agent run breakdown, session telemetry
         </p>
+      </div>
+
+      <div className="page__runtime-strip">
+        <span className="runtime-pill">
+          <span className="runtime-pill__label">runs today</span>
+          <span className="runtime-pill__value">{runsToday}</span>
+        </span>
+        <span className="runtime-pill__sep" />
+        <span className="runtime-pill">
+          <span className="runtime-pill__label">last run</span>
+          <span className="runtime-pill__value runtime-pill__value--ok">
+            {lastRunAt ?? '—'}
+          </span>
+        </span>
+        <span className="runtime-pill__sep" />
+        <span className="runtime-pill">
+          <span className="runtime-pill__label">tracked sessions</span>
+          <span className="runtime-pill__value">{runs.length}</span>
+        </span>
       </div>
 
       {/* Budget governance */}

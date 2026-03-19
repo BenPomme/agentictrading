@@ -36,6 +36,36 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 os.chdir(PROJECT_ROOT)
 
+
+def _goldfish_runtime_supported() -> bool:
+    try:
+        import goldfish  # noqa: F401
+        from goldfish.mcp_proxy import DaemonConnection  # noqa: F401
+        from goldfish.daemon import get_socket_path  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_supported_python() -> None:
+    preferred = PROJECT_ROOT / ".venv312" / "bin" / "python"
+    if not preferred.exists():
+        return
+    current = Path(sys.executable).resolve()
+    if current == preferred.resolve():
+        return
+    needs_upgrade = sys.version_info < (3, 10)
+    if not needs_upgrade and _goldfish_runtime_supported():
+        return
+    if os.environ.get("FACTORY_PAPER_WINDOW_REEXEC") == "1":
+        return
+    env = dict(os.environ)
+    env["FACTORY_PAPER_WINDOW_REEXEC"] = "1"
+    os.execve(str(preferred), [str(preferred), str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+
+_ensure_supported_python()
+
 # ---------------------------------------------------------------------------
 # Paper window environment overrides — set BEFORE importing config
 # These override .env / .env.staging values for this window only.
@@ -69,6 +99,8 @@ _PAPER_WINDOW_OVERRIDES = {
     "FACTORY_ENABLE_GOLDFISH_PROVENANCE": "true",
     "FACTORY_REAL_AGENTS_ENABLED": "true",
     "AGENTIC_FACTORY_MODE": "full",
+    "FACTORY_AGENT_ENABLED_FAMILIES": "",
+    "FACTORY_AGENT_DEMO_FAMILY": "",
 
     # --- Multi-venue scope: all technically ready venues ---
     "FACTORY_PRIMARY_MARKET_DATA_PROVIDER": "binance",
@@ -84,6 +116,7 @@ _PAPER_WINDOW_OVERRIDES = {
     # vol_surface_dispersion_rotation (yahoo+alpaca) → IN scope
     # Betfair families → IN scope once authenticated refresh is healthy
     "FACTORY_PAPER_WINDOW_VENUE_SCOPE": "betfair,binance,polymarket,yahoo,alpaca",
+    "FACTORY_NEW_FAMILY_MAX_ACTIVE_INCUBATIONS": "8",
 }
 
 # Apply overrides. os.environ takes precedence over .env files in config.py.

@@ -9,17 +9,9 @@ from typing import Any, Dict, List
 import config
 
 
-SUPPORTED_FAMILIES = {
-    "binance_funding_contrarian",
-    "binance_cascade_regime",
-    "polymarket_cross_venue",
-}
-
-
 def _enabled_families() -> set[str]:
     raw = str(getattr(config, "FACTORY_EXECUTION_REFRESH_FAMILIES", "") or "")
-    families = {item.strip() for item in raw.split(",") if item.strip()}
-    return families or set(SUPPORTED_FAMILIES)
+    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 class ExecutionRefreshRunner:
@@ -29,9 +21,8 @@ class ExecutionRefreshRunner:
     def should_run(self, *, family_id: str, role: str) -> bool:
         if not bool(getattr(config, "FACTORY_EXECUTION_REFRESH_ENABLED", True)):
             return False
-        if family_id not in SUPPORTED_FAMILIES:
-            return False
-        if family_id not in _enabled_families():
+        enabled_families = _enabled_families()
+        if enabled_families and family_id not in enabled_families:
             return False
         return str(role or "") == "champion"
 

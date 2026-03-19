@@ -269,6 +269,30 @@ def _age_seconds(value: Any) -> float | None:
     return round(max(0.0, (now - ts).total_seconds()), 1)
 
 
+_CONNECTOR_STALE_SECONDS: Dict[str, float] = {
+    "binance": 6 * 60 * 60,
+    "betfair": 90 * 60,
+    "polymarket": 3 * 60 * 60,
+    "yahoo": 12 * 60 * 60,
+    "alpaca": 12 * 60 * 60,
+}
+
+
+def _connector_freshness_status(connector: Dict[str, Any]) -> str:
+    ready = bool(connector.get("ready"))
+    record_count = int(connector.get("record_count") or 0)
+    if not ready or record_count <= 0:
+        return "missing"
+    venue = str(connector.get("venue") or "").strip().lower()
+    age = _age_seconds(connector.get("latest_data_ts"))
+    if age is None:
+        return "missing"
+    stale_after = float(_CONNECTOR_STALE_SECONDS.get(venue, 12 * 60 * 60))
+    if age > stale_after:
+        return "stale"
+    return "fresh"
+
+
 def _build_connector_feed_health(connectors: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     rows = list(connectors or [])
     if not rows:
@@ -300,15 +324,12 @@ def _build_connector_feed_health(connectors: Iterable[Dict[str, Any]]) -> Dict[s
         latest_ts = connector.get("latest_data_ts")
         latest_age = _age_seconds(latest_ts)
         record_count = int(connector.get("record_count") or 0)
+        freshness_status = _connector_freshness_status(connector)
 
-        # New semantics:
-        # - not ready  -> critical (no data resolved at all)
-        # - ready but record_count == 0 -> warning (configured but empty)
-        # - ready and record_count > 0 -> healthy regardless of exact age
-        if not ready:
+        if freshness_status == "missing":
             status = "critical"
             critical_count += 1
-        elif record_count == 0:
+        elif freshness_status == "stale":
             status = "warning"
             warning_count += 1
         else:
@@ -329,6 +350,7 @@ def _build_connector_feed_health(connectors: Iterable[Dict[str, Any]]) -> Dict[s
                 "latest_age_seconds": latest_age,
                 "record_count": record_count,
                 "issue_count": len(list(connector.get("issues") or [])),
+                "freshness_status": freshness_status,
             }
         )
 
@@ -467,12 +489,16 @@ def _build_feed_health(factory_state: Dict[str, Any], connectors: Iterable[Dict[
                 default=None,
             )
             connector_issue_count = sum(len(list(item.get("issues") or [])) for item in venue_connectors)
-            if not ready:
+            freshness_statuses = {_connector_freshness_status(item) for item in venue_connectors}
+            if "missing" in freshness_statuses:
                 venue_status = "critical"
-            elif record_count <= 0:
+                freshness_status = "missing"
+            elif "stale" in freshness_statuses or record_count <= 0:
                 venue_status = "warning"
+                freshness_status = "stale"
             else:
                 venue_status = "healthy"
+                freshness_status = "fresh"
 
             portfolio_ids = venue_candidates.get(venue, [])
             signals = [item for item in (_portfolio_feed_signal(portfolio_id) for portfolio_id in portfolio_ids) if item]
@@ -501,6 +527,7 @@ def _build_feed_health(factory_state: Dict[str, Any], connectors: Iterable[Dict[
                     "latest_age_seconds": _age_seconds((latest_row or {}).get("latest_data_ts")),
                     "record_count": record_count,
                     "issue_count": connector_issue_count,
+                    "freshness_status": freshness_status,
                     "runtime_status": runtime_status,
                     "runtime_issue_count": runtime_issue_count,
                     "runtime_ready": runtime_ready,
@@ -721,6 +748,8 @@ def _portfolio_dirs() -> List[Path]:
         for lineage_dir in sorted(root.glob("lineage__*")):
             if lineage_dir.is_dir() and lineage_dir not in dirs:
                 dirs.append(lineage_dir)
+        if not dirs:
+            return sorted(path for path in root.iterdir() if path.is_dir())
         return sorted(dirs)
     return sorted(path for path in root.iterdir() if path.is_dir())
 
@@ -830,6 +859,164 @@ def _execution_evidence_for_portfolio(portfolio_id: str, root: Path) -> Dict[str
             "trainability": {},
             "recommendation_context": [],
         }
+
+
+def _lineage_sort_key(row: Dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        0 if row.get("active", True) else 1,
+        row.get("pareto_rank") if row.get("pareto_rank") is not None else 999,
+        -float(row.get("fitness_score", 0.0) or 0.0),
+        str(row.get("lineage_id") or ""),
+    )
+
+
+def _split_current_and_archived_lineages(factory_state: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], set[str]]:
+    all_lineages = [dict(row) for row in list(factory_state.get("lineages") or [])]
+    families = [dict(row) for row in list(factory_state.get("families") or [])]
+    by_family: Dict[str, List[Dict[str, Any]]] = {}
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for row in all_lineages:
+        lineage_id = str(row.get("lineage_id") or "").strip()
+        family_id = str(row.get("family_id") or "").strip()
+        if lineage_id:
+            by_id[lineage_id] = row
+        if family_id:
+            by_family.setdefault(family_id, []).append(row)
+
+    current_ids: set[str] = set()
+    current_rows: List[Dict[str, Any]] = []
+    if not families:
+        current_rows = [dict(row) for row in sorted(all_lineages, key=_lineage_sort_key) if row.get("active", True)]
+        current_ids = {
+            str(row.get("lineage_id") or "").strip()
+            for row in current_rows
+            if str(row.get("lineage_id") or "").strip()
+        }
+        archived_rows = [
+            dict(row)
+            for row in sorted(all_lineages, key=_lineage_sort_key)
+            if str(row.get("lineage_id") or "").strip() not in current_ids
+        ]
+        return current_rows, archived_rows, current_ids
+
+    for family in families:
+        family_id = str(family.get("family_id") or "").strip()
+        champion_id = str(family.get("champion_lineage_id") or "").strip()
+        family_rows = sorted(by_family.get(family_id, []), key=_lineage_sort_key)
+        champion_row = by_id.get(champion_id)
+        if champion_row is None and family_rows:
+            champion_row = next((row for row in family_rows if row.get("active", True)), family_rows[0])
+        if champion_row is None:
+            continue
+        lineage_id = str(champion_row.get("lineage_id") or "").strip()
+        if lineage_id and lineage_id not in current_ids:
+            current_ids.add(lineage_id)
+            current_rows.append(dict(champion_row))
+
+    archived_rows = [
+        dict(row)
+        for row in sorted(all_lineages, key=_lineage_sort_key)
+        if str(row.get("lineage_id") or "").strip() not in current_ids
+    ]
+    current_rows = sorted(current_rows, key=_lineage_sort_key)
+    return current_rows, archived_rows, current_ids
+
+
+def _split_current_and_archived_queue(
+    factory_state: Dict[str, Any],
+    current_lineage_ids: set[str],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    queue = [dict(row) for row in list(factory_state.get("queue") or [])]
+    current_queue = [
+        row for row in queue if str(row.get("lineage_id") or "").strip() in current_lineage_ids
+    ]
+    archived_queue = [
+        row for row in queue if str(row.get("lineage_id") or "").strip() not in current_lineage_ids
+    ]
+    return current_queue, archived_queue
+
+
+def _portfolio_last_trade_at(row: Dict[str, Any]) -> str | None:
+    timestamps: List[str] = []
+    for item in list(row.get("recent_trades") or []):
+        ts = str(
+            item.get("closed_at")
+            or item.get("opened_at")
+            or item.get("entry_time")
+            or item.get("exit_time")
+            or item.get("ts")
+            or ""
+        ).strip()
+        if ts:
+            timestamps.append(ts)
+    return max(timestamps) if timestamps else None
+
+
+def _portfolio_last_activity_at(row: Dict[str, Any]) -> str | None:
+    candidates = [
+        _portfolio_last_trade_at(row),
+        str(row.get("heartbeat_ts") or "").strip() or None,
+    ]
+    values = [item for item in candidates if item]
+    return max(values) if values else None
+
+
+def _choose_current_runner_portfolio(
+    family: Dict[str, Any],
+    champion_row: Dict[str, Any] | None,
+    portfolios_by_id: Dict[str, Dict[str, Any]],
+) -> str | None:
+    candidates: List[str] = []
+    for value in [
+        family.get("current_runner_portfolio_id"),
+        family.get("runtime_target_portfolio"),
+        family.get("canonical_target_portfolio"),
+        champion_row.get("runtime_target_portfolio") if champion_row else None,
+        champion_row.get("live_paper_target_portfolio_id") if champion_row else None,
+        champion_row.get("curated_target_portfolio_id") if champion_row else None,
+    ]:
+        text = str(value or "").strip()
+        if text:
+            candidates.append(text)
+    candidates.extend(str(item).strip() for item in (family.get("target_portfolios") or []) if str(item).strip())
+    family_id = str(family.get("family_id") or "").strip()
+    if family_id:
+        candidates.append(family_id)
+
+    deduped = list(dict.fromkeys(candidates))
+    existing = [portfolios_by_id[item] for item in deduped if item in portfolios_by_id]
+    if not existing:
+        return None
+    best = sorted(
+        existing,
+        key=lambda row: (
+            0 if bool(row.get("running")) else 1,
+            0 if bool(row.get("has_runtime_state")) else 1,
+            float(_age_seconds(row.get("heartbeat_ts")) or 10**9),
+            str(row.get("portfolio_id") or ""),
+        ),
+    )[0]
+    return str(best.get("portfolio_id") or "").strip() or None
+
+
+def _derive_champion_paper_state(lineage: Dict[str, Any], portfolio: Dict[str, Any] | None) -> tuple[str, str]:
+    runtime_status = _lineage_paper_runtime_status(lineage)
+    issue_codes = [str(item).strip() for item in (lineage.get("execution_issue_codes") or []) if str(item).strip()]
+    health_status = str(lineage.get("execution_health_status") or "").strip().lower()
+    if runtime_status == "paper_running":
+        portfolio_id = str((portfolio or {}).get("portfolio_id") or lineage.get("paper_portfolio_id") or "").strip()
+        reason = "running"
+        if portfolio_id:
+            reason = f"running on {portfolio_id}"
+        return "paper_active", reason
+    if any(code in {"trade_stalled", "training_stalled", "stalled_model", "no_trade_syndrome", "zero_simulated_fills"} for code in issue_codes):
+        return "paper_stuck", f"stuck: {issue_codes[0]}"
+    if health_status == "critical" or issue_codes or list(lineage.get("blockers") or []):
+        blocker = issue_codes[0] if issue_codes else str((lineage.get("blockers") or ["blocked"])[0])
+        return "paper_blocked", f"blocked: {blocker}"
+    if runtime_status in {"paper_candidate", "paper_assigned", "paper_starting"}:
+        return "paper_blocked", f"blocked: {runtime_status}"
+    return "paper_blocked", "blocked: not in active paper runtime"
 
 
 def _portfolio_snapshot_light(path: Path) -> Dict[str, Any]:
@@ -1590,6 +1777,8 @@ def _build_agent_run_view(agent_runs: Iterable[Dict[str, Any]]) -> List[Dict[str
             {
                 "run_id": str(run.get("run_id") or ""),
                 "generated_at": str(run.get("generated_at") or ""),
+                "started_at": str(run.get("started_at") or run.get("generated_at") or ""),
+                "completed_at": str(run.get("completed_at") or run.get("generated_at") or ""),
                 "task_type": str(run.get("task_type") or ""),
                 "model_class": str(run.get("model_class") or ""),
                 "provider": str(run.get("provider") or ""),
@@ -1607,6 +1796,40 @@ def _build_agent_run_view(agent_runs: Iterable[Dict[str, Any]]) -> List[Dict[str
             }
         )
     return rows
+
+
+def _latest_agent_run_by_family(agent_runs: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+    latest: Dict[str, str] = {}
+    for row in agent_runs:
+        family_id = str(row.get("family_id") or "").strip()
+        generated_at = str(row.get("generated_at") or "").strip()
+        if not family_id or not generated_at:
+            continue
+        if generated_at > str(latest.get(family_id) or ""):
+            latest[family_id] = generated_at
+    return latest
+
+
+def _normalized_research_summary(
+    raw_summary: Dict[str, Any],
+    *,
+    current_family_count: int,
+    current_lineage_count: int,
+    archived_lineage_count: int,
+    current_queue_count: int,
+    archived_queue_count: int,
+    current_paper_pnl: float,
+) -> Dict[str, Any]:
+    summary = dict(raw_summary or {})
+    summary["family_count"] = current_family_count
+    summary["lineage_count"] = current_lineage_count
+    summary["active_lineage_count"] = current_lineage_count
+    summary["retired_lineage_count"] = archived_lineage_count
+    summary["paper_pnl"] = round(float(current_paper_pnl or 0.0), 4)
+    summary["current_queue_count"] = current_queue_count
+    summary["archived_queue_count"] = archived_queue_count
+    summary["archived_lineage_count"] = archived_lineage_count
+    return summary
 
 
 def _title_case_slug(value: str) -> str:
@@ -2028,6 +2251,9 @@ def _build_family_view(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
             {
                 "family_id": family.get("family_id"),
                 "label": family.get("label"),
+                "status": family.get("champion_paper_state") or family.get("autopilot_status") or family.get("queue_stage") or "unknown",
+                "venue": ", ".join(str(item).strip() for item in (family.get("target_venues") or []) if str(item).strip()),
+                "target_venues": [str(item).strip() for item in (family.get("target_venues") or []) if str(item).strip()],
                 "queue_stage": family.get("queue_stage"),
                 "lineage_count": int(family.get("lineage_count", 0) or 0),
                 "active_lineage_count": int(family.get("active_lineage_count", 0) or 0),
@@ -2039,6 +2265,7 @@ def _build_family_view(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "champion_paper_reason": family.get("champion_paper_reason"),
                 "champion_roi_pct": _compact_number(champion.get("monthly_roi_pct")),
                 "champion_fitness": _compact_number(champion.get("fitness_score")),
+                "champion_trade_count": int(champion.get("trade_count", 0) or 0),
                 "origin": family.get("origin"),
                 "source_idea_id": family.get("source_idea_id"),
                 "incubation_status": family.get("incubation_status"),
@@ -2337,7 +2564,7 @@ def _build_operator_signal_view(factory_state: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
-def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _build_lineage_table(factory_state: Dict[str, Any], *, limit: int | None = 24) -> List[Dict[str, Any]]:
     lineages = list(factory_state.get("lineages") or [])
     sorted_lineages = sorted(
         lineages,
@@ -2349,7 +2576,8 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
     )
     rows: List[Dict[str, Any]] = []
     project_root = _project_root()
-    for row in sorted_lineages[:24]:
+    selected_lineages = sorted_lineages if limit is None else sorted_lineages[:limit]
+    for row in selected_lineages:
         paper_runtime_status = _lineage_paper_runtime_status(dict(row))
         bt_data = _load_backtest_roi(project_root, str(row.get("family_id") or ""), str(row.get("lineage_id") or ""))
         summary = {
@@ -2357,11 +2585,18 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "family_id": row.get("family_id"),
                 "role": row.get("role"),
                 "current_stage": row.get("current_stage"),
+                "canonical_stage": row.get("current_stage"),
+                "runtime_stage": paper_runtime_status,
                 "iteration_status": row.get("iteration_status"),
+                "is_current_family_champion": bool(row.get("is_current_family_champion")),
+                "is_history_only": bool(row.get("is_history_only")),
                 "fitness_score": _compact_number(row.get("fitness_score")),
                 "monthly_roi_pct": _compact_number(row.get("monthly_roi_pct")),
                 "paper_days": int(row.get("paper_days", 0) or 0),
                 "trade_count": int(row.get("trade_count", 0) or 0),
+                "last_trade_at": row.get("last_trade_at"),
+                "paper_portfolio_id": row.get("paper_portfolio_id"),
+                "created_at": row.get("created_at"),
                 "assessment": _assessment_progress(
                     paper_days=int(row.get("paper_days", 0) or 0),
                     trade_count=int(
@@ -2441,6 +2676,20 @@ def _build_lineage_table(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def build_dashboard_snapshot() -> Dict[str, Any]:
     factory_state = _read_json(_factory_state_path(), default={}) or {}
+    registry = FactoryRegistry(_factory_root())
+    registry_families = {family.family_id: family for family in registry.families()}
+    merged_families: List[Dict[str, Any]] = []
+    for row in list(factory_state.get("families") or []):
+        family_row = dict(row)
+        family_id = str(family_row.get("family_id") or "").strip()
+        registry_family = registry_families.get(family_id)
+        if registry_family is not None:
+            family_row.setdefault("target_venues", list(registry_family.target_venues or []))
+            family_row.setdefault("target_portfolios", list(registry_family.target_portfolios or []))
+            family_row.setdefault("origin", registry_family.origin)
+            family_row.setdefault("source_idea_id", registry_family.source_idea_id)
+        merged_families.append(family_row)
+    factory_state["families"] = merged_families
     journal = _read_markdown_sections(_factory_journal_path())
     ideas_path = _ideas_path()
     ideas_text = ideas_path.read_text(encoding="utf-8") if ideas_path.exists() else ""
@@ -2448,6 +2697,26 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
     idea_buckets = split_active_and_archived_ideas(idea_items)
     idea_status_counts = _idea_status_counts(idea_items)
     agent_run_rows = recent_agent_runs(_project_root(), limit=24)
+    agent_run_view = _build_agent_run_view(agent_run_rows)
+    latest_agent_by_family = _latest_agent_run_by_family(agent_run_view)
+
+    current_lineages_raw, archived_lineages_raw, current_lineage_ids = _split_current_and_archived_lineages(factory_state)
+    current_queue_raw, archived_queue_raw = _split_current_and_archived_queue(factory_state, current_lineage_ids)
+    current_family_ids = {
+        str(row.get("family_id") or "").strip()
+        for row in current_lineages_raw
+        if str(row.get("family_id") or "").strip()
+    }
+    current_families_raw = [
+        dict(row)
+        for row in list(factory_state.get("families") or [])
+        if str(row.get("family_id") or "").strip() in current_family_ids
+    ]
+    archived_families_raw = [
+        dict(row)
+        for row in list(factory_state.get("families") or [])
+        if str(row.get("family_id") or "").strip() not in current_family_ids
+    ]
 
     portfolio_paths = {path.name: path for path in _portfolio_dirs()}
     execution_root = _execution_root()
@@ -2457,27 +2726,116 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
             portfolio_paths.setdefault(portfolio_id, path)
     portfolios = [_portfolio_snapshot(path) for path in portfolio_paths.values()]
     placeholder_portfolios = [row for row in portfolios if row.get("is_placeholder")]
-    tracked_portfolios = [
+    tracked_portfolios_all = [
         row
         for row in portfolios
         if row["portfolio_id"] != "command_center" and not row.get("is_placeholder")
     ]
+    portfolios_by_id = {str(row.get("portfolio_id") or ""): row for row in tracked_portfolios_all}
+    current_lineage_by_id = {
+        str(row.get("lineage_id") or "").strip(): row
+        for row in current_lineages_raw
+        if str(row.get("lineage_id") or "").strip()
+    }
+    current_runner_by_family: Dict[str, str | None] = {}
+    for family in current_families_raw:
+        family_id = str(family.get("family_id") or "").strip()
+        champion_id = str(family.get("champion_lineage_id") or "").strip()
+        portfolio_id = _choose_current_runner_portfolio(
+            family,
+            current_lineage_by_id.get(champion_id),
+            portfolios_by_id,
+        )
+        current_runner_by_family[family_id] = portfolio_id
+    current_portfolio_ids = {
+        portfolio_id
+        for portfolio_id in current_runner_by_family.values()
+        if str(portfolio_id or "").strip()
+    }
+    if not current_portfolio_ids and not current_families_raw:
+        current_portfolios = list(tracked_portfolios_all)
+        archived_portfolios = []
+    else:
+        current_portfolios = [
+            row for row in tracked_portfolios_all if str(row.get("portfolio_id") or "") in current_portfolio_ids
+        ]
+        archived_portfolios = [
+            row for row in tracked_portfolios_all if str(row.get("portfolio_id") or "") not in current_portfolio_ids
+        ]
+    current_portfolios_by_id = {str(row.get("portfolio_id") or ""): row for row in current_portfolios}
+    current_paper_pnl = round(sum(_compact_number(row.get("realized_pnl")) for row in current_portfolios), 4)
+
+    for row in current_lineages_raw:
+        family_id = str(row.get("family_id") or "").strip()
+        portfolio_id = current_runner_by_family.get(family_id)
+        portfolio = current_portfolios_by_id.get(str(portfolio_id or ""))
+        row["is_current_family_champion"] = True
+        row["is_history_only"] = False
+        row["paper_portfolio_id"] = portfolio_id
+        row["runtime_target_portfolio"] = row.get("runtime_target_portfolio") or portfolio_id
+        row["last_trade_at"] = _portfolio_last_trade_at(portfolio or {})
+
+    for row in archived_lineages_raw:
+        row["is_current_family_champion"] = False
+        row["is_history_only"] = True
+        row["paper_portfolio_id"] = row.get("paper_portfolio_id") or row.get("runtime_target_portfolio")
+
+    current_factory_state = dict(factory_state)
+    current_factory_state["families"] = current_families_raw
+    current_factory_state["lineages"] = current_lineages_raw
+    current_factory_state["queue"] = current_queue_raw
+
+    family_rows = _build_family_view(current_factory_state)
+    for row in family_rows:
+        family_id = str(row.get("family_id") or "").strip()
+        champion_id = str(row.get("champion_lineage_id") or "").strip()
+        champion_row = current_lineage_by_id.get(champion_id, {})
+        portfolio_id = current_runner_by_family.get(family_id)
+        portfolio = current_portfolios_by_id.get(str(portfolio_id or ""))
+        paper_state, paper_reason = _derive_champion_paper_state(champion_row, portfolio)
+        row["target_venues"] = list(
+            dict.fromkeys(
+                [str(item).strip() for item in (row.get("target_venues") or []) if str(item).strip()]
+            )
+        )
+        row["venue"] = ", ".join(row["target_venues"])
+        row["current_runner_portfolio_id"] = portfolio_id
+        row["last_activity_at"] = _portfolio_last_activity_at(portfolio or {})
+        row["last_agent_run_at"] = latest_agent_by_family.get(family_id)
+        row["champion_paper_state"] = paper_state
+        row["champion_paper_reason"] = paper_reason
+        row["status"] = paper_state
+
+    normalized_research_summary = _normalized_research_summary(
+        dict(factory_state.get("research_summary") or {}),
+        current_family_count=len(current_families_raw),
+        current_lineage_count=len(current_lineages_raw),
+        archived_lineage_count=len(archived_lineages_raw),
+        current_queue_count=len(current_queue_raw),
+        archived_queue_count=len(archived_queue_raw),
+        current_paper_pnl=current_paper_pnl,
+    )
+    current_factory_state["research_summary"] = normalized_research_summary
 
     execution = {
-        "portfolio_count": len(tracked_portfolios),
+        "portfolio_count": len(current_portfolios),
+        "archived_portfolio_count": len(archived_portfolios),
         "placeholder_count": len(placeholder_portfolios),
-        "running_count": sum(1 for row in tracked_portfolios if row.get("running")),
-        "blocked_count": sum(1 for row in tracked_portfolios if row.get("blocked")),
-        "realized_pnl_total": round(sum(_compact_number(row.get("realized_pnl")) for row in tracked_portfolios), 4),
-        "portfolios": tracked_portfolios,
+        "running_count": sum(1 for row in current_portfolios if row.get("running")),
+        "blocked_count": sum(1 for row in current_portfolios if row.get("blocked")),
+        "realized_pnl_total": current_paper_pnl,
+        "historical_realized_pnl_total": round(sum(_compact_number(row.get("realized_pnl")) for row in archived_portfolios), 4),
+        "current_paper_pnl": current_paper_pnl,
+        "portfolios": current_portfolios,
+        "archived_portfolios": archived_portfolios,
         "placeholders": placeholder_portfolios,
     }
-    alerts = _build_alerts(factory_state, tracked_portfolios)
+    alerts = _build_alerts(current_factory_state, current_portfolios)
     alerts.extend(_build_agent_fallback_alerts(agent_run_rows))
     alerts = _finalize_alerts(alerts)
-    research_summary = dict(factory_state.get("research_summary") or {})
+    research_summary = normalized_research_summary
     readiness = dict(factory_state.get("readiness") or {})
-    paper_runtime = _paper_runtime_summary(factory_state)
+    paper_runtime = _paper_runtime_summary(current_factory_state)
 
     # Derive live connector snapshots directly from the local filesystem/catalog so
     # the API feeds view always includes all venues (binance, betfair, polymarket,
@@ -2487,7 +2845,7 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
     connector_adapters = default_connector_catalog(project_root)
     connector_snapshots = [adapter.snapshot().to_dict() for adapter in connector_adapters]
 
-    feed_health = _build_feed_health(factory_state, connector_snapshots)
+    feed_health = _build_feed_health(current_factory_state, connector_snapshots)
 
     return {
         "generated_at": utc_now_iso(),
@@ -2496,30 +2854,35 @@ def build_dashboard_snapshot() -> Dict[str, Any]:
         "api_health": {"status": "ok", "snapshot_source": "factory_state"},
         "api_feeds": _build_connector_feed_health(connector_snapshots),
         "factory": {
-            "mode": factory_state.get("agentic_factory_mode"),
-            "status": factory_state.get("status"),
-            "cycle_count": int(factory_state.get("cycle_count", 0) or 0),
+            "mode": current_factory_state.get("agentic_factory_mode"),
+            "status": current_factory_state.get("status"),
+            "cycle_count": int(current_factory_state.get("cycle_count", 0) or 0),
             "readiness": readiness,
             "research_summary": research_summary,
             "paper_runtime": paper_runtime,
             "feed_health": feed_health,
-            "families": _build_family_view(factory_state),
-            "model_league": _build_model_league_view(factory_state),
-            "lineages": _build_lineage_table(factory_state),
+            "families": family_rows,
+            "archived_families": archived_families_raw,
+            "model_league": _build_model_league_view(current_factory_state),
+            "lineages": _build_lineage_table(current_factory_state, limit=None),
+            "current_lineages": _build_lineage_table(current_factory_state, limit=None),
+            "archived_lineages": _build_lineage_table({"lineages": archived_lineages_raw}, limit=None),
             "lineage_atlas": _build_lineage_atlas(factory_state),
-            "queue": list(factory_state.get("queue") or []),
+            "queue": current_queue_raw,
+            "current_queue": current_queue_raw,
+            "archived_queue": archived_queue_raw,
             # Surface catalog-based connector snapshots so the UI can see all venues,
             # independent of the long-running factory process.
             "connectors": connector_snapshots,
-            "manifests": dict(factory_state.get("manifests") or {}),
-            "agent_runs": _build_agent_run_view(agent_run_rows),
-            "operator_signals": _build_operator_signal_view(factory_state),
-            "execution_bridge": dict(factory_state.get("execution_bridge") or {}),
+            "manifests": dict(current_factory_state.get("manifests") or {}),
+            "agent_runs": agent_run_view,
+            "operator_signals": _build_operator_signal_view(current_factory_state),
+            "execution_bridge": dict(current_factory_state.get("execution_bridge") or {}),
         },
         "company": {
             "journal_markdown": journal.get("content") or "",
             "recent_actions": journal.get("recent_actions") or [],
-            "desks": _build_agent_desks(factory_state, journal.get("recent_actions") or [], agent_run_rows),
+            "desks": _build_agent_desks(current_factory_state, journal.get("recent_actions") or [], agent_run_rows),
             "alerts": alerts,
         },
         "execution": execution,
@@ -2575,14 +2938,17 @@ def build_snapshot_v2() -> Dict[str, Any]:
     lineages = list((base.get("factory") or {}).get("lineages") or [])
     families = list((base.get("factory") or {}).get("families") or [])
 
-    # Build venue lookup: family_id -> venue string
+    # Build venue lookup: family_id -> venue string(s)
     family_venue_map: Dict[str, str] = {}
     family_venues_map: Dict[str, set] = {}
+    family_runner_map: Dict[str, str | None] = {}
     for fam in families:
         fid = str(fam.get("family_id") or "")
-        venue_str = str(fam.get("venue") or "")
+        target_venues = [str(v).strip() for v in (fam.get("target_venues") or []) if str(v).strip()]
+        venue_str = ", ".join(target_venues) if target_venues else str(fam.get("venue") or "")
         family_venue_map[fid] = venue_str
-        family_venues_map[fid] = {v.strip() for v in venue_str.split(",") if v.strip()} if venue_str else set()
+        family_venues_map[fid] = set(target_venues) if target_venues else ({v.strip() for v in venue_str.split(",") if v.strip()} if venue_str else set())
+        family_runner_map[fid] = str(fam.get("current_runner_portfolio_id") or "").strip() or None
 
     _PAPER_STAGE = "paper"
     _HOLDOFF_EXCLUDED_STATUSES = {"failed", "retiring", "review_requested_rework"}
@@ -2592,6 +2958,7 @@ def build_snapshot_v2() -> Dict[str, Any]:
         lineage_id = str(lin.get("lineage_id") or "")
         family_id = str(lin.get("family_id") or "")
         current_stage = str(lin.get("current_stage") or "")
+        runtime_stage = str(lin.get("runtime_stage") or lin.get("paper_runtime_status") or "")
         iteration_status = str(lin.get("iteration_status") or "")
 
         venue = family_venue_map.get(family_id, "")
@@ -2607,7 +2974,7 @@ def build_snapshot_v2() -> Dict[str, Any]:
         holdoff_reason: str | None = None
         if (
             paper_holdoff_enabled
-            and current_stage == _PAPER_STAGE
+            and (current_stage == _PAPER_STAGE or runtime_stage == "paper_running")
             and iteration_status not in _HOLDOFF_EXCLUDED_STATUSES
         ):
             holdoff_reason = f"paper_holdoff active: stage={current_stage} status={iteration_status}"
@@ -2625,13 +2992,22 @@ def build_snapshot_v2() -> Dict[str, Any]:
 
         # Paper portfolio id — lineage-scoped isolated accounting
         safe_id = lineage_id.replace(":", "__")
-        paper_portfolio_id = f"lineage__{safe_id}" if lineage_id else None
+        paper_portfolio_id = (
+            str(
+                lin.get("paper_portfolio_id")
+                or lin.get("runtime_target_portfolio")
+                or family_runner_map.get(family_id)
+                or ""
+            ).strip()
+            or None
+        )
 
         lineage_v2.append({
             "lineage_id": lineage_id,
             "family_id": family_id,
             "venue": venue,
             "canonical_stage": current_stage,
+            "runtime_stage": runtime_stage,
             "deterministic_blockers": deterministic_blockers,
             "holdoff_reason": holdoff_reason,
             "venue_scope_reason": venue_scope_reason,

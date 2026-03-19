@@ -27,6 +27,7 @@ export interface ConnectorHealth {
   connector_id: string;
   venue: string;
   status: string;
+  freshness_status?: string;
   ready: boolean;
   latest_data_ts: string | null;
   latest_age_seconds: number;
@@ -43,10 +44,15 @@ export interface FactoryState {
   paper_runtime: PaperRuntime;
   feed_health: Record<string, unknown>;
   families: Family[];
+  archived_families?: Family[];
   model_league: ModelLeagueEntry[];
   lineages: Lineage[];
+  current_lineages?: Lineage[];
+  archived_lineages?: Lineage[];
   lineage_atlas: LineageAtlas;
   queue: QueueItem[];
+  current_queue?: QueueItem[];
+  archived_queue?: QueueItem[];
   connectors: ConnectorHealth[];
   manifests: { live_loadable: unknown[]; pending: unknown[] };
   agent_runs: AgentRun[];
@@ -112,6 +118,8 @@ export interface PaperRuntime {
 export interface AgentRun {
   run_id: string;
   generated_at: string;
+  started_at?: string;
+  completed_at?: string;
   task_type: string;
   model_class: string;
   provider: string;
@@ -133,11 +141,17 @@ export interface Family {
   label: string;
   venue: string;
   status: string;
+  target_venues?: string[];
   lineage_count: number;
   active_lineage_count: number;
   champion_lineage_id: string | null;
   champion_roi_pct: number;
   champion_trade_count: number;
+  champion_paper_state?: string | null;
+  champion_paper_reason?: string | null;
+  current_runner_portfolio_id?: string | null;
+  last_activity_at?: string | null;
+  last_agent_run_at?: string | null;
   research_positive: boolean;
   curated_rankings?: unknown[];
   autopilot?: Record<string, unknown>;
@@ -149,6 +163,8 @@ export interface Lineage {
   family_id: string;
   role: string;
   current_stage: string;
+  canonical_stage?: string;
+  runtime_stage?: string;
   /** Iteration lifecycle status: active, failed, retiring, revived_for_paper, etc. */
   iteration_status?: string;
   roi_pct: number;
@@ -174,6 +190,10 @@ export interface Lineage {
   proposal_agent: Record<string, unknown>;
   /** Paper runtime status: paper_running | paper_starting | paper_candidate | retired | etc. */
   paper_runtime_status?: string;
+  is_current_family_champion?: boolean;
+  is_history_only?: boolean;
+  paper_portfolio_id?: string | null;
+  last_trade_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -350,11 +370,15 @@ export interface PortfolioTrade {
 
 export interface ExecutionState {
   portfolio_count: number;
+  archived_portfolio_count?: number;
   running_count: number;
   blocked_count: number;
   placeholder_count: number;
   realized_pnl_total: number;
+  historical_realized_pnl_total?: number;
+  current_paper_pnl?: number;
   portfolios: PortfolioSnapshot[];
+  archived_portfolios?: PortfolioSnapshot[];
   placeholders: PortfolioSnapshot[];
 }
 

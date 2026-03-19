@@ -543,6 +543,24 @@ class TestMobkitRuntimeWorkflows:
         )
         assert isinstance(result, AgentRunResult)
 
+    def test_generate_proposal_writes_agent_run_artifact(self, tmp_path):
+        with patch.object(config, "FACTORY_AGENT_LOG_DIR", str(tmp_path / "agent_runs")):
+            rt, _backend = self._rt(tmp_path)
+            result = rt.generate_proposal(
+                family=self._mock_family(),
+                champion_hypothesis=None,
+                champion_genome=self._mock_genome(),
+                learning_memory=[],
+                execution_evidence=None,
+                cycle_count=1,
+                proposal_index=0,
+            )
+        assert result is not None
+        assert result.artifact_path is not None
+        payload = json.loads(Path(result.artifact_path).read_text(encoding="utf-8"))
+        assert payload["task_type"] == "generate_proposal"
+        assert payload["provider"] == "mobkit"
+
     def test_suggest_tweak_calls_structured_task(self, tmp_path):
         rt, backend = self._rt(tmp_path)
         result = rt.suggest_tweak(
@@ -576,18 +594,37 @@ class TestMobkitRuntimeWorkflows:
 
     def test_critique_post_evaluation_calls_mob_workflow(self, tmp_path):
         rt, backend = self._rt(tmp_path)
-        result = rt.critique_post_evaluation(
-            family=self._mock_family(),
-            lineage=self._mock_lineage(),
-            genome=self._mock_genome(),
-            latest_bundle=None,
-            learning_memory=[],
-            execution_evidence=None,
-        )
+        with patch.object(config, "FACTORY_AGENT_POST_EVAL_CRITIQUE_ENABLED", True), \
+             patch.object(config, "FACTORY_AGENT_ENABLED_FAMILIES", "fam-001"), \
+             patch.object(config, "FACTORY_REAL_AGENTS_ENABLED", True):
+            result = rt.critique_post_evaluation(
+                family=self._mock_family(),
+                lineage=self._mock_lineage(),
+                genome=self._mock_genome(),
+                latest_bundle=None,
+                learning_memory=[],
+                execution_evidence=None,
+            )
         backend.run_mob_workflow.assert_called_once()
         call_kwargs = backend.run_mob_workflow.call_args.kwargs
         assert call_kwargs["workflow_name"] == "post_eval_critique"
         assert result is not None
+
+    def test_critique_post_evaluation_skips_when_disabled(self, tmp_path):
+        rt, backend = self._rt(tmp_path)
+        with patch.object(config, "FACTORY_AGENT_POST_EVAL_CRITIQUE_ENABLED", False), \
+             patch.object(config, "FACTORY_AGENT_ENABLED_FAMILIES", "fam-001"), \
+             patch.object(config, "FACTORY_REAL_AGENTS_ENABLED", True):
+            result = rt.critique_post_evaluation(
+                family=self._mock_family(),
+                lineage=self._mock_lineage(),
+                genome=self._mock_genome(),
+                latest_bundle=None,
+                learning_memory=[],
+                execution_evidence=None,
+            )
+        backend.run_mob_workflow.assert_not_called()
+        assert result is None
 
     def test_workflow_error_returns_failed_result(self, tmp_path):
         backend = _make_mock_backend()

@@ -80,9 +80,19 @@ export function getPaperStateBucket(row: {
   trade_count: number;
   port_trade_count: number | null;
   execution_health_status: string | null;
+  paper_runtime_status: string | null;
 }): PaperStateBucket {
   if (row.venue_scope_reason) return 'scope-blocked';
   if (row.holdoff_reason) return 'holdoff';
+  if (row.paper_runtime_status === 'paper_running') {
+    const totalTrades = row.port_trade_count ?? row.trade_count;
+    const pnl = row.realized_pnl ?? 0;
+    const unhealthy =
+      row.execution_health_status != null &&
+      row.execution_health_status !== 'healthy';
+    if (unhealthy || (totalTrades > 0 && pnl < 0)) return 'underperforming';
+    return 'accumulating';
+  }
   if (row.det_blockers.length > 0 || row.blockers.length > 0) return 'blocked';
 
   const assessment = row.assessment;
@@ -137,10 +147,20 @@ export function mergePaperModels(
   return lineages
     .filter(
       (l) =>
-        l.current_stage === 'paper' ||
-        l.current_stage === 'shadow' ||
-        l.runtime_lane_selected ||
-        (l.paper_days ?? 0) > 0,
+        !l.is_history_only &&
+        l.paper_runtime_status !== 'retired' &&
+        l.runtime_stage !== 'retired' &&
+        l.iteration_status !== 'retired' &&
+        (
+          l.current_stage === 'paper' ||
+          l.current_stage === 'shadow' ||
+          l.runtime_stage === 'paper_running' ||
+          l.paper_runtime_status === 'paper_running' ||
+          l.paper_runtime_status === 'paper_starting' ||
+          l.paper_runtime_status === 'paper_assigned' ||
+          l.runtime_lane_selected ||
+          (l.paper_days ?? 0) > 0
+        ),
     )
     .map((lin) => {
       const v2 = v2Map.get(lin.lineage_id) ?? null;

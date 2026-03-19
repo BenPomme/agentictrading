@@ -87,6 +87,44 @@ def _check_mobkit_available() -> bool:
     return bool(_MOBKIT_AVAILABLE)
 
 
+def _enabled_families() -> List[str]:
+    raw = str(getattr(config, "FACTORY_AGENT_ENABLED_FAMILIES", "") or "").strip()
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _demo_family() -> str:
+    return str(getattr(config, "FACTORY_AGENT_DEMO_FAMILY", "binance_funding_contrarian") or "").strip()
+
+
+def _family_enabled(family_id: str) -> bool:
+    if not bool(getattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)):
+        return False
+    enabled = _enabled_families()
+    if enabled:
+        return family_id in enabled
+    demo_family = _demo_family()
+    return not demo_family or family_id == demo_family
+
+
+def _post_eval_critique_enabled() -> bool:
+    return bool(getattr(config, "FACTORY_AGENT_POST_EVAL_CRITIQUE_ENABLED", False))
+
+
+def _resolve_log_dir(project_root: Path) -> Path:
+    configured = str(getattr(config, "FACTORY_AGENT_LOG_DIR", "data/factory/agent_runs") or "").strip()
+    if not configured or configured == "data/factory/agent_runs":
+        factory_root = Path(getattr(config, "FACTORY_ROOT", "data/factory"))
+        if not factory_root.is_absolute():
+            factory_root = project_root / factory_root
+        path = factory_root / "agent_runs"
+    else:
+        path = Path(configured)
+        if not path.is_absolute():
+            path = project_root / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -1141,6 +1179,7 @@ class MobkitRuntime:
         governor: Optional[Any] = None,  # factory.governance.CostGovernor (lazy import avoids cycle)
     ) -> None:
         self._project_root = Path(project_root)
+        self._log_dir = _resolve_log_dir(self._project_root)
         if backend is None:
             backend = MobkitOrchestratorBackend.create(project_root)
         self._backend = backend
@@ -1153,6 +1192,33 @@ class MobkitRuntime:
     def healthcheck(self) -> bool:
         """Delegate healthcheck to the underlying OrchestratorBackend."""
         return self._backend.healthcheck()
+
+    def _write_run_artifact(self, result: AgentRunResult, *, prompt_payload: Optional[Dict[str, Any]] = None) -> AgentRunResult:
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "run_id": result.run_id,
+            "task_type": result.task_type,
+            "model_class": result.model_class,
+            "provider": result.provider,
+            "model": result.model,
+            "reasoning_effort": result.reasoning_effort,
+            "family_id": result.family_id,
+            "lineage_id": result.lineage_id,
+            "success": result.success,
+            "fallback_used": result.fallback_used,
+            "duration_ms": result.duration_ms,
+            "prompt_payload": dict(prompt_payload or {}),
+            "result_payload": result.result_payload,
+            "error": result.error,
+            "attempted_providers": list(result.attempted_providers),
+            "raw_text": result.raw_text,
+            "multi_agent_requested": result.multi_agent_requested,
+            "multi_agent_roles": list(result.multi_agent_roles),
+        }
+        path = self._log_dir / f"{result.run_id}.json"
+        path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        result.artifact_path = str(path)
+        return result
 
     # ------------------------------------------------------------------
     # Internal: run a named workflow and convert to AgentRunResult
@@ -1243,7 +1309,7 @@ class MobkitRuntime:
                 task_type, self.BACKEND_NAME,
                 trace_ctx=_trace_ctx, tokens=tokens, duration_ms=duration_ms,
             )
-            return _make_run_result(
+            return self._write_run_artifact(_make_run_result(
                 task_type=task_type,
                 backend_result=result,
                 family_id=family_id,
@@ -1251,7 +1317,7 @@ class MobkitRuntime:
                 started_at=started_at,
                 success=True,
                 model_class=model_class,
-            )
+            ), prompt_payload=shared_context)
         except MobkitWorkflowError as exc:
             self._record_governor_usage(
                 family_id=family_id, lineage_id=lineage_id,
@@ -1262,7 +1328,7 @@ class MobkitRuntime:
                 task_type, self.BACKEND_NAME,
                 trace_ctx=_trace_ctx, reason=str(exc),
             )
-            return _make_run_result(
+            return self._write_run_artifact(_make_run_result(
                 task_type=task_type,
                 backend_result={},
                 family_id=family_id,
@@ -1270,7 +1336,7 @@ class MobkitRuntime:
                 started_at=started_at,
                 success=False,
                 error=str(exc),
-            )
+            ), prompt_payload=shared_context)
 
     def _run_single(
         self,
@@ -1349,7 +1415,7 @@ class MobkitRuntime:
                 task_type, self.BACKEND_NAME,
                 trace_ctx=_trace_ctx, tokens=tokens, duration_ms=duration_ms,
             )
-            return _make_run_result(
+            return self._write_run_artifact(_make_run_result(
                 task_type=task_type,
                 backend_result=result,
                 family_id=family_id,
@@ -1357,7 +1423,7 @@ class MobkitRuntime:
                 started_at=started_at,
                 success=True,
                 model_class=model_class,
-            )
+            ), prompt_payload={"prompt": prompt, "schema": schema})
         except MobkitWorkflowError as exc:
             self._record_governor_usage(
                 family_id=family_id, lineage_id=lineage_id,
@@ -1368,7 +1434,7 @@ class MobkitRuntime:
                 task_type, self.BACKEND_NAME,
                 trace_ctx=_trace_ctx, reason=str(exc),
             )
-            return _make_run_result(
+            return self._write_run_artifact(_make_run_result(
                 task_type=task_type,
                 backend_result={},
                 family_id=family_id,
@@ -1376,7 +1442,7 @@ class MobkitRuntime:
                 started_at=started_at,
                 success=False,
                 error=str(exc),
-            )
+            ), prompt_payload={"prompt": prompt, "schema": schema})
 
     # ------------------------------------------------------------------
     # Governance helpers
@@ -1563,6 +1629,8 @@ class MobkitRuntime:
         review_context: Optional[Dict[str, Any]] = None,
         force: bool = False,
     ) -> Optional[AgentRunResult]:
+        if (not force and not _post_eval_critique_enabled()) or not _family_enabled(family.family_id):
+            return None
         bundle_summary: Dict[str, Any] = {}
         if latest_bundle:
             bundle_summary = {

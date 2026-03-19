@@ -13,3 +13,13 @@ def test_execution_refresh_always_skips_in_standalone_mode(monkeypatch, tmp_path
     
     assert result["status"] == "skipped"
     assert result["reason"] == "standalone_embedded_mode"
+
+
+def test_execution_refresh_allows_new_families_when_no_allowlist_is_set(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "FACTORY_EXECUTION_REFRESH_ENABLED", True)
+    monkeypatch.setattr(config, "FACTORY_EXECUTION_REFRESH_FAMILIES", "")
+
+    runner = ExecutionRefreshRunner(tmp_path)
+
+    assert runner.should_run(family_id="fam_crypto_basis_carry_001", role="champion") is True
+    assert runner.should_run(family_id="fam_crypto_basis_carry_001", role="challenger") is False

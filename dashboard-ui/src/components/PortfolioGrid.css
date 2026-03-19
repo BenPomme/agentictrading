@@ -221,7 +221,9 @@
 }
 
 .pnl-chart--hero {
-  min-height: 300px;
+  height: 220px;
+  min-height: 220px;
+  max-height: 220px;
   padding-top: 54px;
 }
 
@@ -296,7 +298,9 @@
 
 @media (max-width: 768px) {
   .pnl-chart--hero {
-    min-height: 260px;
+    height: 200px;
+    min-height: 200px;
+    max-height: 200px;
     padding-top: 70px;
   }
   .pnl-chart__header {

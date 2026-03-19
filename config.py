@@ -62,6 +62,10 @@ EXECUTION_TRACKED_PORTFOLIOS: str = os.getenv(
     "liquidation_rebound_absorption,funding_term_structure_dislocation,vol_surface_dispersion_rotation,cross_venue_probability_elasticity",
 )
 PORTFOLIO_STATE_ROOT: str = os.getenv("PORTFOLIO_STATE_ROOT", "data/portfolios")
+EXECUTION_PORTFOLIO_STATE_ROOT: str = os.getenv(
+    "EXECUTION_PORTFOLIO_STATE_ROOT",
+    PORTFOLIO_STATE_ROOT,
+)
 PREDICTION_MODEL_KINDS: str = os.getenv("PREDICTION_MODEL_KINDS", "hybrid_logit,market_calibrated")
 FUNDING_MODE: str = os.getenv("FUNDING_MODE", "paper").strip().lower()
 FACTORY_REAL_AGENTS_ENABLED: bool = os.getenv("FACTORY_REAL_AGENTS_ENABLED", "true").lower() == "true"
@@ -71,9 +75,9 @@ FACTORY_AGENT_OLLAMA_FALLBACK_ENABLED: bool = (
 )
 FACTORY_AGENT_ENABLED_FAMILIES: str = os.getenv(
     "FACTORY_AGENT_ENABLED_FAMILIES",
-    "binance_funding_contrarian,binance_cascade_regime,polymarket_cross_venue",
+    "",
 )
-FACTORY_AGENT_DEMO_FAMILY: str = os.getenv("FACTORY_AGENT_DEMO_FAMILY", "binance_funding_contrarian")
+FACTORY_AGENT_DEMO_FAMILY: str = os.getenv("FACTORY_AGENT_DEMO_FAMILY", "")
 FACTORY_AGENT_CODEX_MODEL_CHEAP: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_CHEAP", "gpt-5.1-codex-mini")
 FACTORY_AGENT_CODEX_MODEL_PROPOSAL: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_PROPOSAL", "gpt-5.4")
 FACTORY_AGENT_CODEX_MODEL_STANDARD: str = os.getenv("FACTORY_AGENT_CODEX_MODEL_STANDARD", "gpt-5.1-codex")

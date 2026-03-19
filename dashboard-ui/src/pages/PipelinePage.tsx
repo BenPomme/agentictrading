@@ -188,6 +188,8 @@ function stageSummaryStats(lineages: DashboardSnapshot['factory']['lineages']) {
 export function PipelinePage({ snapshot, snapshotV2 }: Props) {
   const lineages = snapshot?.factory?.lineages ?? [];
   const queue = snapshot?.factory?.queue ?? [];
+  const archivedLineages = snapshot?.factory?.archived_lineages ?? [];
+  const archivedQueue = snapshot?.factory?.archived_queue ?? [];
   const lineageV2 = snapshotV2?.lineage_v2 ?? [];
   const funnelData = stageFunnelData(lineages);
   const maxCount = Math.max(1, ...funnelData.map((r) => r.count));
@@ -215,6 +217,7 @@ export function PipelinePage({ snapshot, snapshotV2 }: Props) {
           ['Shadow', stats.shadow],
           ['Paper+', stats.paperOrBetter],
           ['Queue', queue.length],
+          ['Archived queue', archivedQueue.length],
         ].map(([label, val]) => (
           <span key={String(label)} className="runtime-pill">
             <span className="runtime-pill__label">{label}</span>
@@ -279,6 +282,25 @@ export function PipelinePage({ snapshot, snapshotV2 }: Props) {
           </div>
         </SectionPanel>
       )}
+
+      <SectionPanel
+        title="Archive Snapshot"
+        count={archivedLineages.length}
+        tag={archivedQueue.length > 0 ? `${archivedQueue.length} archived queue` : 'clean live queue'}
+        tagColor={archivedQueue.length > 0 ? 'var(--warn)' : 'var(--ok)'}
+      >
+        <div className="page__runtime-strip">
+          <span className="runtime-pill">
+            <span className="runtime-pill__label">archived lineages</span>
+            <span className="runtime-pill__value">{archivedLineages.length}</span>
+          </span>
+          <span className="runtime-pill__sep" />
+          <span className="runtime-pill">
+            <span className="runtime-pill__label">archived queue</span>
+            <span className="runtime-pill__value">{archivedQueue.length}</span>
+          </span>
+        </div>
+      </SectionPanel>
 
       {/* Stuck lineage detector */}
       {stuckLineages.length > 0 ? (

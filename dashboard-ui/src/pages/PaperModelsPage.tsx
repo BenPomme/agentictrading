@@ -3,7 +3,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { PnlChart } from '../components/PnlChart';
 import SectionPanel from '../components/SectionPanel';
 import type { DashboardSnapshot, SnapshotV2 } from '../types/snapshot';
-import { formatPnl } from '../utils/format';
+import { formatPnl, relativeTime } from '../utils/format';
 import { mergePaperModels, type MergedPaperModel } from '../utils/dashboard';
 import './pages.css';
 
@@ -69,6 +69,7 @@ function DetailTable({ rows }: { rows: MergedPaperModel[] }) {
       <div className="paper-detail-table__header">
         <span>Lineage</span>
         <span>State</span>
+        <span>Portfolio</span>
         <span>Checkpoint</span>
         <span>Trades</span>
         <span>P&amp;L</span>
@@ -93,6 +94,7 @@ function DetailTable({ rows }: { rows: MergedPaperModel[] }) {
               <span className={`paper-monitor-card__bucket paper-monitor-card__bucket--${row.state_bucket}`}>
                 {detailStateLabel(row)}
               </span>
+              <span className="paper-detail-table__muted">{row.paper_portfolio_id ?? '—'}</span>
               <span className="paper-detail-table__muted">{row.checkpoint_label}</span>
               <span>{row.port_trade_count ?? row.trade_count}</span>
               <span className={(row.realized_pnl ?? 0) < 0 ? 'pc-cell--crit' : 'pc-cell--ok'}>
@@ -122,6 +124,9 @@ function DetailTable({ rows }: { rows: MergedPaperModel[] }) {
                   </span>
                   <span className="paper-monitor-card__meta-pill">
                     Days {row.paper_days}
+                  </span>
+                  <span className="paper-monitor-card__meta-pill">
+                    Last trade {row.recent_trades?.[0]?.closed_at ? relativeTime(String(row.recent_trades[0].closed_at)) : '—'}
                   </span>
                 </div>
                 {issues.length > 0 ? (
@@ -183,6 +188,10 @@ function FeaturedCard({ row }: { row: MergedPaperModel }) {
           <span className="paper-monitor-card__label">Health</span>
           <span className="paper-monitor-card__value">{row.execution_health_status ?? 'unknown'}</span>
         </div>
+        <div>
+          <span className="paper-monitor-card__label">Portfolio</span>
+          <span className="paper-monitor-card__value">{row.paper_portfolio_id ?? '—'}</span>
+        </div>
       </div>
 
       <div className="paper-monitor-card__progress">
@@ -193,13 +202,15 @@ function FeaturedCard({ row }: { row: MergedPaperModel }) {
       </div>
 
       {row.paper_portfolio_id ? (
-        <PnlChart
-          portfolioId={row.paper_portfolio_id}
-          variant="hero"
-          statusTone={row.state_bucket}
-          checkpoint={row.checkpoint_label}
-          healthStatus={row.execution_health_status ?? undefined}
-        />
+        <div className="paper-monitor-card__chart-shell">
+          <PnlChart
+            portfolioId={row.paper_portfolio_id}
+            variant="hero"
+            statusTone={row.state_bucket}
+            checkpoint={row.checkpoint_label}
+            healthStatus={row.execution_health_status ?? undefined}
+          />
+        </div>
       ) : (
         <div className="paper-monitor-card__empty">No chartable portfolio assigned.</div>
       )}
@@ -223,6 +234,7 @@ export function PaperModelsPage({ snapshot, snapshotV2 }: Props) {
     ...(snapshot?.execution?.portfolios ?? []),
     ...(snapshot?.execution?.placeholders ?? []),
   ];
+  const archivedPortfolios = snapshot?.execution?.archived_portfolios ?? [];
 
   const rows = useMemo(
     () =>
@@ -266,11 +278,11 @@ export function PaperModelsPage({ snapshot, snapshotV2 }: Props) {
         <div className="page__runtime-strip">
           {[
             ['Running', pr.running_count],
-            ['Starting', pr.starting_count],
-            ['Assigned', pr.assigned_count],
-            ['Candidate', pr.candidate_count],
-            ['Suppressed', pr.suppressed_count],
-            ['Failed', pr.failed_count],
+            ['Expected', pr.expected_count],
+            ['Blocked', rows.filter((row) => row.state_bucket === 'blocked').length],
+            ['Holdoff', rows.filter((row) => row.state_bucket === 'holdoff').length],
+            ['Scope blocked', rows.filter((row) => row.state_bucket === 'scope-blocked').length],
+            ['Archived portfolios', archivedPortfolios.length],
           ].map(([label, value]) => (
             <span key={String(label)} className="runtime-pill">
               <span className="runtime-pill__label">{label}</span>

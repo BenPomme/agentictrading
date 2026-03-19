@@ -35,20 +35,16 @@ function resolveCards(
           : undefined
     : undefined;
 
-  // Paper P&L: sum realized_pnl from lineage-scoped portfolios only
-  const lineagePortfolios = (execution?.portfolios ?? []).filter(
-    (p) => p.portfolio_id.startsWith('lineage__'),
-  );
-  const paperPnl =
-    lineagePortfolios.length > 0
-      ? lineagePortfolios.reduce((sum, p) => sum + (p.realized_pnl ?? 0), 0)
-      : factory?.research_summary?.paper_pnl ?? null;
+  const currentPaperPnl =
+    execution?.current_paper_pnl ??
+    execution?.realized_pnl_total ??
+    factory?.research_summary?.paper_pnl ??
+    null;
+  const paperPnl = currentPaperPnl;
   const paperPnlAccent = paperPnl != null ? (paperPnl >= 0 ? 'ok' : 'crit') : undefined;
   const paperPnlClass =
     paperPnl != null ? (paperPnl >= 0 ? 'kpi__value--positive' : 'kpi__value--negative') : undefined;
-
-  // Legacy portfolio P&L (non-lineage portfolios)
-  const legacyPnl = execution?.realized_pnl_total;
+  const historicalPnl = execution?.historical_realized_pnl_total;
 
   return [
     {
@@ -78,14 +74,20 @@ function resolveCards(
       value: paperPnl != null ? `$${formatPnl(paperPnl)}` : dash,
       accent: paperPnlAccent,
       valueClass: paperPnlClass,
-      subtitle: lineagePortfolios.length > 0 ? `${lineagePortfolios.length} lineages` : undefined,
+      subtitle:
+        historicalPnl != null
+          ? `history $${formatPnl(historicalPnl)}`
+          : undefined,
     },
     {
       label: 'PORTFOLIOS',
       value: execution
         ? `${execution.running_count}/${execution.portfolio_count}`
         : dash,
-      subtitle: legacyPnl != null ? `total $${formatPnl(legacyPnl)}` : undefined,
+      subtitle:
+        execution?.archived_portfolio_count != null
+          ? `${execution.archived_portfolio_count} archived`
+          : undefined,
     },
     {
       label: 'IDEAS',
@@ -97,6 +99,10 @@ function resolveCards(
     {
       label: 'QUEUE',
       value: factory ? `${(factory.queue ?? []).length}` : dash,
+      subtitle:
+        factory?.archived_queue != null
+          ? `${factory.archived_queue.length} archived`
+          : undefined,
     },
   ];
 }

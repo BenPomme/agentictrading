@@ -1,5 +1,5 @@
 import type { Family } from '../types/snapshot';
-import { formatPct, statusColor, venueIcon } from '../utils/format';
+import { formatPct, relativeTime, statusColor, venueIcon } from '../utils/format';
 import SectionPanel from './SectionPanel';
 import './FamiliesPanel.css';
 
@@ -31,7 +31,9 @@ export default function FamiliesPanel({ families }: Props) {
                 />
               </div>
               <div className="fmp__meta">
-                <span className="fmp__venue">{venueIcon(f.venue ?? '')} {f.venue ?? '—'}</span>
+                <span className="fmp__venue">
+                  {venueIcon((f.target_venues ?? [f.venue ?? ''])[0] ?? '')} {f.venue ?? '—'}
+                </span>
                 <span className="fmp__lineages">
                   {f.active_lineage_count}/{f.lineage_count} lineages
                 </span>
@@ -48,6 +50,30 @@ export default function FamiliesPanel({ families }: Props) {
                   <span className="fmp__champ-trades">{f.champion_trade_count}t</span>
                 </div>
               )}
+              <div className="fmp__meta">
+                <span className="fmp__lineages">
+                  {String(f.champion_paper_state ?? 'unknown').replace(/_/g, ' ')}
+                </span>
+                <span className="fmp__lineages">
+                  {f.current_runner_portfolio_id ?? 'no runner'}
+                </span>
+              </div>
+              <div className="fmp__meta">
+                <span className="fmp__lineages">
+                  last activity {f.last_activity_at ? relativeTime(f.last_activity_at) : '—'}
+                </span>
+                <span className="fmp__lineages">
+                  last agent {f.last_agent_run_at ? relativeTime(f.last_agent_run_at) : '—'}
+                </span>
+              </div>
+              <div className="fmp__meta">
+                <span className="fmp__lineages">
+                  {(String(f.origin ?? 'unknown')).replace(/_/g, ' ')}
+                </span>
+                <span className="fmp__lineages">
+                  {String(f.source_idea_id ?? 'no idea')}
+                </span>
+              </div>
               {f.research_positive && <span className="fmp__rp-badge">R+</span>}
             </div>
           ))}

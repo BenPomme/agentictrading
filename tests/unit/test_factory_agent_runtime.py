@@ -35,6 +35,7 @@ from factory.operator_dashboard import (
     _first_assessment_progress,
     build_dashboard_snapshot,
     build_dashboard_snapshot_light,
+    build_snapshot_v2,
 )
 from factory.orchestrator import FactoryOrchestrator
 
@@ -1315,6 +1316,248 @@ def test_dashboard_marks_warning_portfolios_degraded_without_blocking(tmp_path, 
     assert row["blocked"] is False
 
 
+def test_dashboard_snapshot_separates_current_and_archived_operational_state(tmp_path, monkeypatch):
+    factory_root = tmp_path / "factory"
+    state_root = factory_root / "state"
+    state_root.mkdir(parents=True, exist_ok=True)
+    portfolios_root = tmp_path / "portfolios"
+    portfolios_root.mkdir(parents=True, exist_ok=True)
+    agent_runs_root = tmp_path / "agent_runs"
+    agent_runs_root.mkdir(parents=True, exist_ok=True)
+
+    current_ts = datetime.now(timezone.utc).isoformat()
+    champion_id = "binance_funding_contrarian:champion"
+    archived_id = "binance_funding_contrarian:challenger:1"
+    family_id = "binance_funding_contrarian"
+    current_portfolio_id = "binance_funding_contrarian"
+
+    (state_root / "summary.json").write_text(
+        json.dumps(
+            {
+                "agentic_factory_mode": "full",
+                "status": "running",
+                "cycle_count": 7,
+                "readiness": {"status": "healthy", "score_pct": 91, "checks": []},
+                "research_summary": {"paper_pnl": 999.0, "real_agent_lineage_count": 1},
+                "families": [
+                    {
+                        "family_id": family_id,
+                        "label": "Funding Contrarian",
+                        "queue_stage": "paper",
+                        "lineage_count": 2,
+                        "active_lineage_count": 2,
+                        "champion_lineage_id": champion_id,
+                        "champion": {
+                            "lineage_id": champion_id,
+                            "current_stage": "paper",
+                            "monthly_roi_pct": 1.5,
+                            "fitness_score": 2.0,
+                        },
+                    }
+                ],
+                "lineages": [
+                    {
+                        "lineage_id": champion_id,
+                        "family_id": family_id,
+                        "role": "champion",
+                        "current_stage": "paper",
+                        "iteration_status": "active",
+                        "fitness_score": 2.0,
+                        "monthly_roi_pct": 1.5,
+                        "paper_days": 8,
+                        "trade_count": 4,
+                        "active": True,
+                        "pareto_rank": 1,
+                        "execution_health_status": "healthy",
+                        "execution_issue_codes": [],
+                        "execution_has_signal": True,
+                        "runtime_lane_kind": "primary_incumbent",
+                        "runtime_lane_selected": True,
+                        "runtime_target_portfolio": current_portfolio_id,
+                        "proposal_agent": {},
+                        "latest_agent_decision": {},
+                        "created_at": current_ts,
+                    },
+                    {
+                        "lineage_id": archived_id,
+                        "family_id": family_id,
+                        "role": "paper_challenger",
+                        "current_stage": "shadow",
+                        "iteration_status": "active",
+                        "fitness_score": 1.0,
+                        "monthly_roi_pct": 0.3,
+                        "paper_days": 2,
+                        "trade_count": 0,
+                        "active": True,
+                        "pareto_rank": 2,
+                        "execution_health_status": "warning",
+                        "execution_issue_codes": ["readiness_blocked"],
+                        "runtime_target_portfolio": "lineage__binance_funding_contrarian__challenger__1",
+                        "proposal_agent": {},
+                        "latest_agent_decision": {},
+                        "created_at": current_ts,
+                    },
+                ],
+                "queue": [
+                    {
+                        "queue_id": "q-current",
+                        "lineage_id": champion_id,
+                        "family_id": family_id,
+                        "experiment_id": "exp-current",
+                        "role": "champion",
+                        "status": "queued",
+                        "priority": 1,
+                        "current_stage": "paper",
+                        "notes": [],
+                        "created_at": current_ts,
+                        "updated_at": current_ts,
+                    },
+                    {
+                        "queue_id": "q-archived",
+                        "lineage_id": archived_id,
+                        "family_id": family_id,
+                        "experiment_id": "exp-archived",
+                        "role": "paper_challenger",
+                        "status": "queued",
+                        "priority": 2,
+                        "current_stage": "shadow",
+                        "notes": [],
+                        "created_at": current_ts,
+                        "updated_at": current_ts,
+                    },
+                ],
+                "connectors": [],
+                "manifests": {"pending": [], "live_loadable": []},
+                "execution_bridge": {},
+                "operator_signals": {
+                    "positive_models": [],
+                    "research_positive_models": [],
+                    "escalation_candidates": [],
+                    "human_action_required": [],
+                    "action_inbox": [],
+                    "maintenance_queue": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_root / "STATE.md").write_text("## Recent Actions\n", encoding="utf-8")
+
+    family_dir = factory_root / "families"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    family = FactoryFamily(
+        family_id=family_id,
+        label="Funding Contrarian",
+        thesis="Paper-test one champion only.",
+        target_portfolios=[current_portfolio_id],
+        target_venues=["binance"],
+        primary_connector_ids=["binance_core"],
+        champion_lineage_id=champion_id,
+        shadow_challenger_ids=[],
+        paper_challenger_ids=[],
+        budget_split={"incumbent": 100.0},
+        queue_stage="paper",
+        explainer="One current champion per family.",
+        origin="agent_generated",
+        source_idea_id="idea_001",
+    )
+    (family_dir / f"{family_id}.json").write_text(json.dumps(family.to_dict()), encoding="utf-8")
+
+    current_portfolio = portfolios_root / current_portfolio_id
+    current_portfolio.mkdir(parents=True, exist_ok=True)
+    (current_portfolio / "account.json").write_text(
+        json.dumps(
+            {
+                "currency": "USD",
+                "starting_balance": 10000,
+                "current_balance": 9975.2646,
+                "realized_pnl": -24.7354,
+                "trade_count": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (current_portfolio / "state.json").write_text(json.dumps({"running": True, "status": "running"}), encoding="utf-8")
+    (current_portfolio / "heartbeat.json").write_text(json.dumps({"ts": current_ts, "status": "running"}), encoding="utf-8")
+    (current_portfolio / "readiness.json").write_text(json.dumps({"status": "ready", "score_pct": 96}), encoding="utf-8")
+    (current_portfolio / "trades.json").write_text(
+        json.dumps(
+            [
+                {
+                    "trade_id": "t1",
+                    "symbol": "BTCUSDT",
+                    "side": "buy",
+                    "status": "closed",
+                    "pnl": -24.7354,
+                    "closed_at": current_ts,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    archived_portfolio = portfolios_root / "lineage__binance_funding_contrarian__challenger__1"
+    archived_portfolio.mkdir(parents=True, exist_ok=True)
+    (archived_portfolio / "account.json").write_text(
+        json.dumps(
+            {
+                "currency": "USD",
+                "starting_balance": 10000,
+                "current_balance": 10100,
+                "realized_pnl": 100.0,
+                "trade_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (archived_portfolio / "state.json").write_text(json.dumps({"running": False, "status": "stopped"}), encoding="utf-8")
+
+    (agent_runs_root / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "proposal_1",
+                "generated_at": current_ts,
+                "task_type": "proposal",
+                "model_class": "standard",
+                "provider": "openai",
+                "model": "gpt-5.4",
+                "reasoning_effort": "medium",
+                "family_id": family_id,
+                "lineage_id": champion_id,
+                "success": True,
+                "fallback_used": False,
+                "duration_ms": 2500,
+                "prompt_payload": {},
+                "result_payload": {},
+                "error": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
+    monkeypatch.setattr(config, "FACTORY_AGENT_LOG_DIR", str(agent_runs_root))
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root), raising=False)
+
+    snapshot = build_dashboard_snapshot()
+    snapshot_v2 = build_snapshot_v2()
+
+    assert [row["lineage_id"] for row in snapshot["factory"]["lineages"]] == [champion_id]
+    assert [row["lineage_id"] for row in snapshot["factory"]["archived_lineages"]] == [archived_id]
+    assert [row["queue_id"] for row in snapshot["factory"]["queue"]] == ["q-current"]
+    assert [row["queue_id"] for row in snapshot["factory"]["archived_queue"]] == ["q-archived"]
+    family_row = snapshot["factory"]["families"][0]
+    assert family_row["target_venues"] == ["binance"]
+    assert family_row["current_runner_portfolio_id"] == current_portfolio_id
+    assert family_row["champion_paper_state"] == "paper_active"
+    assert family_row["last_agent_run_at"] == current_ts
+    assert snapshot["execution"]["portfolio_count"] == 1
+    assert snapshot["execution"]["archived_portfolio_count"] == 1
+    assert snapshot["execution"]["current_paper_pnl"] == pytest.approx(-24.7354)
+    assert snapshot["factory"]["research_summary"]["paper_pnl"] == pytest.approx(-24.7354)
+    assert snapshot_v2["lineage_v2"][0]["paper_portfolio_id"] == current_portfolio_id
+
+
 def test_dashboard_snapshot_exposes_runtime_lane_metadata(tmp_path, monkeypatch):
     factory_root = tmp_path / "factory"
     state_root = factory_root / "state"
@@ -1470,7 +1713,7 @@ def test_dashboard_snapshot_light_derives_feed_health(tmp_path, monkeypatch):
     state_root.mkdir(parents=True)
     portfolios_root = tmp_path / "portfolios"
     recent_ts = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
-    stale_ts = (datetime.now(timezone.utc) - timedelta(seconds=180)).isoformat()
+    stale_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     (state_root / "summary.json").write_text(
         json.dumps(
             {
@@ -1494,7 +1737,7 @@ def test_dashboard_snapshot_light_derives_feed_health(tmp_path, monkeypatch):
                         "venue": "betfair",
                         "ready": True,
                         "latest_data_ts": stale_ts,
-                        "record_count": 0,
+                        "record_count": 128,
                         "issues": [],
                     },
                     {

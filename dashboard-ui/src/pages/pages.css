@@ -631,6 +631,11 @@
     grid-template-columns: 1fr;
     display: grid;
   }
+  .paper-monitor-card__chart-shell {
+    height: 200px;
+    min-height: 200px;
+    max-height: 200px;
+  }
 }
 
 /* ─── Factory Health: status bar ─── */
@@ -896,6 +901,7 @@
   border: 1px solid var(--border);
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  overflow: hidden;
 }
 
 .paper-monitor-card__header {
@@ -985,6 +991,28 @@
   font-family: var(--font-mono);
   font-size: 0.68rem;
   color: var(--text-muted);
+}
+
+.paper-monitor-card__chart-shell {
+  height: 220px;
+  min-height: 220px;
+  max-height: 220px;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.paper-monitor-card__chart-shell .pnl-chart {
+  height: 100%;
+  min-height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.paper-monitor-card__chart-shell canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
 }
 
 .paper-attention-list {

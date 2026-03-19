@@ -142,16 +142,12 @@ def _resolve_log_dir(project_root: Path | None = None) -> Path:
 
 
 def _provider_order() -> List[str]:
-    raw = os.environ.get("FACTORY_AGENT_PROVIDER_ORDER", "").strip() or str(
-        getattr(config, "FACTORY_AGENT_PROVIDER_ORDER", "codex,openai_api,deterministic") or ""
-    )
+    raw = str(getattr(config, "FACTORY_AGENT_PROVIDER_ORDER", "") or "").strip() or os.environ.get(
+        "FACTORY_AGENT_PROVIDER_ORDER", ""
+    ).strip() or "codex,openai_api,deterministic"
     providers = [p.strip().lower() for p in raw.split(",") if p.strip()]
     if not providers:
         return ["deterministic"]
-    # Ensure openai_api is tried after codex when key is available (resilient to .env omission)
-    if "codex" in providers and "openai_api" not in providers:
-        idx = providers.index("codex") + 1
-        providers.insert(idx, "openai_api")
     return providers
 
 
@@ -222,7 +218,7 @@ def _task_reasoning(task_class: str) -> str:
 
 
 def _proposal_model() -> str:
-    return str(getattr(config, "FACTORY_AGENT_CODEX_MODEL_PROPOSAL", "gpt-5.2-codex") or "gpt-5.2-codex")
+    return str(getattr(config, "FACTORY_AGENT_CODEX_MODEL_PROPOSAL", "gpt-5.4") or "gpt-5.4")
 
 
 def _proposal_reasoning() -> str:
@@ -1216,9 +1212,9 @@ class RealResearchAgentRuntime:
             "stalled_model",
         }
         if health_status == "critical" and len(issue_codes) >= 4:
-            return TASK_HARD
+            return TASK_FRONTIER
         if retired_count >= 4:
-            return TASK_HARD
+            return TASK_FRONTIER
         if retired_count >= 2 or self._contradictory_memories(learning_memory) or issue_codes.intersection(model_quality_issues):
             return TASK_HARD
         return TASK_STANDARD
@@ -1265,7 +1261,11 @@ class RealResearchAgentRuntime:
         repeated_debug = bool(lineage.last_debug_issue_signature)
         if is_critical and (repeated_debug or issue_codes.intersection(critical_bug_codes)):
             return TASK_HARD
-        if is_critical or repeated_debug:
+        if repeated_debug:
+            return TASK_HARD
+        if issue_codes.intersection(critical_bug_codes):
+            return TASK_HARD
+        if is_critical:
             return TASK_STANDARD
         return TASK_CHEAP
 

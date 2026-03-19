@@ -60,6 +60,43 @@ def test_model_requiring_2m_bars_passes_with_fresh_1m_alpaca_data(tmp_path):
     assert "ready" in result.blocking_reason
 
 
+def test_alpaca_readiness_handles_naive_timestamps(tmp_path):
+    bars_dir = tmp_path / "data" / "alpaca" / "bars"
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    naive_start = datetime.now() - timedelta(minutes=5)
+    idx = pd.date_range(start=naive_start, periods=6, freq="1min")
+    pd.DataFrame(
+        {
+            "open": [100, 101, 102, 103, 104, 105],
+            "high": [101, 102, 103, 104, 105, 106],
+            "low": [99, 100, 101, 102, 103, 104],
+            "close": [100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
+        },
+        index=idx,
+    ).to_parquet(bars_dir / "SPY.parquet")
+    (tmp_path / "data" / "alpaca" / "metadata.json").write_text(
+        json.dumps({"last_refresh": datetime.now(timezone.utc).isoformat(), "timeframe": "1Min"}),
+        encoding="utf-8",
+    )
+
+    contract = build_paper_data_contract(
+        {},
+        model_requirement={
+            "source": "alpaca",
+            "instruments": ["SPY"],
+            "fields": ["close"],
+            "cadence": "1m",
+            "raw_cadence_seconds": 60,
+            "freshness_sla_seconds": 600,
+        },
+    )
+
+    result = assess_paper_data_readiness(contract, tmp_path)
+
+    assert result.ready is True
+    assert result.requirement_statuses[0].age_seconds is not None
+
+
 def test_model_requiring_1m_bars_is_blocked_when_only_5m_alpaca_data_exists(tmp_path):
     bars_dir = tmp_path / "data" / "alpaca" / "bars"
     bars_dir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +130,22 @@ def test_model_requiring_1m_bars_is_blocked_when_only_5m_alpaca_data_exists(tmp_
 
     assert result.ready is False
     assert "only has 5Min bars" in result.blocking_reason
+
+
+def test_venue_level_alpaca_contract_without_instruments_uses_any_fresh_feed(tmp_path):
+    bars_dir = tmp_path / "data" / "alpaca" / "bars"
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    _minute_bars(datetime.now(timezone.utc) - timedelta(minutes=5)).to_parquet(bars_dir / "QQQ.parquet")
+    (tmp_path / "data" / "alpaca" / "metadata.json").write_text(
+        json.dumps({"last_refresh": datetime.now(timezone.utc).isoformat(), "timeframe": "1Min"}),
+        encoding="utf-8",
+    )
+
+    contract = build_paper_data_contract({}, target_venues=["alpaca"])
+    result = assess_paper_data_readiness(contract, tmp_path)
+
+    assert result.ready is True
+    assert result.requirement_statuses[0].ready is True
 
 
 def test_cross_venue_contract_blocks_when_one_required_feed_is_stale(tmp_path):

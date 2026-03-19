@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { AgentRun } from '../types/snapshot';
-import { taskTypeLabel, providerColor } from '../utils/format';
+import { taskTypeLabel, providerColor, relativeTime } from '../utils/format';
 import './AgentActivityPanel.css';
 
 interface AgentActivityPanelProps {
@@ -35,6 +35,11 @@ function familyShort(familyId: string): string {
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatRunTime(run: AgentRun): string {
+  const ts = run.started_at || run.generated_at || run.completed_at;
+  return ts ? relativeTime(ts) : 'time unknown';
 }
 
 export function AgentActivityPanel({ agentRuns }: AgentActivityPanelProps) {
@@ -123,6 +128,7 @@ export function AgentActivityPanel({ agentRuns }: AgentActivityPanelProps) {
                 {run.provider === 'deterministic' ? 'deterministic' : `${run.provider}/${run.model}`}
               </span>
               <span className="aap__duration">{formatDuration(run.duration_ms)}</span>
+              <span className="aap__duration">{formatRunTime(run)}</span>
               {run.fallback_used && <span className="aap__fallback">FB</span>}
             </div>
             <div className="aap__row-detail">
