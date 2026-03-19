@@ -271,11 +271,11 @@ def _age_seconds(value: Any) -> float | None:
 
 
 _CONNECTOR_STALE_SECONDS: Dict[str, float] = {
-    "binance": 6 * 60 * 60,
-    "betfair": 90 * 60,
-    "polymarket": 3 * 60 * 60,
+    "binance": 10 * 60,
+    "betfair": 10 * 60,
+    "polymarket": 10 * 60,
     "yahoo": 12 * 60 * 60,
-    "alpaca": 12 * 60 * 60,
+    "alpaca": 15 * 60,
 }
 
 

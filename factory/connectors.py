@@ -62,13 +62,17 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
             connector_id="binance_core",
             venue="binance",
             data_products=[
+                "intraday_bars",
                 "futures_funding_rates",
                 "spot_perp_features",
                 "open_interest_history",
                 "liquidation_logs",
             ],
             paths=[
+                factory_data_root / "binance" / "klines",
+                factory_data_root / "binance" / "klines" / "metadata.json",
                 factory_data_root / "funding_history",
+                factory_data_root / "funding_history" / "funding_rates" / "metadata.json",
                 factory_data_root / "funding",
                 factory_data_root / "funding_models",
             ],
@@ -95,13 +99,13 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
             venue="polymarket",
             data_products=[
                 "gamma_snapshots",
+                "price_history",
+                "markets_metadata",
                 "clob_quotes",
-                "model_league_state",
-                "binary_research_state",
             ],
             paths=[
-                factory_data_root / "portfolios" / "polymarket_quantum_fold",
-                factory_data_root / "portfolios" / "betfair_core" / "runtime" / "polymarket_binary_research_state.json",
+                polymarket_data / "polymarket" / "prices_history",
+                factory_data_root / "polymarket" / "markets_metadata.json",
             ],
         ),
         FileConnectorAdapter(

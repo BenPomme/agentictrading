@@ -80,6 +80,25 @@ def fetch_price_history(
         return []
 
 
+def fetch_midpoint(token_id: str) -> float | None:
+    """Fetch the current midpoint price for a token when history is empty."""
+    try:
+        resp = requests.get(
+            f"{CLOB_API}/midpoint",
+            params={"token_id": token_id},
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        midpoint = payload.get("mid")
+        if midpoint in (None, ""):
+            return None
+        return float(midpoint)
+    except Exception as e:
+        logger.debug("Failed to fetch midpoint for %s: %s", token_id, e)
+        return None
+
+
 def save_market_history(
     market_id: str,
     history: List[Dict[str, Any]],
@@ -166,6 +185,7 @@ def run(
 
     # Fetch price history for each market
     success_count = 0
+    fallback_count = 0
     skip_count = 0
     fail_count = 0
 
@@ -187,6 +207,11 @@ def run(
 
         for token_id in tokens_to_try:
             history = fetch_price_history(str(token_id), interval=interval)
+            if not history:
+                midpoint = fetch_midpoint(str(token_id))
+                if midpoint is not None:
+                    history = [{"t": int(datetime.now(timezone.utc).timestamp()), "p": midpoint}]
+                    fallback_count += 1
             if history:
                 saved = save_market_history(
                     str(token_id),
@@ -216,11 +241,18 @@ def run(
         "markets_discovered": len(all_markets),
         "markets_processed": min(max_markets, len(all_markets)),
         "histories_saved": success_count,
+        "midpoint_fallbacks": fallback_count,
         "skipped": skip_count,
         "failed": fail_count,
         "output_dir": str(OUTPUT_DIR),
     }
-    logger.info("Done: %d histories saved, %d failed, %d skipped", success_count, fail_count, skip_count)
+    logger.info(
+        "Done: %d histories saved, %d midpoint fallbacks, %d failed, %d skipped",
+        success_count,
+        fallback_count,
+        fail_count,
+        skip_count,
+    )
     return result
 
 

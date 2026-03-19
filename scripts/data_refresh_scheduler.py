@@ -33,6 +33,16 @@ def _signal_handler(signum, frame):
     _shutdown = True
 
 
+def _preferred_python() -> str:
+    override = str(os.environ.get("FACTORY_REFRESH_PYTHON") or "").strip()
+    if override:
+        return override
+    preferred = PROJECT_ROOT / ".venv312" / "bin" / "python"
+    if preferred.exists():
+        return str(preferred)
+    return sys.executable
+
+
 def load_state():
     if STATE_FILE.exists():
         try:
@@ -84,10 +94,11 @@ def run_script(name, script_path, args=None, timeout=300):
     if not path.exists():
         logger.error("Script not found: %s", path)
         return False, f"script not found: {path}"
+    python_executable = _preferred_python()
     logger.info("%s refresh started at %s", name, time.strftime("%Y-%m-%d %H:%M:%S"))
     try:
         result = subprocess.run(
-            [sys.executable, str(path), *(args or [])],
+            [python_executable, str(path), *(args or [])],
             cwd=str(PROJECT_ROOT),
             timeout=timeout,
             capture_output=True,
