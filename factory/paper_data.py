@@ -203,6 +203,8 @@ def _default_feed_type(source: str, fields: Iterable[str]) -> str:
     lowered = {str(field).strip().lower() for field in fields}
     if lowered.intersection({"fundingrate", "funding_rate", "markprice", "mark_price"}):
         return "funding"
+    if source == "betfair":
+        return "market_state"
     if source == "polymarket":
         return "prediction_history"
     return "bars"
@@ -379,6 +381,10 @@ def _polymarket_metadata(project_root: Path) -> Dict[str, Any]:
     return _read_json(project_root / "data" / "polymarket" / "markets_metadata.json")
 
 
+def _betfair_market_books_metadata(project_root: Path) -> Dict[str, Any]:
+    return _read_json(project_root / "data" / "betfair" / "market_books" / "metadata.json")
+
+
 def _binance_bars_metadata(project_root: Path) -> Dict[str, Any]:
     return _read_json(project_root / "data" / "binance" / "klines" / "metadata.json")
 
@@ -495,7 +501,30 @@ def _inspect_requirement(requirement: DataRequirement, project_root: Path) -> Re
         return RequirementStatus(requirement, True, f"ready: Binance {_title_interval(available_raw)} bars fresh", latest_ts.isoformat(), age, available_raw)
 
     if source == "betfair":
-        return RequirementStatus(requirement, False, "blocked: Betfair execution-grade feed not implemented yet")
+        meta = _betfair_market_books_metadata(project_root)
+        available_raw = cadence_to_seconds(meta.get("interval")) if meta.get("interval") else 60
+        books_dir = project_root / "data" / "betfair" / "market_books"
+        files = list(books_dir.glob("*.parquet")) + list(books_dir.glob("*.csv")) + list(books_dir.glob("*.jsonl"))
+        if requirement.instruments:
+            files = [path for path in files if path.stem in requirement.instruments]
+        if not files:
+            return RequirementStatus(requirement, False, "blocked: Betfair execution feed missing", available_raw_cadence_seconds=available_raw)
+        latest_ts = max((_read_latest_timestamp(path) for path in files), default=None) or _parse_iso_ts(meta.get("last_refresh"))
+        if latest_ts is None:
+            return RequirementStatus(requirement, False, "blocked: Betfair execution feed has no timestamp", available_raw_cadence_seconds=available_raw)
+        age = (now - latest_ts).total_seconds()
+        if available_raw > requirement.raw_cadence_seconds and requirement.raw_cadence_seconds > 0:
+            return RequirementStatus(
+                requirement,
+                False,
+                f"blocked: Betfair only has {_title_interval(available_raw)} snapshots but model needs {_title_interval(requirement.raw_cadence_seconds)} raw data",
+                latest_ts.isoformat(),
+                age,
+                available_raw,
+            )
+        if age > requirement.freshness_sla_seconds:
+            return RequirementStatus(requirement, False, f"blocked: Betfair {_title_interval(available_raw)} execution feed stale", latest_ts.isoformat(), age, available_raw)
+        return RequirementStatus(requirement, True, f"ready: Betfair {_title_interval(available_raw)} execution feed fresh", latest_ts.isoformat(), age, available_raw)
 
     return RequirementStatus(requirement, False, f"blocked: Unknown data source {source}")
 

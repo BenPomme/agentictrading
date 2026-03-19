@@ -49,23 +49,6 @@ class FileConnectorAdapter:
         )
 
 
-class BetfairPlaceholderConnector(FileConnectorAdapter):
-    """Connector stub for Betfair — always reports not-ready due to missing API credentials."""
-
-    def snapshot(self) -> ConnectorSnapshot:
-        base = super().snapshot()
-        return ConnectorSnapshot(
-            connector_id=base.connector_id,
-            venue=base.venue,
-            data_products=base.data_products,
-            ready=False,
-            latest_data_ts=base.latest_data_ts,
-            record_count=base.record_count,
-            source_paths=base.source_paths,
-            issues=["no_refresh: betfair excluded — no API credentials configured"],
-        )
-
-
 def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAdapter]:
     root = Path(project_root)
     factory_data_root = root / "data"
@@ -90,17 +73,18 @@ def default_connector_catalog(project_root: str | Path) -> List[FileConnectorAda
                 factory_data_root / "funding_models",
             ],
         ),
-        BetfairPlaceholderConnector(
+        FileConnectorAdapter(
             connector_id="betfair_core",
             venue="betfair",
             data_products=[
-                "candidate_logs",
+                "market_books",
+                "market_feed_metadata",
                 "paper_trades",
                 "prediction_experiments",
-                "information_books",
             ],
             paths=[
-                betfair_data / "candidates",
+                betfair_data / "betfair" / "market_books",
+                betfair_data / "betfair" / "market_books" / "metadata.json",
                 factory_data_root / "prediction",
                 factory_data_root / "state",
                 factory_data_root / "portfolios" / "betfair_core",

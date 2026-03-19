@@ -209,3 +209,57 @@ def test_binance_bar_model_is_blocked_when_only_funding_history_exists(tmp_path)
 
     assert result.ready is False
     assert "intraday bars missing" in result.blocking_reason
+
+
+def test_betfair_market_state_passes_with_fresh_execution_feed(tmp_path):
+    books_dir = tmp_path / "data" / "betfair" / "market_books"
+    books_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "timestamp": [datetime.now(timezone.utc) - timedelta(seconds=30)],
+            "market_id": ["1.234"],
+            "best_back": [1.95],
+            "best_lay": [2.0],
+        }
+    ).to_parquet(books_dir / "1.234.parquet", index=False)
+    (books_dir / "metadata.json").write_text(
+        json.dumps({"last_refresh": datetime.now(timezone.utc).isoformat(), "interval": "60s"}),
+        encoding="utf-8",
+    )
+    contract = build_paper_data_contract(
+        {},
+        model_requirement={
+            "source": "betfair",
+            "venue": "betfair",
+            "instruments": ["1.234"],
+            "fields": ["price"],
+            "feed_type": "market_state",
+            "raw_cadence_seconds": 60,
+            "freshness_sla_seconds": 180,
+        },
+    )
+
+    result = assess_paper_data_readiness(contract, tmp_path)
+
+    assert result.ready is True
+    assert result.requirement_statuses[0].message.startswith("ready: Betfair")
+
+
+def test_betfair_market_state_blocks_when_execution_feed_is_missing(tmp_path):
+    contract = build_paper_data_contract(
+        {},
+        model_requirement={
+            "source": "betfair",
+            "venue": "betfair",
+            "instruments": ["1.234"],
+            "fields": ["price"],
+            "feed_type": "market_state",
+            "raw_cadence_seconds": 60,
+            "freshness_sla_seconds": 180,
+        },
+    )
+
+    result = assess_paper_data_readiness(contract, tmp_path)
+
+    assert result.ready is False
+    assert "execution feed missing" in result.blocking_reason

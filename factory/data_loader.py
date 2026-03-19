@@ -69,6 +69,8 @@ def load_data_for_requirements(data_req: dict, project_root: Path) -> pd.DataFra
             return _load_binance_funding(project_root, instruments)
         return _load_binance_bars(project_root, instruments, cadence_seconds=cadence_seconds)
     if source == "betfair":
+        if feed_type in {"market_state", "order_book", "quotes", "bars"}:
+            return _load_betfair_market_books(project_root, instruments)
         return _load_betfair(project_root, instruments)
     if source == "polymarket":
         return _load_polymarket(project_root, instruments, cadence_seconds=cadence_seconds)
@@ -279,6 +281,60 @@ def _load_betfair(
     return _sort_by_datetime(out)
 
 
+def _load_betfair_market_books(project_root: Path, instruments: list[str]) -> pd.DataFrame:
+    base = project_root / "data" / "betfair" / "market_books"
+    if not base.exists():
+        raise FileNotFoundError(f"No betfair market books directory found at {base}")
+
+    files = sorted(list(base.glob("*.parquet")) + list(base.glob("*.csv")) + list(base.glob("*.jsonl")))
+    if instruments:
+        files = [path for path in files if path.stem in instruments]
+    if not files:
+        raise FileNotFoundError(f"No betfair market-book data loaded from {base}. Files/instruments: {instruments or 'all'}.")
+
+    dfs: list[pd.DataFrame] = []
+    for path in files:
+        try:
+            if path.suffix == ".parquet":
+                df = pd.read_parquet(path)
+            elif path.suffix == ".csv":
+                df = pd.read_csv(path)
+            else:
+                rows = []
+                with path.open(encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        rows.append(json.loads(line))
+                df = pd.DataFrame(rows)
+            if df.empty:
+                continue
+            for col in ("timestamp", "ts", "publish_time", "time"):
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
+                    df = df.dropna(subset=[col]).set_index(col)
+                    break
+            if not isinstance(df.index, pd.DatetimeIndex):
+                continue
+            if "best_back" in df.columns and "best_lay" in df.columns and "midpoint" not in df.columns:
+                df["midpoint"] = (pd.to_numeric(df["best_back"], errors="coerce") + pd.to_numeric(df["best_lay"], errors="coerce")) / 2.0
+            if "price" not in df.columns and "midpoint" in df.columns:
+                df["price"] = df["midpoint"]
+            if "market_id" not in df.columns:
+                df["market_id"] = path.stem
+            if "symbol" not in df.columns:
+                df["symbol"] = df["market_id"].astype(str)
+            dfs.append(df.reset_index())
+        except Exception as exc:
+            logger.warning("Skipping betfair market-book file %s: %s", path, exc)
+
+    if not dfs:
+        raise FileNotFoundError(f"No betfair market-book data loaded from {base}. Files/instruments: {instruments or 'all'}.")
+    out = pd.concat(dfs, ignore_index=True)
+    return _sort_by_datetime(out)
+
+
 def _load_polymarket(project_root: Path, instruments: list[str] | None = None, *, cadence_seconds: int = 0) -> pd.DataFrame:
     data_root = resolve_data_root(project_root, "polymarket")
     base = data_root / "polymarket" / "prices_history"
@@ -364,6 +420,9 @@ def available_instruments(source: str, project_root: Path) -> list[str]:
 
     if source == "betfair":
         data_root = resolve_data_root(project_root, "betfair")
+        books = data_root / "betfair" / "market_books"
+        if books.exists():
+            return _stems_in_dir(books, (".parquet", ".csv", ".jsonl"))
         base = data_root / "candidates"
         return _stems_in_dir(base, (".jsonl",)) if base.exists() else []
 
