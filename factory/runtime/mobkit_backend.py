@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 import uuid
@@ -530,10 +531,12 @@ class MobkitOrchestratorBackend:
         gateway_bin: str,
         mob_config_path: Optional[str] = None,
         timeout_seconds: int = 120,
+        max_sessions: int = 16,
     ) -> None:
         self._gateway_bin = gateway_bin
         self._mob_config_path = mob_config_path
         self._timeout = timeout_seconds
+        self._max_sessions = max(1, int(max_sessions))
 
         self._loop: Optional[_BackgroundLoop] = None
         self._runtime: Any = None   # meerkat_mobkit.MobKitRuntime
@@ -559,10 +562,12 @@ class MobkitOrchestratorBackend:
             )
         mob_config = str(getattr(config, "FACTORY_MOBKIT_CONFIG_PATH", "") or "").strip() or None
         timeout = int(getattr(config, "FACTORY_MOBKIT_TIMEOUT_SECONDS", 120) or 120)
+        max_sessions = int(getattr(config, "FACTORY_MOBKIT_MAX_SESSIONS", 16) or 16)
         return cls(
             gateway_bin=gateway_bin,
             mob_config_path=mob_config,
             timeout_seconds=timeout,
+            max_sessions=max_sessions,
         )
 
     # ------------------------------------------------------------------
@@ -600,6 +605,7 @@ class MobkitOrchestratorBackend:
 
     async def _async_initialize(self) -> None:
         from meerkat_mobkit import MobKit  # type: ignore[import]
+        os.environ["MOBKIT_MAX_SESSIONS"] = str(self._max_sessions)
         builder = MobKit.builder().gateway(self._gateway_bin)
         if self._mob_config_path:
             builder = builder.mob(self._mob_config_path)
@@ -608,7 +614,9 @@ class MobkitOrchestratorBackend:
         self._handle = self._runtime.mob_handle()
         self._initialized = True
         logger.info(
-            "MobkitOrchestratorBackend: connected (gateway=%s)", self._gateway_bin
+            "MobkitOrchestratorBackend: connected (gateway=%s, max_sessions=%s)",
+            self._gateway_bin,
+            self._max_sessions,
         )
         # Start background poll loop.
         # The rpc_gateway binary only dispatches SSE events when it receives

@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -116,7 +117,8 @@ class TestMobkitBackendCreate:
     def test_raises_when_gateway_bin_not_set(self, tmp_path):
         with patch.object(config, "FACTORY_MOBKIT_GATEWAY_BIN", ""), \
              patch.object(config, "FACTORY_MOBKIT_CONFIG_PATH", ""), \
-             patch.object(config, "FACTORY_MOBKIT_TIMEOUT_SECONDS", 120):
+             patch.object(config, "FACTORY_MOBKIT_TIMEOUT_SECONDS", 120), \
+             patch.object(config, "FACTORY_MOBKIT_MAX_SESSIONS", 16):
             with pytest.raises(MobkitUnavailableError, match="FACTORY_MOBKIT_GATEWAY_BIN"):
                 MobkitOrchestratorBackend.create(tmp_path)
 
@@ -124,10 +126,12 @@ class TestMobkitBackendCreate:
         bin_path = _fake_binary(tmp_path)
         with patch.object(config, "FACTORY_MOBKIT_GATEWAY_BIN", bin_path), \
              patch.object(config, "FACTORY_MOBKIT_CONFIG_PATH", ""), \
-             patch.object(config, "FACTORY_MOBKIT_TIMEOUT_SECONDS", 60):
+             patch.object(config, "FACTORY_MOBKIT_TIMEOUT_SECONDS", 60), \
+             patch.object(config, "FACTORY_MOBKIT_MAX_SESSIONS", 64):
             backend = MobkitOrchestratorBackend.create(tmp_path)
         assert backend._gateway_bin == bin_path
         assert backend._timeout == 60
+        assert backend._max_sessions == 64
         assert backend._mob_config_path is None
 
 
@@ -166,6 +170,57 @@ class TestMobkitBackendInitialize:
         backend._initialized = True  # simulate previous init
         # Should return without any side effects
         backend.initialize()  # no error
+        assert backend._initialized is True
+
+    def test_async_initialize_exports_max_sessions_to_gateway_env(self, tmp_path):
+        bin_path = _fake_binary(tmp_path)
+        backend = MobkitOrchestratorBackend(
+            gateway_bin=bin_path,
+            mob_config_path=None,
+            timeout_seconds=30,
+            max_sessions=64,
+        )
+
+        class _FakeRuntime:
+            async def connect(self):
+                return None
+
+            def mob_handle(self):
+                return MagicMock()
+
+        class _FakeBuilder:
+            def __init__(self):
+                self.gateway_bin = None
+                self.mob_config = None
+
+            def gateway(self, value):
+                self.gateway_bin = value
+                return self
+
+            def mob(self, value):
+                self.mob_config = value
+                return self
+
+            async def build(self):
+                return _FakeRuntime()
+
+        fake_builder = _FakeBuilder()
+        fake_module = MagicMock()
+        fake_module.MobKit.builder.return_value = fake_builder
+
+        def _drop_task(coro):
+            coro.close()
+            return None
+
+        with patch.dict(sys.modules, {"meerkat_mobkit": fake_module}), \
+             patch("factory.runtime.mobkit_backend.asyncio.ensure_future", side_effect=_drop_task), \
+             patch.dict(os.environ, {}, clear=False):
+            import asyncio
+
+            asyncio.run(backend._async_initialize())
+            assert os.environ["MOBKIT_MAX_SESSIONS"] == "64"
+
+        assert fake_builder.gateway_bin == bin_path
         assert backend._initialized is True
 
 
@@ -679,6 +734,7 @@ class TestRuntimeManagerMobkit:
         root = _tmp_root(tmp_path)
         with patch.object(config, "FACTORY_RUNTIME_BACKEND", "mobkit"), \
              patch.object(config, "FACTORY_ENABLE_MOBKIT", True), \
+             patch.object(config, "FACTORY_FALLBACK_TO_LEGACY", True), \
              patch.object(config, "FACTORY_MOBKIT_GATEWAY_BIN", ""), \
              patch.object(config, "FACTORY_MOBKIT_CONFIG_PATH", ""):
             manager = RuntimeManager.create(root)

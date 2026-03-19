@@ -319,6 +319,13 @@ FACTORY_MOBKIT_CONFIG_PATH: str = os.getenv("FACTORY_MOBKIT_CONFIG_PATH", "").st
 # Per-call timeout for mobkit RPC operations, in seconds.
 FACTORY_MOBKIT_TIMEOUT_SECONDS: int = int(os.getenv("FACTORY_MOBKIT_TIMEOUT_SECONDS", "120"))
 
+# Max concurrent agent sessions inside the mobkit gateway.
+# This is separate from budget governance; spend is still controlled by the
+# factory budget layers. Default stays conservative unless explicitly raised.
+FACTORY_MOBKIT_MAX_SESSIONS: int = int(
+    os.getenv("FACTORY_MOBKIT_MAX_SESSIONS", os.getenv("MOBKIT_MAX_SESSIONS", "16"))
+)
+
 # ---------------------------------------------------------------------------
 # Task 02: Goldfish provenance config keys
 # ---------------------------------------------------------------------------
