@@ -30,6 +30,7 @@ from factory.contracts import FactoryFamily, LearningMemoryEntry, LineageRecord,
 from factory.operator_dashboard import (
     _assessment_progress,
     _build_operator_signal_view,
+    _build_feed_health,
     _build_agent_run_view,
     _first_assessment_progress,
     build_dashboard_snapshot,
@@ -187,6 +188,39 @@ def test_task_router_selects_expected_models_and_escalation(monkeypatch, tmp_pat
         [],
         {"health_status": "warning", "issue_codes": ["stalled_model"]},
     ) == TASK_HARD
+
+
+def test_proposal_task_class_escalates_to_frontier_at_high_failure_thresholds(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "FACTORY_REAL_AGENTS_ENABLED", True)
+    runtime = RealResearchAgentRuntime(tmp_path)
+
+    retired_memories = [
+        LearningMemoryEntry(
+            memory_id=f"m{idx}",
+            family_id="binance_funding_contrarian",
+            lineage_id=f"l{idx}",
+            hypothesis_id=f"h{idx}",
+            outcome="retired_underperformance",
+            summary="failed",
+            scientific_domains=["econometrics"],
+            lead_agent_role="Director",
+            tweak_count=idx,
+            decision_stage="paper",
+        )
+        for idx in range(4)
+    ]
+    assert runtime._proposal_task_class(_family(), retired_memories, {}) == TASK_FRONTIER
+
+    execution_evidence = {
+        "health_status": "critical",
+        "issue_codes": [
+            "negative_paper_roi",
+            "poor_win_rate",
+            "no_trade_syndrome",
+            "zero_simulated_fills",
+        ],
+    }
+    assert runtime._proposal_task_class(_family(), [], execution_evidence) == TASK_FRONTIER
 
 
 def test_task_local_bypasses_agent_runtime(monkeypatch, tmp_path):
@@ -1205,7 +1239,7 @@ def test_dashboard_filters_placeholder_portfolios(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_AGENT_LOG_DIR", str(tmp_path / "agent_runs"))
-    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root))
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root), raising=False)
     monkeypatch.setattr(config, "EXECUTION_TRACKED_PORTFOLIOS", "cascade_alpha,betfair_crossbook_consensus")
 
     snapshot = build_dashboard_snapshot()
@@ -1270,7 +1304,7 @@ def test_dashboard_marks_warning_portfolios_degraded_without_blocking(tmp_path, 
 
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_AGENT_LOG_DIR", str(tmp_path / "agent_runs"))
-    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root))
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root), raising=False)
 
     snapshot = build_dashboard_snapshot()
 
@@ -1450,18 +1484,18 @@ def test_dashboard_snapshot_light_derives_feed_health(tmp_path, monkeypatch):
                     {
                         "connector_id": "binance_core",
                         "venue": "binance",
-                        "ready": False,
-                        "latest_data_ts": None,
-                        "record_count": 0,
-                        "issues": ["missing:data/funding_history"],
+                        "ready": True,
+                        "latest_data_ts": recent_ts,
+                        "record_count": 12,
+                        "issues": [],
                     },
                     {
                         "connector_id": "betfair_core",
                         "venue": "betfair",
-                        "ready": False,
-                        "latest_data_ts": None,
+                        "ready": True,
+                        "latest_data_ts": stale_ts,
                         "record_count": 0,
-                        "issues": ["missing:data/state"],
+                        "issues": [],
                     },
                     {
                         "connector_id": "polymarket_core",
@@ -1501,7 +1535,7 @@ def test_dashboard_snapshot_light_derives_feed_health(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_AGENT_LOG_DIR", str(tmp_path / "agent_runs"))
-    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root))
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root), raising=False)
 
     snapshot = build_dashboard_snapshot_light()
     feed_health = snapshot["factory"]["feed_health"]
@@ -1515,6 +1549,41 @@ def test_dashboard_snapshot_light_derives_feed_health(tmp_path, monkeypatch):
     assert by_venue["binance"]["status"] == "healthy"
     assert by_venue["betfair"]["status"] == "warning"
     assert by_venue["polymarket"]["status"] == "critical"
+
+
+def test_feed_health_prefers_live_connector_status_over_runtime_warning(tmp_path, monkeypatch):
+    portfolios_root = tmp_path / "portfolios"
+    portfolios_root.mkdir(parents=True)
+    stale_ts = (datetime.now(timezone.utc) - timedelta(seconds=180)).isoformat()
+    (portfolios_root / "betfair_core").mkdir(parents=True)
+    (portfolios_root / "betfair_core" / "heartbeat.json").write_text(
+        json.dumps({"ts": stale_ts, "status": "running"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config, "EXECUTION_PORTFOLIO_STATE_ROOT", str(portfolios_root), raising=False)
+
+    feed_health = _build_feed_health(
+        {},
+        [
+            {
+                "connector_id": "betfair_core",
+                "venue": "betfair",
+                "ready": True,
+                "latest_data_ts": datetime.now(timezone.utc).isoformat(),
+                "record_count": 128,
+                "issues": [],
+            }
+        ],
+    )
+
+    assert feed_health["status"] == "healthy"
+    assert feed_health["healthy_count"] == 1
+    assert feed_health["warning_count"] == 0
+    row = feed_health["connectors"][0]
+    assert row["venue"] == "betfair"
+    assert row["status"] == "healthy"
+    assert row["runtime_status"] == "warning"
 
 
 def test_dashboard_snapshot_light_compacts_critical_feed_and_excludes_positive_roi_noise(tmp_path, monkeypatch):

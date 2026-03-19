@@ -24,12 +24,35 @@ _VENUE_DATA_SUBDIRS: dict[str, str] = {
     "alpaca": os.path.join("alpaca", "bars"),
 }
 
+_INSTRUMENT_ALIASES: dict[str, tuple[str, ...]] = {
+    "BTC": ("BITCOIN",),
+    "BTCUSDT": ("BTC", "BITCOIN"),
+    "ETH": ("ETHEREUM",),
+    "ETHUSDT": ("ETH", "ETHEREUM"),
+    "SOL": ("SOLANA",),
+    "SOLUSDT": ("SOL", "SOLANA"),
+}
+
 
 def _has_data_files(path: Path) -> bool:
     """True if *path* is a directory containing at least one file."""
     if not path.is_dir():
         return False
     return any(path.iterdir())
+
+
+def _expanded_instrument_tokens(instruments: list[str] | None) -> set[str]:
+    tokens: set[str] = set()
+    for item in instruments or []:
+        token = str(item).strip().upper()
+        if not token:
+            continue
+        tokens.add(token)
+        for alias in _INSTRUMENT_ALIASES.get(token, ()):
+            alias_text = str(alias).strip().upper()
+            if alias_text:
+                tokens.add(alias_text)
+    return tokens
 
 
 def resolve_data_root(project_root: Path, venue: str) -> Path:
@@ -57,6 +80,7 @@ def load_data_for_requirements(data_req: dict, project_root: Path) -> pd.DataFra
     source = (data_req.get("source") or "").strip().lower()
     instruments = data_req.get("instruments") or []
     feed_type = str(data_req.get("feed_type") or "bars").strip().lower()
+    fields = [str(item).strip() for item in (data_req.get("fields") or []) if str(item).strip()]
     cadence_seconds = cadence_to_seconds(data_req.get("cadence_seconds"))
     # fields is accepted but we load all available; caller can filter downstream
 
@@ -65,6 +89,9 @@ def load_data_for_requirements(data_req: dict, project_root: Path) -> pd.DataFra
     if source == "alpaca":
         return _load_alpaca(project_root, instruments, cadence_seconds=cadence_seconds)
     if source == "binance":
+        funding_field_names = {"fundingrate", "fundingtime", "markprice"}
+        if feed_type == "bars" and {item.lower() for item in fields}.intersection(funding_field_names):
+            feed_type = "funding"
         if feed_type == "funding":
             return _load_binance_funding(project_root, instruments)
         return _load_binance_bars(project_root, instruments, cadence_seconds=cadence_seconds)
@@ -174,9 +201,9 @@ def _load_binance_funding(project_root: Path, instruments: list[str]) -> pd.Data
         raise FileNotFoundError(f"No binance funding directory found at {base}")
 
     dfs: list[pd.DataFrame] = []
-    for p in base.glob("*.csv"):
+    for p in sorted(list(base.glob("*.csv")) + list(base.glob("*.parquet"))):
         try:
-            df = pd.read_csv(p)
+            df = pd.read_parquet(p) if p.suffix == ".parquet" else pd.read_csv(p)
             if "symbol" in df.columns and instruments:
                 df = df[df["symbol"].isin(instruments)]
             if not df.empty:
@@ -342,9 +369,13 @@ def _load_polymarket(project_root: Path, instruments: list[str] | None = None, *
         raise FileNotFoundError(f"No polymarket prices directory found at {base}")
 
     dfs: list[pd.DataFrame] = []
-    requested = set(instruments or [])
+    requested = {str(item).strip() for item in (instruments or []) if str(item).strip()}
+    requested_tokens = _expanded_instrument_tokens(instruments)
+    exact_file_match = False
+    if requested:
+        exact_file_match = any(p.stem in requested for p in base.glob("*.parquet"))
     for p in base.glob("*.parquet"):
-        if requested and p.stem not in requested:
+        if requested and exact_file_match and p.stem not in requested:
             continue
         try:
             df = pd.read_parquet(p)
@@ -361,6 +392,23 @@ def _load_polymarket(project_root: Path, instruments: list[str] | None = None, *
             if cadence_seconds:
                 df = aggregate_time_bars(df, cadence_seconds)
             df["symbol"] = p.stem
+            if requested and not exact_file_match:
+                lowered = {col.lower(): col for col in df.columns}
+                symbol_col = lowered.get("symbol")
+                market_col = lowered.get("market_id")
+                question_col = lowered.get("question")
+                token_mask = pd.Series(False, index=df.index)
+                if symbol_col:
+                    token_mask |= df[symbol_col].astype(str).str.upper().isin(requested_tokens)
+                if market_col:
+                    token_mask |= df[market_col].astype(str).str.upper().isin(requested_tokens)
+                if question_col:
+                    token_mask |= df[question_col].astype(str).str.upper().apply(
+                        lambda text: any(token in text for token in requested_tokens)
+                    )
+                df = df[token_mask]
+                if df.empty:
+                    continue
             dfs.append(df.reset_index())
         except Exception as e:
             logger.warning("Skipping polymarket file %s: %s", p, e)
@@ -369,6 +417,11 @@ def _load_polymarket(project_root: Path, instruments: list[str] | None = None, *
         raise FileNotFoundError(f"No polymarket data loaded from {base}.")
 
     out = pd.concat(dfs, ignore_index=True)
+    if requested and not exact_file_match and "market_id" in out.columns:
+        counts = out["market_id"].astype(str).value_counts()
+        if len(counts) > 1:
+            preferred_market_id = str(counts.index[0])
+            out = out[out["market_id"].astype(str) == preferred_market_id].copy()
     return _sort_by_datetime(out)
 
 

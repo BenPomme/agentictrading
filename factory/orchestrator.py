@@ -50,6 +50,7 @@ from factory.provenance.goldfish_client import ProvenanceService
 from factory.provenance.dna_extractor import build_family_dna_packet, enrich_dna_from_goldfish
 from factory.idea_intake import all_ideas, annotate_idea_statuses, maybe_run_manual_idea_watch, relevant_ideas_for_family
 from factory.idea_scout import maybe_run_idea_scout
+from factory.paper_data import assess_paper_data_readiness, build_paper_data_contract
 from factory.promotion import PromotionController
 from factory.registry import FactoryRegistry
 from factory.runtime_lanes import decide_runtime_lane_policy, runtime_lane_selection_key
@@ -1164,48 +1165,30 @@ class FactoryOrchestrator:
             PromotionStage.STRESS.value,
         }:
             return
-        active = [lineage for lineage in lineages_by_family.get(family.family_id, []) if lineage.active]
-        # Hard ceiling: do not spawn challengers if family already has too many active lineages.
-        max_active = int(os.environ.get("FACTORY_MAX_ACTIVE_LINEAGES_PER_FAMILY", "10"))
-        if len(active) >= max_active:
+        lineages = list(lineages_by_family.get(family.family_id, []))
+        active = [lineage for lineage in lineages if lineage.active]
+        # Single-lineage policy: a family may only mint a replacement once the
+        # current champion has been explicitly retired and there are no other active
+        # variants left in the family.
+        if active:
             return
-        # Guard: block challenger seeding while any active lineage in this family
-        # is in paper or shadow stage (unless that lineage has failed/retiring).
-        # This prevents queue explosion: finish validating before spawning more.
-        for lin in active:
-            if lin.current_stage in {PromotionStage.PAPER.value, PromotionStage.SHADOW.value}:
-                if lin.iteration_status in {"failed", "retiring"}:
-                    continue
-                return
-        champion = next((lineage for lineage in active if lineage.lineage_id == family.champion_lineage_id), None)
-        if champion is None and active:
-            champion = active[0]
+        champion = self.registry.load_lineage(family.champion_lineage_id)
+        if champion is None and lineages:
+            champion = next(
+                (lineage for lineage in lineages if lineage.lineage_id == family.champion_lineage_id),
+                lineages[0],
+            )
         if champion is None:
             return
         champion_genome = self.registry.load_genome(champion.lineage_id)
         if champion_genome is None:
             return
-        max_shadow = int(champion_genome.parameters.get("max_shadow_challengers", 5) or 5)
         execution_evidence = summarize_execution_targets(family.target_portfolios)
-        maintenance_actions = {
-            str(lineage.iteration_status or "").strip()
-            for lineage in active
-            if str(lineage.iteration_status or "").strip()
-        }
-        maintenance_actions.update(
-            str(lineage.last_agent_review_action or "").strip().lower()
-            for lineage in active
-            if str(lineage.last_agent_review_status or "") == "completed"
-            and str(lineage.last_agent_review_action or "").strip()
-        )
+        maintenance_actions = set()
         extra_shadow = self._challenger_pressure(execution_evidence, maintenance_actions=maintenance_actions)
-        desired_shadow = min(max_shadow, max(1, self._cycle_count) + extra_shadow)
-        existing_shadow = [
-            lineage
-            for lineage in active
-            if lineage.role in {LineageRole.SHADOW_CHALLENGER.value, LineageRole.MOONSHOT.value}
-        ]
-        if len(existing_shadow) >= desired_shadow:
+        desired_shadow = 1 if extra_shadow >= 0 else 0
+        existing_shadow: List[LineageRecord] = []
+        if desired_shadow <= 0:
             return
         budget_sequence = ["incumbent", "adjacent", "moonshot", "incumbent", "adjacent"]
         champion_hypothesis = self.registry.load_hypothesis(champion.lineage_id)
@@ -1271,6 +1254,7 @@ class FactoryOrchestrator:
                 recent_actions,
                 f"[cycle {self._cycle_count}] Seeded {created.creation_kind} challenger {created.lineage_id} for {family.family_id} from {proposal.lead_agent_role} with collaborators {','.join(proposal.collaborating_agent_roles) or 'none'} via {agent_result.provider if agent_result is not None else 'deterministic'}.",
             )
+            break
 
     def _challenger_pressure(
         self,
@@ -2225,68 +2209,44 @@ class FactoryOrchestrator:
                 f"[cycle {self._cycle_count}] Champion rotated for {family.family_id}: {family.champion_lineage_id} -> {new_champion_id}.",
             )
         family.champion_lineage_id = new_champion_id
-        paper_candidates: List[str] = []
-        if prepared_challenger_id and prepared_challenger_id != family.champion_lineage_id:
-            prepared_row = next(
-                (
-                    row
-                    for row in active_ranked[1:]
-                    if str(row.get("lineage_id") or "") == prepared_challenger_id
-                ),
-                None,
-            )
-            if prepared_row is not None:
-                paper_candidates.append(str(prepared_row["lineage_id"]))
-        paper_candidates.extend(
-            [
-                row["lineage_id"]
-                for row in active_ranked[1:]
-                if row.get("current_stage") in {
-                    PromotionStage.PAPER.value,
-                    PromotionStage.CANARY_READY.value,
-                    PromotionStage.LIVE_READY.value,
-                    PromotionStage.APPROVED_LIVE.value,
-                }
-                and row["lineage_id"] not in paper_candidates
-            ]
-        )
-        paper_candidates = paper_candidates[:2]
-        shadow_candidates = [
-            row["lineage_id"]
-            for row in active_ranked[1:]
-            if row["lineage_id"] not in paper_candidates
-        ][:5]
-        family.paper_challenger_ids = paper_candidates
-        family.shadow_challenger_ids = shadow_candidates
+        family.paper_challenger_ids = []
+        family.shadow_challenger_ids = []
+        retired_duplicates: List[str] = []
         self.registry.save_family(family)
 
         for row in ranked_rows:
             lineage = self.registry.load_lineage(str(row["lineage_id"]))
             if lineage is None:
                 continue
-            if not lineage.active:
-                continue
             if lineage.lineage_id == family.champion_lineage_id:
+                if not lineage.active:
+                    lineage.active = True
+                    lineage.retired_at = None
+                    lineage.retirement_reason = None
                 lineage.role = LineageRole.CHAMPION.value
                 lineage.loss_streak = 0
                 lineage.iteration_status = "champion"
-            elif lineage.lineage_id in family.paper_challenger_ids:
-                lineage.role = LineageRole.PAPER_CHALLENGER.value
-                if lineage.iteration_status in {"new_candidate", "shadow_candidate"}:
-                    lineage.iteration_status = "paper_candidate"
-                if lineage.lineage_id == prepared_challenger_id:
-                    lineage.iteration_status = "prepare_isolated_lane"
             else:
-                lineage.role = LineageRole.SHADOW_CHALLENGER.value
-                if lineage.lineage_id == prepared_challenger_id:
-                    lineage.iteration_status = "prepare_isolated_lane"
-                elif lineage.iteration_status in {"prepare_isolated_lane", "isolated_lane_active"}:
-                    lineage.iteration_status = "shadow_candidate"
+                if lineage.active:
+                    lineage.active = False
+                    lineage.retired_at = utc_now_iso()
+                    lineage.retirement_reason = "single_lineage_family_policy"
+                    lineage.iteration_status = "retired"
+                    retired_duplicates.append(lineage.lineage_id)
             self.registry.save_lineage(lineage)
             genome = self.registry.load_genome(lineage.lineage_id)
             if genome is not None and genome.role != lineage.role:
                 genome.role = lineage.role
                 self.registry.save_genome(lineage.lineage_id, genome)
+        if retired_duplicates:
+            family.retired_lineage_ids = sorted(
+                set(list(family.retired_lineage_ids or []) + retired_duplicates)
+            )
+            self.registry.save_family(family)
+            _append_recent_action(
+                recent_actions,
+                f"[cycle {self._cycle_count}] Retired extra active variants for {family.family_id}: {', '.join(sorted(retired_duplicates))}.",
+            )
 
     def _tweak_lineage_for_underperformance(
         self,
@@ -2617,6 +2577,63 @@ class FactoryOrchestrator:
         if issue_codes.intersection({"no_trade_syndrome", "zero_simulated_fills"}):
             return "no_trade_syndrome_after_tweaks"
         return None
+
+    def _champion_paper_state(
+        self,
+        family: FactoryFamily,
+        family_summary: Dict[str, Any],
+        family_rows: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        champion = dict(family_summary.get("champion") or {})
+        champion_id = str(champion.get("lineage_id") or family.champion_lineage_id or "").strip()
+        if not champion_id:
+            return {"state": "paper_blocked", "reason": "blocked: family has no champion"}
+        row = next(
+            (dict(item) for item in family_rows if str(item.get("lineage_id") or "").strip() == champion_id),
+            dict(champion),
+        )
+        current_stage = str(row.get("current_stage") or champion.get("current_stage") or "").strip().lower()
+        genome = self.registry.load_genome(champion_id)
+        contract = build_paper_data_contract(
+            genome.parameters if genome is not None else {},
+            target_venues=(row.get("target_venues") or family.target_venues),
+        )
+        readiness = assess_paper_data_readiness(contract, self.project_root)
+        issue_codes = {
+            str(item).strip().lower()
+            for item in list(row.get("execution_issue_codes") or [])
+            + list(dict(row.get("execution_validation") or {}).get("issue_codes") or [])
+            if str(item).strip()
+        }
+        stuck_issue_codes = {
+            "trade_stalled",
+            "training_stalled",
+            "stalled_model",
+            "no_trade_syndrome",
+            "zero_simulated_fills",
+            "validation_blocked",
+        }
+        activation_status = str(row.get("activation_status") or "").strip().lower()
+        if issue_codes.intersection(stuck_issue_codes):
+            reason = ", ".join(sorted(issue_codes.intersection(stuck_issue_codes)))
+            return {"state": "paper_stuck", "reason": f"stuck: champion is not trading cleanly ({reason})"}
+        if not readiness.ready:
+            return {"state": "paper_blocked", "reason": readiness.blocking_reason}
+        if any(str(venue).lower() in {"alpaca", "yahoo"} for venue in (family.target_venues or [])) and not is_stock_market_open():
+            return {"state": "paper_blocked", "reason": "blocked: stock market is closed"}
+        paper_stages = {
+            PromotionStage.PAPER.value,
+            PromotionStage.CANARY_READY.value,
+            PromotionStage.LIVE_READY.value,
+            PromotionStage.APPROVED_LIVE.value,
+        }
+        if current_stage not in paper_stages:
+            return {"state": "paper_blocked", "reason": f"blocked: champion is still in {current_stage or 'research'}"}
+        if activation_status == "start_failed":
+            return {"state": "paper_blocked", "reason": "blocked: paper runner failed to start"}
+        if activation_status in {"running", "started", "ready_to_launch"} or bool(row.get("alias_runner_running")):
+            return {"state": "paper_active", "reason": "ready: champion is routed into paper trading"}
+        return {"state": "paper_blocked", "reason": "blocked: paper runner has not started yet"}
 
     def _trainability_contract_request(
         self,
@@ -5985,6 +6002,8 @@ class FactoryOrchestrator:
                     or primary_incumbent.get("runtime_target_portfolio"),
                     "canonical_target_portfolio": isolated_challenger.get("canonical_target_portfolio")
                     or primary_incumbent.get("canonical_target_portfolio"),
+                    "champion_paper_state": None,
+                    "champion_paper_reason": "",
                     "activation_status": None,
                     "alias_runner_running": False,
                     "weak_family": False,
@@ -6039,6 +6058,15 @@ class FactoryOrchestrator:
                 rows_by_family.get(family_id, []),
                 family_summary=family_summary,
             )
+            target_family = family_by_id.get(family_id)
+            if target_family is not None:
+                champion_paper = self._champion_paper_state(
+                    target_family,
+                    family_summary,
+                    rows_by_family.get(family_id, []),
+                )
+                family_summary["champion_paper_state"] = champion_paper.get("state")
+                family_summary["champion_paper_reason"] = champion_paper.get("reason")
             family_summary["weak_family"] = bool(autopilot.get("weak_family"))
             family_summary["autopilot_status"] = autopilot.get("autopilot_status")
             family_summary["autopilot_actions"] = list(autopilot.get("autopilot_actions") or [])
@@ -6050,7 +6078,6 @@ class FactoryOrchestrator:
             if maintenance_reviews_run < maintenance_review_cap:
                 maintenance_request = self._family_autopilot_maintenance_request(autopilot)
                 target_lineage_id = str(autopilot.get("autopilot_target_lineage_id") or "").strip()
-                target_family = family_by_id.get(family_id)
                 if maintenance_request and target_lineage_id and target_family is not None:
                     target_lineage = self.registry.load_lineage(target_lineage_id)
                     if target_lineage is not None and bool(target_lineage.active):

@@ -49,12 +49,12 @@ _PAPER_WINDOW_OVERRIDES = {
     "FACTORY_LIVE_TRADING_HARD_DISABLE": "true",
     "PAPER_TRADING": "true",
 
-    # --- Scope caps (multi-venue: 4 active families, 3 challengers per family) ---
+    # --- Scope caps: one active champion per family ---
     "FACTORY_MAX_ACTIVE_FAMILIES": "4",
-    "FACTORY_MAX_ACTIVE_MODELS_PER_FAMILY": "2",
-    "FACTORY_MAX_CHALLENGERS_PER_FAMILY": "3",
-    "FACTORY_RUNTIME_MAX_ACTIVE_PAPER_LANES": "6",
-    "FACTORY_RUNTIME_MAX_ACTIVE_PAPER_LANES_PER_FAMILY": "2",
+    "FACTORY_MAX_ACTIVE_MODELS_PER_FAMILY": "1",
+    "FACTORY_MAX_CHALLENGERS_PER_FAMILY": "1",
+    "FACTORY_RUNTIME_MAX_ACTIVE_PAPER_LANES": "4",
+    "FACTORY_RUNTIME_MAX_ACTIVE_PAPER_LANES_PER_FAMILY": "1",
 
     # --- Capital controls: per-lineage sizing governs; global stake_fraction is fallback ---
     "STAKE_FRACTION": "0.02",
@@ -71,20 +71,19 @@ _PAPER_WINDOW_OVERRIDES = {
     "AGENTIC_FACTORY_MODE": "full",
 
     # --- Multi-venue scope: all technically ready venues ---
-    # Betfair excluded (missing certs); live trading blocked
     "FACTORY_PRIMARY_MARKET_DATA_PROVIDER": "binance",
-    "FACTORY_ACTIVE_EXECUTION_VENUES": "binance,polymarket,yahoo,alpaca",
+    "FACTORY_ACTIVE_EXECUTION_VENUES": "betfair,binance,polymarket,alpaca,yahoo",
 
     # --- Paper holdoff: don't churn healthy paper models ---
     "FACTORY_PAPER_HOLDOFF_ENABLED": "true",
 
     # --- Venue scope enforcement: all ready venues ---
-    # Scope = binance + polymarket + yahoo + alpaca
+    # Scope = betfair + binance + polymarket + yahoo + alpaca
     # Families must target only venues within this set.
     # cross_venue_probability_elasticity (polymarket+binance) → IN scope
     # vol_surface_dispersion_rotation (yahoo+alpaca) → IN scope
-    # Betfair families → OUT of scope (no active families anyway)
-    "FACTORY_PAPER_WINDOW_VENUE_SCOPE": "binance,polymarket,yahoo,alpaca",
+    # Betfair families → IN scope once authenticated refresh is healthy
+    "FACTORY_PAPER_WINDOW_VENUE_SCOPE": "betfair,binance,polymarket,yahoo,alpaca",
 }
 
 # Apply overrides. os.environ takes precedence over .env files in config.py.

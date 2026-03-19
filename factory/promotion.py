@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import config
@@ -28,7 +30,7 @@ _STAGE_ORDER = [
 ]
 
 
-_FAMILY_SCORECARDS: Dict[str, Dict[str, float]] = {
+_LEGACY_FAMILY_SCORECARDS: Dict[str, Dict[str, float]] = {
     "default": {
         "min_roi_delta_pct": 0.25,
         "min_calibration_delta_abs": 0.0,
@@ -70,6 +72,26 @@ _FAMILY_SCORECARDS: Dict[str, Dict[str, float]] = {
         "max_failure_rate_delta": -0.01,
     },
 }
+
+
+def default_family_promotion_metadata(family_id: str) -> Dict[str, Dict[str, float]]:
+    scorecard = _LEGACY_FAMILY_SCORECARDS.get(family_id)
+    if scorecard is None:
+        scorecard = _LEGACY_FAMILY_SCORECARDS["default"]
+    return {"promotion_scorecard": dict(scorecard)}
+
+
+def _load_family_metadata(family_id: str) -> Dict[str, object]:
+    factory_root = Path(getattr(config, "FACTORY_ROOT", "data/factory"))
+    if not factory_root.is_absolute():
+        factory_root = Path(__file__).resolve().parent.parent / factory_root
+    family_path = factory_root / "families" / f"{family_id}.json"
+    try:
+        payload = json.loads(family_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    metadata = payload.get("metadata")
+    return dict(metadata) if isinstance(metadata, dict) else {}
 
 
 def _is_sparse_venue(target_venues: list, family_id: str) -> bool:
@@ -143,7 +165,12 @@ class PromotionController:
         self.gates = gate_config or PromotionGateConfig()
 
     def scorecard_for_family(self, family_id: str) -> Dict[str, float]:
-        return dict(_FAMILY_SCORECARDS.get(family_id, _FAMILY_SCORECARDS["default"]))
+        metadata = _load_family_metadata(family_id)
+        scorecard = metadata.get("promotion_scorecard")
+        if isinstance(scorecard, dict):
+            return dict(scorecard)
+        defaults = default_family_promotion_metadata(family_id)
+        return dict(defaults["promotion_scorecard"])
 
     def pre_paper_entry_blockers(
         self,
@@ -319,8 +346,14 @@ class PromotionController:
             lineage.target_venues if hasattr(lineage, "target_venues") else [],
             lineage.family_id,
         )
+        sparse_direct_to_paper = bool(walkforward_bundle is None and sparse_venue and data_ready and workspace_ready)
+        if sparse_direct_to_paper:
+            target_stage = PromotionStage.PAPER.value
+            blockers = [blocker for blocker in blockers if blocker != "missing_walkforward_evidence"]
         _stress_required = not sparse_venue or self.gates.pre_paper_sparse_require_stress
-        if stress_bundle is not None and stress_bundle.stress_positive:
+        if sparse_direct_to_paper:
+            pass
+        elif stress_bundle is not None and stress_bundle.stress_positive:
             target_stage = PromotionStage.STRESS.value
             if bool(backtest_review["passed"]):
                 target_stage = PromotionStage.SHADOW.value
@@ -383,6 +416,17 @@ class PromotionController:
             requires_human_signoff = False
         elif target_stage == PromotionStage.LIVE_READY.value:
             blockers.append("human_signoff_required")
+        if (
+            lineage.current_stage == PromotionStage.PAPER.value
+            and target_stage == PromotionStage.SHADOW.value
+            and {"missing_walkforward_evidence", "no_walkforward_evidence_for_paper_entry"}.intersection(blockers)
+        ):
+            target_stage = PromotionStage.PAPER.value
+            blockers = [
+                blocker
+                for blocker in blockers
+                if blocker not in {"missing_walkforward_evidence", "no_walkforward_evidence_for_paper_entry"}
+            ]
         unique_blockers = list(dict.fromkeys(blockers))
         reasons = [f"target_stage={target_stage}"]
         if backtest_review["required"]:

@@ -448,6 +448,106 @@ def _portfolio_feed_signal(portfolio_id: str) -> Dict[str, Any] | None:
 
 def _build_feed_health(factory_state: Dict[str, Any], connectors: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     connector_rows = list(connectors or [])
+    if connector_rows:
+        venue_candidates = _feed_candidate_portfolios(factory_state, connector_rows)
+        venue_rows: List[Dict[str, Any]] = []
+
+        by_venue: Dict[str, List[Dict[str, Any]]] = {}
+        for connector in connector_rows:
+            venue = str(connector.get("venue") or "").strip().lower()
+            if venue:
+                by_venue.setdefault(venue, []).append(connector)
+
+        for venue, venue_connectors in by_venue.items():
+            ready = any(bool(item.get("ready")) for item in venue_connectors)
+            record_count = sum(int(item.get("record_count") or 0) for item in venue_connectors)
+            latest_row = min(
+                (item for item in venue_connectors if _age_seconds(item.get("latest_data_ts")) is not None),
+                key=lambda row: float(_age_seconds(row.get("latest_data_ts")) or 0.0),
+                default=None,
+            )
+            connector_issue_count = sum(len(list(item.get("issues") or [])) for item in venue_connectors)
+            if not ready:
+                venue_status = "critical"
+            elif record_count <= 0:
+                venue_status = "warning"
+            else:
+                venue_status = "healthy"
+
+            portfolio_ids = venue_candidates.get(venue, [])
+            signals = [item for item in (_portfolio_feed_signal(portfolio_id) for portfolio_id in portfolio_ids) if item]
+            runtime_status = None
+            runtime_issue_count = 0
+            runtime_ready = False
+            best_for_readiness: Dict[str, Any] | None = None
+            if signals:
+                if any(str(signal.get("status") or "healthy") == "critical" for signal in signals):
+                    runtime_status = "critical"
+                elif any(str(signal.get("status") or "healthy") == "warning" for signal in signals):
+                    runtime_status = "warning"
+                else:
+                    runtime_status = "healthy"
+                runtime_issue_count = max(int(item.get("issue_count") or 0) for item in signals)
+                runtime_ready = any(bool(item.get("ready")) for item in signals)
+                best_for_readiness = max(signals, key=lambda signal: int(bool(signal.get("running"))))
+
+            venue_rows.append(
+                {
+                    "connector_id": f"{venue}_core",
+                    "venue": venue,
+                    "status": venue_status,
+                    "ready": ready,
+                    "latest_data_ts": (latest_row or {}).get("latest_data_ts"),
+                    "latest_age_seconds": _age_seconds((latest_row or {}).get("latest_data_ts")),
+                    "record_count": record_count,
+                    "issue_count": connector_issue_count,
+                    "runtime_status": runtime_status,
+                    "runtime_issue_count": runtime_issue_count,
+                    "runtime_ready": runtime_ready,
+                    "portfolio_id": str((best_for_readiness or {}).get("portfolio_id") or ""),
+                }
+            )
+
+        healthy_count = sum(1 for row in venue_rows if row.get("status") == "healthy")
+        warning_count = sum(1 for row in venue_rows if row.get("status") == "warning")
+        critical_count = sum(1 for row in venue_rows if row.get("status") == "critical")
+        runtime_warning_count = sum(
+            1 for row in venue_rows if str(row.get("runtime_status") or "") in {"warning", "critical"}
+        )
+        latest_row = min(
+            (row for row in venue_rows if row.get("latest_age_seconds") is not None),
+            key=lambda row: float(row.get("latest_age_seconds") or 0.0),
+            default=None,
+        )
+        latest_data_ts = latest_row.get("latest_data_ts") if latest_row else None
+        latest_age_seconds = latest_row.get("latest_age_seconds") if latest_row else None
+        overall_status = (
+            "critical"
+            if critical_count > 0
+            else ("degraded" if warning_count > 0 else ("healthy" if healthy_count else "critical"))
+        )
+        summary_parts = [f"{healthy_count}/{len(venue_rows)} healthy"]
+        if warning_count:
+            summary_parts.append(f"{warning_count} stale")
+        if critical_count:
+            summary_parts.append(f"{critical_count} down")
+        if runtime_warning_count:
+            summary_parts.append(f"{runtime_warning_count} runtime warnings")
+        if latest_age_seconds is not None:
+            summary_parts.append(f"latest {int(latest_age_seconds)}s ago")
+        return {
+            "status": overall_status,
+            "headline": f"{healthy_count}/{len(venue_rows)} feeds healthy",
+            "summary": " · ".join(summary_parts),
+            "total_count": len(venue_rows),
+            "healthy_count": healthy_count,
+            "warning_count": warning_count,
+            "critical_count": critical_count,
+            "latest_data_ts": latest_data_ts,
+            "latest_age_seconds": latest_age_seconds,
+            "connectors": sorted(venue_rows, key=lambda row: str(row.get('venue') or '')),
+        }
+
     venue_candidates = _feed_candidate_portfolios(factory_state, connector_rows)
     venue_rows: List[Dict[str, Any]] = []
 
@@ -1935,6 +2035,8 @@ def _build_family_view(factory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "target_portfolios": list(family.get("target_portfolios") or []),
                 "champion_lineage_id": champion.get("lineage_id"),
                 "champion_stage": champion.get("current_stage"),
+                "champion_paper_state": family.get("champion_paper_state"),
+                "champion_paper_reason": family.get("champion_paper_reason"),
                 "champion_roi_pct": _compact_number(champion.get("monthly_roi_pct")),
                 "champion_fitness": _compact_number(champion.get("fitness_score")),
                 "origin": family.get("origin"),

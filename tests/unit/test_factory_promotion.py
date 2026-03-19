@@ -150,3 +150,46 @@ def test_decide_blocks_challenger_that_does_not_beat_incumbent_scorecard():
     assert "challenger_roi_delta_below_scorecard" in decision.blockers
     assert decision.scorecard["backtest"]["comparison_required"] is True
     assert decision.scorecard["backtest"]["comparison_passed"] is False
+
+
+def test_decide_keeps_existing_paper_lineage_in_paper_when_walkforward_is_missing():
+    controller = PromotionController()
+    lineage = _lineage()
+    lineage.current_stage = PromotionStage.PAPER.value
+
+    decision = controller.decide(
+        lineage,
+        data_ready=True,
+        workspace_ready=True,
+        walkforward_bundle=None,
+        incumbent_walkforward_bundle=None,
+        stress_bundle=None,
+        paper_bundle=None,
+        incumbent_paper_bundle=None,
+        manifest_status="pending_approval",
+        approved_by=None,
+    )
+
+    assert decision.next_stage == PromotionStage.PAPER.value
+    assert "missing_walkforward_evidence" not in decision.blockers
+
+
+def test_decide_promotes_sparse_venue_shadow_lineage_to_paper_without_walkforward():
+    controller = PromotionController()
+    lineage = _lineage()
+    lineage.current_stage = PromotionStage.SHADOW.value
+
+    decision = controller.decide(
+        lineage,
+        data_ready=True,
+        workspace_ready=True,
+        walkforward_bundle=None,
+        incumbent_walkforward_bundle=None,
+        stress_bundle=None,
+        paper_bundle=None,
+        incumbent_paper_bundle=None,
+        manifest_status="pending_approval",
+        approved_by=None,
+    )
+
+    assert decision.next_stage == PromotionStage.PAPER.value

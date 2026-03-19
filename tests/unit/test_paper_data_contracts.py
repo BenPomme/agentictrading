@@ -185,6 +185,59 @@ def test_refresh_plan_prefers_fast_schedule_for_active_1m_models(tmp_path, monke
     assert alpaca.interval_seconds == 60
 
 
+def test_refresh_plan_includes_walkforward_betfair_champion(tmp_path, monkeypatch):
+    factory_root = tmp_path / "factory"
+    monkeypatch.setattr("config.FACTORY_ROOT", str(factory_root))
+    registry = FactoryRegistry(factory_root)
+    lineage = LineageRecord(
+        lineage_id="betfair_family:champion",
+        family_id="betfair_family",
+        label="Betfair Family",
+        role="champion",
+        current_stage="walkforward",
+        target_portfolios=["betfair_core"],
+        target_venues=["betfair"],
+        hypothesis_id="h",
+        genome_id="g",
+        experiment_id="e",
+        budget_bucket="incumbent",
+        budget_weight_pct=1.0,
+        connector_ids=["betfair_exchange"],
+        goldfish_workspace="research/goldfish/betfair_family",
+    )
+    genome = StrategyGenome(
+        genome_id="g",
+        lineage_id=lineage.lineage_id,
+        family_id="betfair_family",
+        parent_genome_id=None,
+        role="champion",
+        parameters={
+            "paper_data_contract": {
+                "requirements": [
+                    {"source": "betfair", "venue": "betfair", "instruments": ["1.234"], "fields": ["midpoint"], "feed_type": "market_state", "raw_cadence_seconds": 60, "required_bar_seconds": 60}
+                ]
+            }
+        },
+        mutation_bounds=MutationBounds(),
+        scientific_domains=[],
+        budget_bucket="incumbent",
+        resource_profile="local-first-hybrid",
+        budget_weight_pct=1.0,
+    )
+    registry.save_research_pack(
+        hypothesis=type("Hyp", (), {"to_dict": lambda self: {"hypothesis_id": "h", "family_id": "betfair_family", "title": "t", "thesis": "x", "scientific_domains": [], "lead_agent_role": "Director", "success_metric": "m", "guardrails": [], "origin": "seeded_family", "agent_notes": []}})(),
+        genome=genome,
+        experiment=type("Exp", (), {"to_dict": lambda self: {"experiment_id": "e", "lineage_id": lineage.lineage_id, "family_id": "betfair_family", "hypothesis_id": "h", "genome_id": "g", "goldfish_workspace": "w", "pipeline_stages": [], "backend_mode": "goldfish_sidecar", "resource_profile": "local-first-hybrid", "inputs": {}}})(),
+        lineage=lineage,
+    )
+
+    plan = build_refresh_plan(tmp_path)
+    betfair = next(item for item in plan if item.source == "betfair")
+
+    assert betfair.task_id == "betfair_market_books"
+    assert betfair.script == "scripts/refresh_betfair_market_books.py"
+
+
 def test_binance_bar_model_is_blocked_when_only_funding_history_exists(tmp_path):
     funding_dir = tmp_path / "data" / "funding_history" / "funding_rates"
     funding_dir.mkdir(parents=True, exist_ok=True)
@@ -209,6 +262,37 @@ def test_binance_bar_model_is_blocked_when_only_funding_history_exists(tmp_path)
 
     assert result.ready is False
     assert "intraday bars missing" in result.blocking_reason
+
+
+def test_yahoo_naive_metadata_timestamp_does_not_crash_readiness(tmp_path):
+    ohlcv_dir = tmp_path / "data" / "yahoo" / "ohlcv"
+    ohlcv_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "timestamp": [datetime.now(timezone.utc) - timedelta(days=1)],
+            "close": [100.0],
+        }
+    ).to_parquet(ohlcv_dir / "SPY.parquet", index=False)
+    (tmp_path / "data" / "yahoo" / "metadata.json").write_text(
+        json.dumps({"last_refresh": "2026-03-19T09:00:00"}),
+        encoding="utf-8",
+    )
+    contract = build_paper_data_contract(
+        {},
+        model_requirement={
+            "source": "yahoo",
+            "venue": "yahoo",
+            "instruments": ["SPY"],
+            "fields": ["close"],
+            "feed_type": "bars",
+            "raw_cadence_seconds": 86400,
+            "freshness_sla_seconds": 86400,
+        },
+    )
+
+    result = assess_paper_data_readiness(contract, tmp_path)
+
+    assert result.ready in {True, False}
 
 
 def test_betfair_market_state_passes_with_fresh_execution_feed(tmp_path):

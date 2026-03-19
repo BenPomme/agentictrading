@@ -364,6 +364,7 @@ class FactoryFamily(JsonMixin):
     incubation_decision_reason: Optional[str] = None
     last_cycle_at: Optional[str] = None
     retired_lineage_ids: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

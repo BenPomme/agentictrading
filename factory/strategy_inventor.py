@@ -173,7 +173,10 @@ _DOMAIN_PROFILES: Dict[str, _DomainAgentProfile] = {
 }
 
 
-_FAMILY_SWARMS: Dict[str, List[List[str]]] = {
+_GENERIC_FAMILY_SWARMS: List[List[str]] = [["econometrics", "microstructure", "information_theory"]]
+
+
+_LEGACY_FAMILY_SWARMS: Dict[str, List[List[str]]] = {
     "binance_funding_contrarian": [
         ["econometrics", "microstructure", "ecology_evolution"],
         ["bayesian_causal", "information_theory", "control_rl"],
@@ -201,7 +204,7 @@ _FAMILY_SWARMS: Dict[str, List[List[str]]] = {
     ],
 }
 
-_FAMILY_TUNING: Dict[str, Dict[str, Any]] = {
+_LEGACY_FAMILY_TUNING: Dict[str, Dict[str, Any]] = {
     "binance_funding_contrarian": {
         "feature_subset": "regime",
         "model_class": "gbdt",
@@ -243,6 +246,43 @@ _FAMILY_TUNING: Dict[str, Dict[str, Any]] = {
         "stake_fraction": 0.012,
     },
 }
+
+
+def default_family_inventor_metadata(family_id: str) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {"inventor_swarms": [list(item) for item in _LEGACY_FAMILY_SWARMS.get(family_id) or _GENERIC_FAMILY_SWARMS]}
+    swarms = _LEGACY_FAMILY_SWARMS.get(family_id)
+    tuning = _LEGACY_FAMILY_TUNING.get(family_id)
+    if swarms:
+        metadata["inventor_swarms"] = [list(item) for item in swarms]
+    if tuning:
+        metadata["inventor_tuning"] = dict(tuning)
+    return metadata
+
+
+def _family_inventor_metadata(family: FactoryFamily) -> Dict[str, Any]:
+    metadata = dict(family.metadata or {})
+    if metadata:
+        return metadata
+    return default_family_inventor_metadata(family.family_id)
+
+
+def _family_swarms(family: FactoryFamily) -> List[List[str]]:
+    raw = _family_inventor_metadata(family).get("inventor_swarms")
+    swarms: List[List[str]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, list):
+                cleaned = [str(domain).strip() for domain in item if str(domain).strip() in _DOMAIN_PROFILES]
+                if cleaned:
+                    swarms.append(cleaned)
+    return swarms or [list(item) for item in _GENERIC_FAMILY_SWARMS]
+
+
+def _family_tuning(family: FactoryFamily) -> Dict[str, Any]:
+    raw = _family_inventor_metadata(family).get("inventor_tuning")
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
 
 
 class ScientificStrategyInventor:
@@ -306,7 +346,7 @@ class ScientificStrategyInventor:
         idea_candidates: Sequence[Dict[str, Any]] | None = None,
         dna_packet: "FamilyDNAPacket | None" = None,
     ) -> ScientificAgentProposal:
-        swarms = list(_FAMILY_SWARMS.get(family.family_id) or [["econometrics", "microstructure", "information_theory"]])
+        swarms = _family_swarms(family)
         recent_signatures = {
             tuple(sorted(memory.scientific_domains))
             for memory in learning_memory
@@ -331,7 +371,7 @@ class ScientificStrategyInventor:
         min_edges = [profile.min_edge for profile in profiles]
         stake_fractions = [profile.stake_fraction for profile in profiles]
         bounds = champion_genome.mutation_bounds
-        tuning = dict(_FAMILY_TUNING.get(family.family_id) or {})
+        tuning = _family_tuning(family)
         if tuning:
             feature_subset = str(tuning.get("feature_subset", feature_subset) or feature_subset)
             model_class = str(tuning.get("model_class", model_class) or model_class)
@@ -686,4 +726,3 @@ def _compact_title_fragment(value: str) -> str:
     if not words:
         return "Adaptive"
     return "".join(word.capitalize() for word in words[:2])
-

@@ -618,6 +618,8 @@ def test_run_experiment_injects_review_maintenance_request(tmp_path, monkeypatch
 
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_ENABLE_GOLDFISH_PROVENANCE", False)
+    monkeypatch.setenv("FACTORY_ENABLE_GOLDFISH_PROVENANCE", "false")
 
     orchestrator = FactoryOrchestrator(project_root)
     lineage = orchestrator.registry.load_lineage("binance_funding_contrarian:champion")
@@ -739,6 +741,7 @@ def test_maintenance_request_prefers_completed_maintenance_review(tmp_path, monk
 
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_ENABLE_GOLDFISH_PROVENANCE", False)
 
     orchestrator = FactoryOrchestrator(project_root)
     lineage = orchestrator.registry.load_lineage("binance_funding_contrarian:champion")
@@ -765,6 +768,8 @@ def test_run_experiment_injects_debug_agent_maintenance_request(tmp_path, monkey
 
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_ENABLE_GOLDFISH_PROVENANCE", False)
+    monkeypatch.setenv("FACTORY_ENABLE_GOLDFISH_PROVENANCE", "false")
 
     orchestrator = FactoryOrchestrator(project_root)
     lineage = orchestrator.registry.load_lineage("binance_funding_contrarian:champion")
@@ -1902,9 +1907,10 @@ def test_isolated_lane_preparation_reclassifies_best_challenger_as_paper_candida
     refreshed_challenger = orchestrator.registry.load_lineage(challenger.lineage_id)
     assert refreshed_family is not None
     assert refreshed_challenger is not None
-    assert challenger.lineage_id in refreshed_family.paper_challenger_ids
-    assert refreshed_challenger.role == "paper_challenger"
-    assert refreshed_challenger.iteration_status == "prepare_isolated_lane"
+    assert refreshed_family.paper_challenger_ids == []
+    assert refreshed_family.shadow_challenger_ids == []
+    assert refreshed_challenger.active is False
+    assert refreshed_challenger.retirement_reason == "single_lineage_family_policy"
 
 
 def test_activate_prepared_isolated_lane_promotes_runnable_challenger_to_shadow(tmp_path, monkeypatch):
@@ -2695,6 +2701,8 @@ def test_seed_challengers_skips_early_incubating_family(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "FACTORY_ROOT", str(factory_root))
     monkeypatch.setattr(config, "FACTORY_GOLDFISH_ROOT", str(goldfish_root))
+    monkeypatch.setattr(config, "FACTORY_ENABLE_GOLDFISH_PROVENANCE", False)
+    monkeypatch.setenv("FACTORY_ENABLE_GOLDFISH_PROVENANCE", "false")
 
     orchestrator = FactoryOrchestrator(project_root)
     family = orchestrator._seed_family_from_spec(

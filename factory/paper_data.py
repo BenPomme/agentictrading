@@ -24,7 +24,10 @@ def _parse_iso_ts(value: Any) -> datetime | None:
     try:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
-        return datetime.fromisoformat(text)
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 
@@ -568,8 +571,19 @@ def build_refresh_plan(project_root: Path) -> List[RefreshTaskPlan]:
     registry = FactoryRegistry(str(factory_root))
     tasks: Dict[str, RefreshTaskPlan] = {}
 
+    active_stages = {
+        "data_check",
+        "goldfish_run",
+        "walkforward",
+        "stress",
+        "shadow",
+        "paper",
+        "canary_ready",
+        "live_ready",
+        "approved_live",
+    }
     for lineage in registry.lineages():
-        if not lineage.active or lineage.current_stage not in {"paper", "shadow", "canary_ready", "live_ready", "approved_live"}:
+        if not lineage.active or lineage.current_stage not in active_stages:
             continue
         genome = registry.load_genome(lineage.lineage_id)
         if genome is None:
@@ -630,6 +644,19 @@ def build_refresh_plan(project_root: Path) -> List[RefreshTaskPlan]:
                     interval_seconds=interval_seconds,
                     feed_type="bars",
                     source="yahoo",
+                )
+            elif requirement.source == "betfair":
+                task_id = "betfair_market_books"
+                args = ["--max-markets", "40"]
+                if requirement.instruments:
+                    args.extend(["--market-ids", ",".join(requirement.instruments)])
+                task = RefreshTaskPlan(
+                    task_id=task_id,
+                    script="scripts/refresh_betfair_market_books.py",
+                    args=args,
+                    interval_seconds=interval_seconds,
+                    feed_type=requirement.feed_type,
+                    source="betfair",
                 )
             else:
                 continue
