@@ -45,6 +45,55 @@ def _append_log(path: Path, payload: dict) -> None:
         handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
 
+def _preferred_python(loop_root: Path) -> str:
+    override = str(os.environ.get("FACTORY_REFRESH_PYTHON") or "").strip()
+    if override:
+        return override
+    preferred = loop_root / ".venv312" / "bin" / "python"
+    if preferred.exists():
+        return str(preferred)
+    return sys.executable
+
+
+def _pid_running(pid_path: Path) -> bool:
+    if not pid_path.exists():
+        return False
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _launch_background_process(
+    loop_root: Path,
+    *,
+    script_path: Path,
+    pid_path: Path,
+    log_path: Path,
+    args: list[str] | None = None,
+) -> subprocess.Popen[str] | None:
+    if _pid_running(pid_path):
+        return None
+    if not script_path.exists():
+        return None
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    python_executable = _preferred_python(loop_root)
+    with open(log_path, "a", encoding="utf-8") as log_fh:
+        proc = subprocess.Popen(
+            [python_executable, str(script_path), *(args or [])],
+            cwd=str(loop_root),
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            text=True,
+        )
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(proc.pid), encoding="utf-8")
+    return proc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the AgenticTrading factory continuously.")
     parser.add_argument("--project-root", default=str(project_root))
@@ -93,31 +142,51 @@ def main(argv: list[str] | None = None) -> int:
     cycles_completed = 0
     interval = max(1, int(args.interval_seconds))
 
-    scheduler_script = loop_root / "scripts" / "data_refresh_scheduler.py"
-    scheduler_proc = None
-    if scheduler_script.exists():
-        try:
-            scheduler_proc = subprocess.Popen(
-                [sys.executable, str(scheduler_script)],
-                cwd=str(loop_root),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+    support_processes: list[tuple[str, subprocess.Popen[str], Path]] = []
+
+    def _start_support_processes() -> None:
+        if bool(getattr(config, "FACTORY_DATA_REFRESH_AUTOSTART_ENABLED", True)):
+            scheduler_proc = _launch_background_process(
+                loop_root,
+                script_path=loop_root / "scripts" / "data_refresh_scheduler.py",
+                pid_path=loop_root / "data" / "factory" / "data_refresh_scheduler.pid",
+                log_path=loop_root / "data" / "factory" / "data_refresh_scheduler.log",
             )
-            print(f"[factory-loop] Data refresh scheduler started (pid={scheduler_proc.pid})", flush=True)
-        except Exception as exc:
-            print(f"[factory-loop] Failed to start data refresh scheduler: {exc}", flush=True)
+            if scheduler_proc is not None:
+                support_processes.append(("data refresh scheduler", scheduler_proc, loop_root / "data" / "factory" / "data_refresh_scheduler.pid"))
+                print(f"[factory-loop] Data refresh scheduler started (pid={scheduler_proc.pid})", flush=True)
 
-    def _cleanup_scheduler():
-        if scheduler_proc and scheduler_proc.poll() is None:
-            scheduler_proc.terminate()
+        if bool(getattr(config, "FACTORY_DASHBOARD_AUTOSTART_ENABLED", True)):
+            dashboard_port = int(getattr(config, "FACTORY_DASHBOARD_PORT", 8787) or 8787)
+            dashboard_proc = _launch_background_process(
+                loop_root,
+                script_path=loop_root / "scripts" / "factory_dashboard.py",
+                pid_path=loop_root / "data" / "factory" / "dashboard.pid",
+                log_path=loop_root / "data" / "factory" / f"dashboard_{dashboard_port}.log",
+                args=["--port", str(dashboard_port)],
+            )
+            if dashboard_proc is not None:
+                support_processes.append(("dashboard", dashboard_proc, loop_root / "data" / "factory" / "dashboard.pid"))
+                print(f"[factory-loop] Dashboard started (pid={dashboard_proc.pid}, port={dashboard_port})", flush=True)
+
+    def _cleanup_support_processes():
+        for name, proc, pid_path in reversed(support_processes):
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                print(f"[factory-loop] {name} stopped", flush=True)
             try:
-                scheduler_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                scheduler_proc.kill()
-            print("[factory-loop] Data refresh scheduler stopped", flush=True)
+                if pid_path.exists():
+                    pid_path.unlink()
+            except OSError:
+                pass
 
-    atexit.register(_cleanup_scheduler)
-    signal.signal(signal.SIGTERM, lambda *_: (_cleanup_scheduler(), sys.exit(0)))
+    _start_support_processes()
+    atexit.register(_cleanup_support_processes)
+    signal.signal(signal.SIGTERM, lambda *_: (_cleanup_support_processes(), sys.exit(0)))
 
     while True:
         pause_flag = loop_root / "data" / "factory" / "factory_paused.flag"
