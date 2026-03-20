@@ -1,6 +1,21 @@
-# AgenticTrading
+<p align="center">
+  <img src="docs/logo.svg" alt="AgenticTrading" width="160" />
+</p>
 
-Autonomous trading research factory and flagship reference app for Meerkat, MobKit, and Goldfish.
+<h1 align="center">AgenticTrading</h1>
+
+<p align="center">
+  Autonomous trading research factory and flagship reference app for Meerkat, MobKit, and Goldfish.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.9%2B-3776AB.svg?logo=python&logoColor=white" alt="Python 3.9+" /></a>
+  <a href="#status"><img src="https://img.shields.io/badge/mode-paper--only-5B5BD6.svg" alt="Paper-only" /></a>
+  <a href="https://github.com/BenPomme/agentictrading/discussions"><img src="https://img.shields.io/badge/discussions-enabled-2ea44f.svg" alt="Discussions enabled" /></a>
+</p>
+
+---
 
 ## What This Repo Is
 
